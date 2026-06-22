@@ -96,6 +96,44 @@ class User(Base):
     strategy_combinations: Mapped[list["StrategyCombination"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    broker_connections: Mapped[list["BrokerConnection"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
+
+
+class BrokerConnection(Base):
+    __tablename__ = "broker_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "broker_name",
+            "account_label",
+            name="uq_broker_connections_owner_broker_label",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    broker_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_label: Mapped[str] = mapped_column(String(128), nullable=False)
+    environment: Mapped[str] = mapped_column(String(16), nullable=False, default="paper")
+    connection_metadata: Mapped[dict[str, str | int | float | bool | None]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    owner: Mapped[User] = relationship(back_populates="broker_connections")
 
 
 class StrategyCombination(Base):

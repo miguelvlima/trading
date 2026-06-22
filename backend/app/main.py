@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.broker_connections import router as broker_connections_router
 from app.api.routes.market_data import router as market_data_router
 from app.api.routes.signals import router as signals_router
 from app.api.routes.strategy_combinations import router as strategy_combinations_router
@@ -36,3 +37,4 @@ app.include_router(auth_router)
 app.include_router(market_data_router)
 app.include_router(signals_router)
 app.include_router(strategy_combinations_router)
+app.include_router(broker_connections_router)

@@ -76,6 +76,7 @@ pytest
 - `POST /auth/login`
 - `GET /auth/me`
 - `GET/POST/PUT /strategy-combinations`
+- `GET/POST/PUT/DELETE /broker-connections`
 
 ## Importar CSV OHLCV
 

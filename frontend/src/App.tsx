@@ -97,6 +97,21 @@ type StrategyCombination = {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
+const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
+const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";
+
+const readStoredNumber = (key: string, fallback: number, min: number, max: number): number => {
+  const raw = localStorage.getItem(key);
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (Number.isNaN(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+};
+
 const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
   rsi_mean_reversion: {
     title: "RSI Mean Reversion",
@@ -197,8 +212,12 @@ function App() {
   const [signalsError, setSignalsError] = useState<string | null>(null);
   const [signalDirectionFilter, setSignalDirectionFilter] = useState<SignalDirectionFilter>("BOTH");
   const [signalMinStrengthPct, setSignalMinStrengthPct] = useState<number>(0);
-  const [consensusThresholdPct, setConsensusThresholdPct] = useState<number>(15);
-  const [signalsFetchLimit, setSignalsFetchLimit] = useState<number>(500);
+  const [consensusThresholdPct, setConsensusThresholdPct] = useState<number>(() =>
+    readStoredNumber(CONSENSUS_THRESHOLD_STORAGE_KEY, 15, 0, 100),
+  );
+  const [signalsFetchLimit, setSignalsFetchLimit] = useState<number>(() =>
+    readStoredNumber(SIGNALS_FETCH_LIMIT_STORAGE_KEY, 500, 50, 2000),
+  );
   const [signalsRefreshToken, setSignalsRefreshToken] = useState(0);
   const [savedCombinations, setSavedCombinations] = useState<StrategyCombination[]>([]);
   const [newCombinationName, setNewCombinationName] = useState("");
@@ -236,6 +255,14 @@ function App() {
   useEffect(() => {
     setBarLimitInput(String(barLimit));
   }, [barLimit]);
+
+  useEffect(() => {
+    localStorage.setItem(CONSENSUS_THRESHOLD_STORAGE_KEY, String(consensusThresholdPct));
+  }, [consensusThresholdPct]);
+
+  useEffect(() => {
+    localStorage.setItem(SIGNALS_FETCH_LIMIT_STORAGE_KEY, String(signalsFetchLimit));
+  }, [signalsFetchLimit]);
 
   const buildSignalGeneratePayload = (strategy: string): Record<string, string | number> => {
     const payload: Record<string, string | number> = {

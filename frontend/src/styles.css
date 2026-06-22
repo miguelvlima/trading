@@ -276,7 +276,8 @@ body {
 }
 
 .strategy-library {
-  margin-bottom: 0.8rem;
+  margin-bottom: 0.3rem;
+  margin-top: 0.55rem;
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid #475569;
   border-radius: 10px;
@@ -286,6 +287,43 @@ body {
 .strategy-library h4 {
   margin: 0 0 0.35rem;
   font-size: 0.95rem;
+}
+
+.strategy-library-expand {
+  margin-bottom: 0.75rem;
+  background: rgba(15, 23, 42, 0.52);
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+}
+
+.strategy-library-expand summary {
+  list-style: none;
+  cursor: pointer;
+  color: #e2e8f0;
+  font-weight: 600;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.strategy-library-expand summary::-webkit-details-marker {
+  display: none;
+}
+
+.strategy-library-expand summary::after {
+  content: "▾";
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.strategy-library-expand[open] summary::after {
+  content: "▴";
+}
+
+.strategy-library-expand[open] {
+  background: rgba(15, 23, 42, 0.68);
 }
 
 .auth-overlay {
@@ -357,7 +395,7 @@ body {
 }
 
 .strategy-summary {
-  margin-bottom: 0.55rem;
+  margin-bottom: 0;
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid #475569;
   border-radius: 10px;
@@ -378,6 +416,18 @@ body {
 
 .strategy-summary p + p {
   margin-top: 0.25rem;
+}
+
+.consensus-buy {
+  color: #22c55e;
+}
+
+.consensus-sell {
+  color: #f87171;
+}
+
+.consensus-neutral {
+  color: #f8fafc;
 }
 
 .config-panel {
@@ -535,7 +585,21 @@ body {
 }
 
 .strategy-picker {
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.45rem;
+}
+
+.strategy-consensus-card {
+  margin-bottom: 0.7rem;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid #475569;
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+}
+
+.strategy-consensus-caption {
+  margin: 0 0 0.45rem;
+  color: #cbd5e1;
+  font-size: 0.9rem;
 }
 
 .strategy-chip-list {
@@ -576,6 +640,13 @@ body {
   padding-right: 0.2rem;
 }
 
+.signals-order-note {
+  margin-top: 0.25rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.85rem;
+  opacity: 0.78;
+}
+
 .signal-row {
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid #475569;
@@ -590,12 +661,27 @@ body {
   margin-bottom: 0.6rem;
 }
 
+.signals-filter-note {
+  margin-top: 0.25rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.86rem;
+}
+
 .contributions-list {
   margin-top: 0.6rem;
   margin-bottom: 0.6rem;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 0.45rem;
+}
+
+.strategy-summary-contributions {
+  margin-top: 0.5rem;
+}
+
+.strategy-summary-contributions .contributions-list {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .contribution-row {

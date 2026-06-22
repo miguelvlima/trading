@@ -191,6 +191,7 @@ function App() {
   const [availableStrategies, setAvailableStrategies] = useState<string[]>([]);
   const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
   const [signals, setSignals] = useState<SignalItem[]>([]);
+  const [consensusSignals, setConsensusSignals] = useState<SignalItem[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
   const [signalsGenerating, setSignalsGenerating] = useState(false);
   const [signalsError, setSignalsError] = useState<string | null>(null);
@@ -526,6 +527,58 @@ function App() {
   useEffect(() => {
     if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
       setSignals([]);
+      setConsensusSignals([]);
+      return;
+    }
+    if (signalsGenerating) {
+      return;
+    }
+
+    const loadConsensusSignals = async () => {
+      try {
+        const responses = await Promise.all(
+          selectedStrategies.map(async (strategy) => {
+            const query = new URLSearchParams({
+              symbol: selectedSymbol,
+              timeframe: selectedTimeframe,
+              strategy,
+              limit: "1",
+            });
+
+            const response = await fetch(`${API_BASE_URL}/signals?${query.toString()}`, {
+              headers: { Authorization: `Bearer ${authToken}` },
+            });
+            if (!response.ok) {
+              throw new Error("Falha ao carregar sinais de consenso.");
+            }
+            return (await response.json()) as SignalItem[];
+          }),
+        );
+
+        setConsensusSignals(
+          responses
+            .flat()
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+        );
+      } catch {
+        setConsensusSignals([]);
+      }
+    };
+
+    loadConsensusSignals();
+  }, [
+    isAuthenticated,
+    authToken,
+    selectedSymbol,
+    selectedTimeframe,
+    selectedStrategies,
+    signalsRefreshToken,
+    signalsGenerating,
+  ]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+      setSignals([]);
       return;
     }
     if (signalsGenerating) {
@@ -618,7 +671,7 @@ function App() {
   const barsSummaryValue = filterMode === "count" ? `${bars.length} / ${barLimit}` : String(bars.length);
   const strategyContributions = useMemo<StrategyContribution[]>(() => {
     return selectedStrategies.map((strategy) => {
-      const latest = signals.find((item) => item.strategy === strategy);
+      const latest = consensusSignals.find((item) => item.strategy === strategy);
       if (!latest) {
         return {
           strategy,
@@ -638,7 +691,7 @@ function App() {
         timestamp: latest.timestamp,
       };
     });
-  }, [selectedStrategies, signals]);
+  }, [selectedStrategies, consensusSignals]);
 
   const consensus = useMemo(() => {
     if (strategyContributions.length === 0) {
@@ -651,6 +704,16 @@ function App() {
     const confidence = Math.min(1, Math.abs(score));
     return { score, direction, confidence };
   }, [strategyContributions, consensusThresholdPct]);
+
+  const orderedStrategyContributions = useMemo(() => {
+    return [...strategyContributions].sort((a, b) => {
+      const impactDiff = Math.abs(b.signedScore) - Math.abs(a.signedScore);
+      if (impactDiff !== 0) {
+        return impactDiff;
+      }
+      return a.strategy.localeCompare(b.strategy);
+    });
+  }, [strategyContributions]);
 
   const handleAuthSubmit = async () => {
     setAuthLoading(true);
@@ -1382,6 +1445,163 @@ function App() {
                 <h3>Sinais da estratégia</h3>
               </div>
 
+              {!isAuthenticated && !authChecking && (
+                <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
+              )}
+              {!isAuthenticated && authChecking && <p className="hint">A validar sessão...</p>}
+
+              {isAuthenticated && (
+                <details className="strategy-library-expand">
+                  <summary>Biblioteca partilhada de combinações</summary>
+                  <div className="strategy-library">
+                    <div className="auth-grid">
+                      <label className="field">
+                        <span>Nome da combinação</span>
+                        <input
+                          value={newCombinationName}
+                          onChange={(event) => setNewCombinationName(event.target.value)}
+                          placeholder="Ex.: Trend + Reversal"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Descrição</span>
+                        <input
+                          value={newCombinationDescription}
+                          onChange={(event) => setNewCombinationDescription(event.target.value)}
+                          placeholder="Opcional"
+                        />
+                      </label>
+                    </div>
+                    <div className="auth-actions">
+                      <button type="button" className="tab-button" onClick={handleCreateCombination}>
+                        Guardar combinação atual
+                      </button>
+                    </div>
+                    {combinationError && <p className="error">{combinationError}</p>}
+                    <div className="combination-list">
+                      {savedCombinations.map((item) => (
+                        <article key={item.id} className="combination-row">
+                          <div>
+                            <strong>{item.name}</strong>
+                            <p>
+                              {item.owner_email} | {item.strategies.join(", ")}
+                            </p>
+                          </div>
+                          <div className="auth-actions">
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => setSelectedStrategies(item.strategies)}
+                            >
+                              Aplicar
+                            </button>
+                            {item.owner_user_id !== currentUser?.id && (
+                              <button
+                                type="button"
+                                className="config-button"
+                                onClick={() => handleCloneCombination(item.id)}
+                              >
+                                Clonar
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              )}
+
+              <section className="strategy-consensus-card">
+                <p className="strategy-consensus-caption">
+                  O sinal combinado é calculado a partir das estratégias ativas selecionadas abaixo.
+                </p>
+                <div className="strategy-picker">
+                  <span className="stats-label">Estratégias ativas (consenso)</span>
+                  <div className="strategy-chip-list">
+                    {availableStrategies.map((strategy) => {
+                      const checked = selectedStrategies.includes(strategy);
+                      const info = STRATEGY_SUMMARY[strategy];
+                      return (
+                        <label
+                          key={strategy}
+                          className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              setSelectedStrategies((previous) => {
+                                if (event.target.checked) {
+                                  if (previous.includes(strategy)) {
+                                    return previous;
+                                  }
+                                  return [...previous, strategy];
+                                }
+                                return previous.filter((value) => value !== strategy);
+                              });
+                            }}
+                            disabled={loading}
+                          />
+                          <span>{info?.title ?? strategy}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {selectedStrategies.length > 0 ? (
+                  <div className="strategy-summary">
+                    <strong>
+                      Sinal combinado:{" "}
+                      <span
+                        className={
+                          consensus.direction === "BUY"
+                            ? "consensus-buy"
+                            : consensus.direction === "SELL"
+                              ? "consensus-sell"
+                              : "consensus-neutral"
+                        }
+                      >
+                        {consensus.direction}
+                      </span>
+                    </strong>
+                    <p>
+                      Score {consensus.score.toFixed(3)} | Confiança {(consensus.confidence * 100).toFixed(1)}%
+                    </p>
+                    {orderedStrategyContributions.length > 0 && (
+                      <div className="strategy-summary-contributions">
+                        <div className="contributions-list">
+                          {orderedStrategyContributions.map((item) => {
+                            const info = STRATEGY_SUMMARY[item.strategy];
+                            return (
+                              <article key={item.strategy} className="contribution-row">
+                                <strong>{info?.title ?? item.strategy}</strong>
+                                <span
+                                  className={
+                                    item.direction === "BUY"
+                                      ? "signal-buy"
+                                      : item.direction === "SELL"
+                                        ? "signal-sell"
+                                        : "consensus-neutral"
+                                  }
+                                >
+                                  {item.direction}
+                                </span>
+                                <span>Score {item.signedScore.toFixed(3)}</span>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="hint">Selecione pelo menos uma estratégia para calcular o sinal combinado.</p>
+                )}
+              </section>
+
+              <p className="hint signals-filter-note">Filtros da lista (não afetam o sinal combinado).</p>
               <div className="signals-filter-grid">
                 <label className="field">
                   <span>Direção</span>
@@ -1419,141 +1639,11 @@ function App() {
                 </label>
               </div>
 
-              {!isAuthenticated && !authChecking && (
-                <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
-              )}
-              {!isAuthenticated && authChecking && <p className="hint">A validar sessão...</p>}
-
-              {isAuthenticated && (
-                <div className="strategy-library">
-                  <h4>Biblioteca partilhada</h4>
-                  <div className="auth-grid">
-                    <label className="field">
-                      <span>Nome da combinação</span>
-                      <input
-                        value={newCombinationName}
-                        onChange={(event) => setNewCombinationName(event.target.value)}
-                        placeholder="Ex.: Trend + Reversal"
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Descrição</span>
-                      <input
-                        value={newCombinationDescription}
-                        onChange={(event) => setNewCombinationDescription(event.target.value)}
-                        placeholder="Opcional"
-                      />
-                    </label>
-                  </div>
-                  <div className="auth-actions">
-                    <button type="button" className="tab-button" onClick={handleCreateCombination}>
-                      Guardar combinação atual
-                    </button>
-                  </div>
-                  {combinationError && <p className="error">{combinationError}</p>}
-                  <div className="combination-list">
-                    {savedCombinations.map((item) => (
-                      <article key={item.id} className="combination-row">
-                        <div>
-                          <strong>{item.name}</strong>
-                          <p>
-                            {item.owner_email} | {item.strategies.join(", ")}
-                          </p>
-                        </div>
-                        <div className="auth-actions">
-                          <button
-                            type="button"
-                            className="config-button"
-                            onClick={() => setSelectedStrategies(item.strategies)}
-                          >
-                            Aplicar
-                          </button>
-                          {item.owner_user_id !== currentUser?.id && (
-                            <button
-                              type="button"
-                              className="config-button"
-                              onClick={() => handleCloneCombination(item.id)}
-                            >
-                              Clonar
-                            </button>
-                          )}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="strategy-picker">
-                <span className="stats-label">Estratégias ativas (consenso)</span>
-                <div className="strategy-chip-list">
-                  {availableStrategies.map((strategy) => {
-                    const checked = selectedStrategies.includes(strategy);
-                    const info = STRATEGY_SUMMARY[strategy];
-                    return (
-                      <label
-                        key={strategy}
-                        className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) => {
-                            setSelectedStrategies((previous) => {
-                              if (event.target.checked) {
-                                if (previous.includes(strategy)) {
-                                  return previous;
-                                }
-                                return [...previous, strategy];
-                              }
-                              return previous.filter((value) => value !== strategy);
-                            });
-                          }}
-                          disabled={loading}
-                        />
-                        <span>{info?.title ?? strategy}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {selectedStrategies.length > 0 && (
-                <div className="strategy-summary">
-                  <strong>Sinal combinado: {consensus.direction}</strong>
-                  <p>
-                    Score {consensus.score.toFixed(3)} | Confiança {(consensus.confidence * 100).toFixed(1)}%
-                  </p>
-                  <p>
-                    Estratégias ativas:{" "}
-                    {selectedStrategies
-                      .map((strategy) => STRATEGY_SUMMARY[strategy]?.title ?? strategy)
-                      .join(", ")}
-                  </p>
-                </div>
-              )}
-
-              <p className="hint">Ordem: mais recente {"->"} mais antigo.</p>
+              <p className="hint signals-order-note">Mais recente {"->"} mais antigo.</p>
               {(signalsGenerating || signalsLoading) && <p className="hint">A atualizar sinais...</p>}
               {signalsError && <p className="error">{signalsError}</p>}
               {!signalsGenerating && !signalsLoading && signals.length === 0 && (
                 <p className="hint">Sem sinais para os filtros atuais.</p>
-              )}
-              {strategyContributions.length > 0 && (
-                <div className="contributions-list">
-                  {strategyContributions.map((item) => {
-                    const info = STRATEGY_SUMMARY[item.strategy];
-                    return (
-                      <article key={item.strategy} className="contribution-row">
-                        <strong>{info?.title ?? item.strategy}</strong>
-                        <span className={item.direction === "BUY" ? "signal-buy" : item.direction === "SELL" ? "signal-sell" : ""}>
-                          {item.direction}
-                        </span>
-                        <span>Score {item.signedScore.toFixed(3)}</span>
-                      </article>
-                    );
-                  })}
-                </div>
               )}
               {signals.length > 0 && (
                 <div className="signals-list">

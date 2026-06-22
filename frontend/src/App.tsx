@@ -818,6 +818,11 @@ function App() {
     }
   };
 
+  const handleResetSignalListFilters = () => {
+    setSignalDirectionFilter("BOTH");
+    setSignalMinStrengthPct(0);
+  };
+
   useEffect(() => {
     setHoveredOhlc(null);
   }, [selectedSymbol]);
@@ -1664,6 +1669,11 @@ function App() {
                     disabled={loading}
                   />
                 </label>
+              </div>
+              <div className="signals-filter-actions">
+                <button type="button" className="config-button" onClick={handleResetSignalListFilters}>
+                  Limpar filtros da lista
+                </button>
               </div>
 
               <p className="hint signals-order-note">Mais recente {"->"} mais antigo.</p>

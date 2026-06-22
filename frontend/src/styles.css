@@ -667,6 +667,13 @@ body {
   font-size: 0.86rem;
 }
 
+.signals-filter-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: -0.1rem;
+  margin-bottom: 0.4rem;
+}
+
 .contributions-list {
   margin-top: 0.6rem;
   margin-bottom: 0.6rem;

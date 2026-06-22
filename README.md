@@ -1,6 +1,6 @@
-# App Trading - Fase 2
+# App Trading - Fase 3
 
-Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose e ingestão de dados históricos OHLCV.
+Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose, ingestão de dados históricos OHLCV e indicadores técnicos.
 
 ## Stack usada nesta fase
 
@@ -21,7 +21,8 @@ Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via
 - `GET /market-data/instruments` lista instrumentos
 - `GET /market-data/bars` consulta candles por símbolo/timeframe
 - `POST /market-data/import-csv` importa CSV OHLCV para PostgreSQL
-- Dashboard com gráfico de candles e seletor de símbolo
+- `GET /market-data/indicators` calcula indicadores técnicos
+- Dashboard com gráfico de candles, overlays e painel OHLC no cursor
 
 ## Como arrancar
 
@@ -76,7 +77,8 @@ npm run dev -- --host 0.0.0.0 --port 5173
 3. Importar um CSV e validar resposta com linhas importadas
 4. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
 5. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
-6. Frontend em `http://localhost:5173` deve mostrar badge `PAPER` e gráfico com candles
+6. API em `http://localhost:8000/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
+7. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays e painel OHLC
 
 ## Fora de escopo nesta fase
 

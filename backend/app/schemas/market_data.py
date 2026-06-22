@@ -34,3 +34,25 @@ class CsvImportResponse(BaseModel):
     symbol: str
     timeframe: str
     imported_rows: int
+
+
+class IndicatorRowResponse(BaseModel):
+    timestamp: datetime
+    sma_20: float | None = None
+    ema_20: float | None = None
+    rsi_14: float | None = None
+    macd: float | None = None
+    macd_signal: float | None = None
+    macd_histogram: float | None = None
+    bollinger_upper: float | None = None
+    bollinger_middle: float | None = None
+    bollinger_lower: float | None = None
+    atr_14: float | None = None
+    vwap: float | None = None
+    relative_volume_20: float | None = None
+
+
+class IndicatorResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    rows: list[IndicatorRowResponse]

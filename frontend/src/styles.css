@@ -52,9 +52,24 @@ body {
 .panel-header {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 1rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.controls-grid-date {
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.controls-grid-count {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
 }
 
 .field {
@@ -64,12 +79,17 @@ body {
   font-size: 1rem;
 }
 
-.field select {
+.field select,
+.field input {
   background: #0f172a;
   border: 1px solid #475569;
   color: #e5e7eb;
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
+}
+
+.field input {
+  appearance: textfield;
 }
 
 .chart {
@@ -116,6 +136,39 @@ body {
   color: #f8fafc;
 }
 
+.overlay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 0.8rem;
+}
+
+.overlay-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #e2e8f0;
+  font-size: 0.92rem;
+}
+
+.overlay-controls input[type="checkbox"] {
+  accent-color: #38bdf8;
+}
+
+.indicator-stats {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(160px, 1fr));
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  scrollbar-width: thin;
+}
+
+.indicator-stats > div {
+  min-width: 0;
+}
+
 .ohlc-panel {
   margin-top: 1rem;
 }
@@ -127,4 +180,15 @@ body {
 
 .ohlc-stats {
   margin-top: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .panel-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .controls-grid {
+    grid-template-columns: 1fr;
+  }
 }

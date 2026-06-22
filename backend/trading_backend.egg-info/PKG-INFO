@@ -12,11 +12,12 @@ Requires-Dist: psycopg[binary]>=3.2.0
 Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: structlog>=25.4.0
 Requires-Dist: uvicorn[standard]>=0.35.0
+Requires-Dist: yfinance>=1.4.0
 Provides-Extra: dev
 Requires-Dist: httpx>=0.28.0; extra == "dev"
 Requires-Dist: pytest>=8.4.0; extra == "dev"
 
-# Trading Backend (Fase 2)
+# Trading Backend (Fase 3)
 
 ## Requisitos
 
@@ -52,6 +53,7 @@ pytest
 - `GET /market-data/instruments`
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`
+- `GET /market-data/indicators?symbol=AAPL&timeframe=1d`
 
 ## Importar CSV OHLCV
 

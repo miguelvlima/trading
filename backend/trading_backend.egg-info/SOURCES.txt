@@ -18,9 +18,12 @@ app/schemas/__init__.py
 app/schemas/market_data.py
 app/scripts/__init__.py
 app/scripts/import_ohlcv.py
+app/scripts/load_demo_data.py
 app/services/__init__.py
 app/services/csv_importer.py
+app/services/indicator_engine.py
 tests/test_csv_importer.py
+tests/test_indicator_engine.py
 tests/test_market_data_endpoints.py
 tests/test_system_endpoints.py
 trading_backend.egg-info/PKG-INFO

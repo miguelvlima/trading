@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-backend"
+version = "0.1.0"
+description = "Backend scaffold for the trading app"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.16.0",
+  "fastapi>=0.116.0",
+  "pydantic-settings>=2.10.0",
+  "pandas>=2.3.0",
+  "psycopg[binary]>=3.2.0",
+  "sqlalchemy>=2.0.0",
+  "structlog>=25.4.0",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.4.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

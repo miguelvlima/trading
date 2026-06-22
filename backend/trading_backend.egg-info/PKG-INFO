@@ -1,0 +1,50 @@
+Metadata-Version: 2.4
+Name: trading-backend
+Version: 0.1.0
+Summary: Backend scaffold for the trading app
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: alembic>=1.16.0
+Requires-Dist: fastapi>=0.116.0
+Requires-Dist: pydantic-settings>=2.10.0
+Requires-Dist: pandas>=2.3.0
+Requires-Dist: psycopg[binary]>=3.2.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: structlog>=25.4.0
+Requires-Dist: uvicorn[standard]>=0.35.0
+Provides-Extra: dev
+Requires-Dist: httpx>=0.28.0; extra == "dev"
+Requires-Dist: pytest>=8.4.0; extra == "dev"
+
+# Trading Backend (Fase 1)
+
+## Requisitos
+
+- Python 3.11+
+- PostgreSQL local (via Docker Compose na raiz do projeto)
+
+## Setup rápido
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -e .[dev]
+copy .env.example .env
+```
+
+## Arrancar backend
+
+```powershell
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Testes
+
+```powershell
+pytest
+```
+
+## Endpoints iniciais
+
+- `GET /health` -> `{"status":"ok"}`
+- `GET /mode` -> `{"mode":"PAPER"}`

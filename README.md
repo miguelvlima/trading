@@ -1,6 +1,6 @@
-# App Trading - Fase 1
+# App Trading - Fase 2
 
-Base inicial do projeto com backend FastAPI, frontend React/Vite e PostgreSQL via Docker Compose.
+Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose e ingestão de dados históricos OHLCV.
 
 ## Stack usada nesta fase
 
@@ -18,9 +18,21 @@ Base inicial do projeto com backend FastAPI, frontend React/Vite e PostgreSQL vi
 
 - `GET /health` devolve estado da API
 - `GET /mode` devolve modo atual (`PAPER`)
-- Dashboard vazio com banner `PAPER` visível
+- `GET /market-data/instruments` lista instrumentos
+- `GET /market-data/bars` consulta candles por símbolo/timeframe
+- `POST /market-data/import-csv` importa CSV OHLCV para PostgreSQL
+- Dashboard com gráfico de candles e seletor de símbolo
 
 ## Como arrancar
+
+### Opção rápida (recomendado)
+
+Na raiz do projeto, arranca DB + backend + frontend com um único comando:
+
+```powershell
+npm install
+npm run dev:all
+```
 
 ### 1) PostgreSQL
 
@@ -36,7 +48,17 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e .[dev]
 copy .env.example .env
+alembic upgrade head
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 2.1) Importar CSV OHLCV
+
+CSV esperado com colunas: `timestamp,open,high,low,close,volume`.
+
+```powershell
+cd backend
+.\.venv\Scripts\python -m app.scripts.import_ohlcv --symbol AAPL --timeframe 1d --csv-path .\data\aapl.csv
 ```
 
 ### 3) Frontend
@@ -51,7 +73,10 @@ npm run dev -- --host 0.0.0.0 --port 5173
 
 1. API em `http://localhost:8000/health` deve devolver `{"status":"ok"}`
 2. API em `http://localhost:8000/mode` deve devolver `{"mode":"PAPER"}`
-3. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`
+3. Importar um CSV e validar resposta com linhas importadas
+4. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
+5. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
+6. Frontend em `http://localhost:5173` deve mostrar badge `PAPER` e gráfico com candles
 
 ## Fora de escopo nesta fase
 

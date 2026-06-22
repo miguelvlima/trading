@@ -3,7 +3,9 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.market_data import router as market_data_router
 from app.api.routes.system import router as system_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -19,4 +21,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(system_router)
+app.include_router(market_data_router)

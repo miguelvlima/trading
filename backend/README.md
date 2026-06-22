@@ -1,4 +1,4 @@
-# Trading Backend (Fase 3)
+# Trading Backend (Fase 4)
 
 ## Requisitos
 
@@ -35,6 +35,9 @@ pytest
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`
 - `GET /market-data/indicators?symbol=AAPL&timeframe=1d`
+- `GET /signals/strategies`
+- `POST /signals/generate`
+- `GET /signals`
 
 ## Importar CSV OHLCV
 

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.market_data import router as market_data_router
+from app.api.routes.signals import router as signals_router
 from app.api.routes.system import router as system_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -30,3 +31,4 @@ app.add_middleware(
 )
 app.include_router(system_router)
 app.include_router(market_data_router)
+app.include_router(signals_router)

@@ -1,6 +1,6 @@
-# App Trading - Fase 3
+# App Trading - Fase 4
 
-Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose, ingestão de dados históricos OHLCV e indicadores técnicos.
+Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose, indicadores técnicos e geração de sinais por estratégia.
 
 ## Stack usada nesta fase
 
@@ -22,7 +22,10 @@ Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via
 - `GET /market-data/bars` consulta candles por símbolo/timeframe
 - `POST /market-data/import-csv` importa CSV OHLCV para PostgreSQL
 - `GET /market-data/indicators` calcula indicadores técnicos
-- Dashboard com gráfico de candles, overlays e painel OHLC no cursor
+- `GET /signals/strategies` lista estratégias disponíveis
+- `POST /signals/generate` gera e persiste sinais por estratégia
+- `GET /signals` lista sinais persistidos
+- Dashboard com gráfico, overlays e painel de sinais explicados
 
 ## Como arrancar
 
@@ -78,7 +81,9 @@ npm run dev -- --host 0.0.0.0 --port 5173
 4. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
 5. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
 6. API em `http://localhost:8000/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
-7. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays e painel OHLC
+7. API em `http://localhost:8000/signals/strategies` deve listar estratégias
+8. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
+9. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
 ## Fora de escopo nesta fase
 

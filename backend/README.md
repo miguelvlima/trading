@@ -29,6 +29,26 @@ python -m app.scripts.create_user --email admin@empresa.com --password "StrongPa
 
 Os endpoints de `market-data`, `signals` e `strategy-combinations` exigem sessão com token Bearer.
 
+## Operação em produção (hardening)
+
+- Não use bootstrap automático de admin no startup.
+- Não mantenha variáveis `BOOTSTRAP_ADMIN_*` definidas em produção.
+- Para criar utilizadores internos, execute apenas o script administrativo manual:
+
+```powershell
+python -m app.scripts.create_user --email user@empresa.com --password "StrongPass123" --display-name "Nome"
+```
+
+### Smoke test rápido pós-deploy
+
+```powershell
+curl https://<backend>.up.railway.app/health
+```
+
+```powershell
+curl -X POST https://<backend>.up.railway.app/auth/login -H "Content-Type: application/json" -d "{\"email\":\"user@empresa.com\",\"password\":\"StrongPass123\"}"
+```
+
 ## Arrancar backend
 
 ```powershell

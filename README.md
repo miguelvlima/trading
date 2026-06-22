@@ -56,6 +56,18 @@ alembic upgrade head
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+Variáveis relevantes no `backend/.env`:
+
+- `CORS_ALLOW_ORIGINS` (ex: `http://localhost:5173,https://trading-kappa-dusky.vercel.app`)
+- `JWT_SECRET_KEY` (obrigatório para assinatura dos tokens)
+
+Criação de utilizador interno (registo público desativado):
+
+```powershell
+cd backend
+.\.venv\Scripts\python -m app.scripts.create_user --email admin@empresa.com --password "StrongPass123" --display-name "Admin"
+```
+
 ### 2.1) Importar CSV OHLCV
 
 CSV esperado com colunas: `timestamp,open,high,low,close,volume`.
@@ -70,8 +82,13 @@ cd backend
 ```powershell
 cd frontend
 npm install
+copy .env.example .env
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
+
+Variáveis relevantes no `frontend/.env`:
+
+- `VITE_API_BASE_URL` (URL pública do backend)
 
 ## Validação manual rápida
 

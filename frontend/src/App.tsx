@@ -74,7 +74,29 @@ type StrategyContribution = {
   timestamp: string;
 };
 
-const API_BASE_URL = "http://localhost:8000";
+type AuthUser = {
+  id: number;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+  created_at: string;
+};
+
+type StrategyCombination = {
+  id: number;
+  owner_user_id: number;
+  owner_email: string;
+  cloned_from_id: number | null;
+  name: string;
+  description: string | null;
+  strategies: string[];
+  is_shared: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
   rsi_mean_reversion: {
     title: "RSI Mean Reversion",
@@ -142,6 +164,15 @@ const formatIndicatorValue = (
 
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ?? "");
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authChecking, setAuthChecking] = useState(false);
+
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>("1d");
@@ -150,6 +181,7 @@ function App() {
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("signals");
   const [filterMode, setFilterMode] = useState<FilterMode>("count");
   const [barLimit, setBarLimit] = useState<number>(500);
+  const [barLimitInput, setBarLimitInput] = useState<string>("500");
   const [startDate, setStartDate] = useState<string>(
     toInputDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)),
   );
@@ -160,13 +192,17 @@ function App() {
   const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
-  const [signalsStartDate, setSignalsStartDate] = useState<string>(startDate);
-  const [signalsEndDate, setSignalsEndDate] = useState<string>(endDate);
+  const [signalsGenerating, setSignalsGenerating] = useState(false);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
   const [signalDirectionFilter, setSignalDirectionFilter] = useState<SignalDirectionFilter>("BOTH");
   const [signalMinStrengthPct, setSignalMinStrengthPct] = useState<number>(0);
   const [consensusThresholdPct, setConsensusThresholdPct] = useState<number>(15);
   const [signalsFetchLimit, setSignalsFetchLimit] = useState<number>(500);
   const [signalsRefreshToken, setSignalsRefreshToken] = useState(0);
+  const [savedCombinations, setSavedCombinations] = useState<StrategyCombination[]>([]);
+  const [newCombinationName, setNewCombinationName] = useState("");
+  const [newCombinationDescription, setNewCombinationDescription] = useState("");
+  const [combinationError, setCombinationError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -180,8 +216,6 @@ function App() {
   const isDateFilterIncomplete = filterMode === "date" && (!startDate || !endDate);
   const isDateRangeInvalid = filterMode === "date" && !isDateFilterIncomplete && startDate > endDate;
   const hasDateFilterError = isDateFilterIncomplete || isDateRangeInvalid;
-  const signalsDateRangeInvalid =
-    signalsStartDate.length > 0 && signalsEndDate.length > 0 && signalsStartDate > signalsEndDate;
 
   const buildMarketQueryParams = (): URLSearchParams => {
     const query = new URLSearchParams({
@@ -197,6 +231,10 @@ function App() {
     }
     return query;
   };
+
+  useEffect(() => {
+    setBarLimitInput(String(barLimit));
+  }, [barLimit]);
 
   const buildSignalGeneratePayload = (strategy: string): Record<string, string | number> => {
     const payload: Record<string, string | number> = {
@@ -214,12 +252,53 @@ function App() {
     return payload;
   };
 
+  const isAuthenticated = Boolean(authToken && currentUser);
+
+  const logout = () => {
+    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    setAuthToken("");
+    setCurrentUser(null);
+    setSavedCombinations([]);
+    setShowAuthPanel(false);
+  };
+
+  const parseApiError = (payload: unknown, fallback: string): string => {
+    if (!payload || typeof payload !== "object") {
+      return fallback;
+    }
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim().length > 0) {
+      return detail;
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+      const first = detail[0];
+      if (first && typeof first === "object") {
+        const msg = (first as { msg?: unknown }).msg;
+        if (typeof msg === "string" && msg.trim().length > 0) {
+          return msg;
+        }
+      }
+      if (typeof first === "string" && first.trim().length > 0) {
+        return first;
+      }
+    }
+    return fallback;
+  };
+
   useEffect(() => {
+    if (!isAuthenticated) {
+      setInstruments([]);
+      setSelectedSymbol("");
+      return;
+    }
+
     const loadInstruments = async () => {
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch(`${API_BASE_URL}/market-data/instruments`);
+        const response = await fetch(`${API_BASE_URL}/market-data/instruments`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
         if (!response.ok) {
           throw new Error("Falha ao carregar instrumentos.");
         }
@@ -239,12 +318,20 @@ function App() {
     };
 
     loadInstruments();
-  }, []);
+  }, [isAuthenticated, authToken]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setAvailableStrategies([]);
+      setSelectedStrategies([]);
+      return;
+    }
+
     const loadStrategies = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/signals/strategies`);
+        const response = await fetch(`${API_BASE_URL}/signals/strategies`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
         if (!response.ok) {
           throw new Error("Falha ao carregar estratégias.");
         }
@@ -260,7 +347,59 @@ function App() {
     };
 
     loadStrategies();
-  }, []);
+  }, [isAuthenticated, authToken]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null);
+      setSavedCombinations([]);
+      setAuthChecking(false);
+      return;
+    }
+
+    const loadMe = async () => {
+      setAuthChecking(true);
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/me`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Sessão inválida.");
+        }
+        const payload = (await response.json()) as AuthUser;
+        setCurrentUser(payload);
+      } catch {
+        setAuthError("Sessão expirada. Volte a iniciar sessão.");
+        logout();
+      } finally {
+        setAuthChecking(false);
+      }
+    };
+
+    loadMe();
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    const loadCombinations = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/strategy-combinations`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar combinações.");
+        }
+        setSavedCombinations((await response.json()) as StrategyCombination[]);
+      } catch {
+        setSavedCombinations([]);
+      }
+    };
+
+    loadCombinations();
+  }, [authToken, isAuthenticated, signalsRefreshToken]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -277,7 +416,9 @@ function App() {
       setError(null);
       try {
         const query = buildMarketQueryParams();
-        const response = await fetch(`${API_BASE_URL}/market-data/bars?${query.toString()}`);
+        const response = await fetch(`${API_BASE_URL}/market-data/bars?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
         if (!response.ok) {
           throw new Error("Falha ao carregar velas.");
         }
@@ -291,7 +432,7 @@ function App() {
     };
 
     loadBars();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError]);
+  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -306,7 +447,9 @@ function App() {
     const loadIndicators = async () => {
       try {
         const query = buildMarketQueryParams();
-        const response = await fetch(`${API_BASE_URL}/market-data/indicators?${query.toString()}`);
+        const response = await fetch(`${API_BASE_URL}/market-data/indicators?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
         if (!response.ok) {
           throw new Error("Falha ao carregar indicadores.");
         }
@@ -318,22 +461,34 @@ function App() {
     };
 
     loadIndicators();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError]);
+  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
 
   useEffect(() => {
-    if (!selectedSymbol || selectedStrategies.length === 0 || hasDateFilterError) {
+    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
       setSignals([]);
+      setSignalsGenerating(false);
+      return;
+    }
+    if (hasDateFilterError) {
+      setSignalsGenerating(false);
       return;
     }
 
-    const generateSignals = async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setSignalsGenerating(true);
+      setSignalsError(null);
       try {
         const responses = await Promise.all(
           selectedStrategies.map((strategy) =>
             fetch(`${API_BASE_URL}/signals/generate`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${authToken}`,
+              },
               body: JSON.stringify(buildSignalGeneratePayload(strategy)),
+              signal: controller.signal,
             }),
           ),
         );
@@ -341,27 +496,39 @@ function App() {
           throw new Error("Falha ao gerar sinais.");
         }
         setSignalsRefreshToken((previous) => previous + 1);
-      } catch {
-        setSignals([]);
+      } catch (generationError) {
+        if (generationError instanceof Error && generationError.name === "AbortError") {
+          return;
+        }
+        setSignalsError("Falha ao gerar sinais.");
       } finally {
+        setSignalsGenerating(false);
       }
-    };
+    }, 650);
 
-    generateSignals();
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, [
+    isAuthenticated,
+    authToken,
     selectedSymbol,
     selectedTimeframe,
     selectedStrategies,
-    barLimit,
     filterMode,
+    barLimit,
     startDate,
     endDate,
     hasDateFilterError,
   ]);
 
   useEffect(() => {
-    if (!selectedSymbol || selectedStrategies.length === 0 || signalsDateRangeInvalid) {
+    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
       setSignals([]);
+      return;
+    }
+    if (signalsGenerating) {
       return;
     }
 
@@ -380,14 +547,10 @@ function App() {
             if (signalDirectionFilter !== "BOTH") {
               query.set("direction", signalDirectionFilter);
             }
-            if (signalsStartDate) {
-              query.set("start", `${signalsStartDate}T00:00:00Z`);
-            }
-            if (signalsEndDate) {
-              query.set("end", `${signalsEndDate}T23:59:59Z`);
-            }
 
-            const response = await fetch(`${API_BASE_URL}/signals?${query.toString()}`);
+            const response = await fetch(`${API_BASE_URL}/signals?${query.toString()}`, {
+              headers: { Authorization: `Bearer ${authToken}` },
+            });
             if (!response.ok) {
               throw new Error("Falha ao carregar sinais.");
             }
@@ -399,8 +562,9 @@ function App() {
           .flat()
           .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         setSignals(merged);
+        setSignalsError(null);
       } catch {
-        setSignals([]);
+        setSignalsError("Falha ao carregar sinais.");
       } finally {
         setSignalsLoading(false);
       }
@@ -408,16 +572,16 @@ function App() {
 
     loadSignals();
   }, [
+    isAuthenticated,
+    authToken,
     selectedSymbol,
     selectedTimeframe,
     selectedStrategies,
     signalDirectionFilter,
     signalMinStrengthPct,
     signalsFetchLimit,
-    signalsStartDate,
-    signalsEndDate,
     signalsRefreshToken,
-    signalsDateRangeInvalid,
+    signalsGenerating,
   ]);
 
   const chartData = useMemo<CandlestickData[]>(() => {
@@ -487,6 +651,82 @@ function App() {
     const confidence = Math.min(1, Math.abs(score));
     return { score, direction, confidence };
   }, [strategyContributions, consensusThresholdPct]);
+
+  const handleAuthSubmit = async () => {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(parseApiError(data, "Falha de autenticação."));
+      }
+
+      const data = (await response.json()) as { access_token: string };
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, data.access_token);
+      setAuthToken(data.access_token);
+      setAuthPassword("");
+      setShowAuthPanel(false);
+    } catch (submitError) {
+      setAuthError(submitError instanceof Error ? submitError.message : "Erro inesperado.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleCreateCombination = async () => {
+    if (!authToken || selectedStrategies.length === 0 || !newCombinationName.trim()) {
+      return;
+    }
+    setCombinationError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/strategy-combinations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          name: newCombinationName.trim(),
+          description: newCombinationDescription.trim() || null,
+          strategies: selectedStrategies,
+          is_shared: true,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error("Falha ao gravar combinação.");
+      }
+      setNewCombinationName("");
+      setNewCombinationDescription("");
+      setSignalsRefreshToken((previous) => previous + 1);
+    } catch (createError) {
+      setCombinationError(createError instanceof Error ? createError.message : "Erro inesperado.");
+    }
+  };
+
+  const handleCloneCombination = async (combinationId: number) => {
+    if (!authToken) {
+      return;
+    }
+    setCombinationError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/strategy-combinations/${combinationId}/clone`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        throw new Error("Falha ao clonar combinação.");
+      }
+      setSignalsRefreshToken((previous) => previous + 1);
+    } catch (cloneError) {
+      setCombinationError(cloneError instanceof Error ? cloneError.message : "Erro inesperado.");
+    }
+  };
 
   useEffect(() => {
     setHoveredOhlc(null);
@@ -617,6 +857,26 @@ function App() {
       <header className="topbar">
         <h1>Painel de Mercado</h1>
         <div className="topbar-actions">
+          {currentUser ? (
+            <>
+              <span className="hint">Utilizador: {currentUser.display_name ?? currentUser.email}</span>
+              <button type="button" className="config-button" onClick={() => setShowAuthPanel(true)}>
+                Conta
+              </button>
+              <button type="button" className="config-button" onClick={logout}>
+                Sair
+              </button>
+            </>
+          ) : authChecking ? (
+            <span className="hint">A validar sessão...</span>
+          ) : (
+            <>
+              <span className="hint">Sem sessão</span>
+              <button type="button" className="config-button" onClick={() => setShowAuthPanel(true)}>
+                Entrar
+              </button>
+            </>
+          )}
           <button
             type="button"
             className={showConfigPanel ? "config-button config-button-active" : "config-button"}
@@ -627,6 +887,55 @@ function App() {
           <span className="badge">PAPER</span>
         </div>
       </header>
+
+      {showAuthPanel && (
+        <div className="auth-overlay" role="presentation">
+          <button
+            type="button"
+            className="auth-overlay-backdrop"
+            aria-label="Fechar acesso de utilizador"
+            onClick={() => setShowAuthPanel(false)}
+          />
+          <section className="auth-modal">
+            <div className="config-panel-header">
+              <div className="config-title-block">
+                <p className="config-kicker">Sessão</p>
+                <h2>Acesso de utilizador</h2>
+              </div>
+              <button
+                type="button"
+                className="config-close-button"
+                onClick={() => setShowAuthPanel(false)}
+              >
+                Fechar
+              </button>
+            </div>
+            <p className="hint config-description">
+              Faça login para gerar sinais, guardar combinações e clonar estratégias partilhadas.
+            </p>
+            <div className="auth-grid">
+              <label className="field">
+                <span>Email</span>
+                <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="auth-actions">
+              <button type="button" className="tab-button" disabled={authLoading} onClick={handleAuthSubmit}>
+                Entrar
+              </button>
+            </div>
+            {authError && <p className="error">{authError}</p>}
+          </section>
+        </div>
+      )}
 
       {showConfigPanel && (
         <div className="config-overlay" role="presentation">
@@ -783,6 +1092,17 @@ function App() {
         </div>
       )}
 
+      {!isAuthenticated ? (
+        <section className="panel auth-gate-panel">
+          <h3>Acesso necessário</h3>
+          <p className="hint">
+            Faça login para aceder ao painel, gerar sinais e utilizar combinações partilhadas.
+          </p>
+          <button type="button" className="tab-button" onClick={() => setShowAuthPanel(true)}>
+            Entrar
+          </button>
+        </section>
+      ) : (
       <section className="panel">
         <div className="panel-header">
           <div
@@ -791,7 +1111,7 @@ function App() {
             }`}
           >
             <label className="field">
-              <span>Filtro</span>
+              <span>Janela</span>
               <select
                 value={filterMode}
                 onChange={(event) => setFilterMode(event.target.value as FilterMode)}
@@ -838,20 +1158,41 @@ function App() {
               <label className="field">
                 <span>Nº velas</span>
                 <input
-                  type="number"
-                  min={10}
-                  max={5000}
-                  step={10}
-                  value={barLimit}
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\d*"
+                  value={barLimitInput}
                   onChange={(event) => {
-                    const parsed = Number(event.target.value);
-                    if (Number.isNaN(parsed)) {
+                    const { value } = event.target;
+                    if (!/^\d*$/.test(value)) {
                       return;
                     }
-                    const normalized = Math.max(10, Math.min(5000, parsed));
-                    setBarLimit(normalized);
+                    setBarLimitInput(value);
                   }}
-                  disabled={loading}
+                  onBlur={() => {
+                    const parsed = Number(barLimitInput);
+                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
+                      setBarLimitInput(String(barLimit));
+                      return;
+                    }
+                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
+                    setBarLimit(normalized);
+                    setBarLimitInput(String(normalized));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    const parsed = Number(barLimitInput);
+                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
+                      setBarLimitInput(String(barLimit));
+                      return;
+                    }
+                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
+                    setBarLimit(normalized);
+                    setBarLimitInput(String(normalized));
+                    (event.target as HTMLInputElement).blur();
+                  }}
                 />
               </label>
             ) : (
@@ -879,6 +1220,10 @@ function App() {
           </div>
         </div>
 
+        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
+        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
+        {!error && loading && <p className="hint">A carregar dados...</p>}
+
         <div className="tabs">
           <button
             type="button"
@@ -897,9 +1242,6 @@ function App() {
         </div>
 
         {error && <p className="error">{error}</p>}
-        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
-        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
-        {!error && loading && <p className="hint">A carregar dados...</p>}
 
         <div className="tab-content">
           <div
@@ -1040,6 +1382,108 @@ function App() {
                 <h3>Sinais da estratégia</h3>
               </div>
 
+              <div className="signals-filter-grid">
+                <label className="field">
+                  <span>Direção</span>
+                  <select
+                    value={signalDirectionFilter}
+                    onChange={(event) =>
+                      setSignalDirectionFilter(event.target.value as SignalDirectionFilter)
+                    }
+                    disabled={loading}
+                  >
+                    <option value="BOTH">Ambos</option>
+                    <option value="BUY">Buy</option>
+                    <option value="SELL">Sell</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Força mínima (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={signalMinStrengthPct}
+                    onChange={(event) => {
+                      const parsed = Number(event.target.value);
+                      if (Number.isNaN(parsed)) {
+                        return;
+                      }
+                      const normalized = Math.max(0, Math.min(100, parsed));
+                      setSignalMinStrengthPct(normalized);
+                    }}
+                    disabled={loading}
+                  />
+                </label>
+              </div>
+
+              {!isAuthenticated && !authChecking && (
+                <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
+              )}
+              {!isAuthenticated && authChecking && <p className="hint">A validar sessão...</p>}
+
+              {isAuthenticated && (
+                <div className="strategy-library">
+                  <h4>Biblioteca partilhada</h4>
+                  <div className="auth-grid">
+                    <label className="field">
+                      <span>Nome da combinação</span>
+                      <input
+                        value={newCombinationName}
+                        onChange={(event) => setNewCombinationName(event.target.value)}
+                        placeholder="Ex.: Trend + Reversal"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Descrição</span>
+                      <input
+                        value={newCombinationDescription}
+                        onChange={(event) => setNewCombinationDescription(event.target.value)}
+                        placeholder="Opcional"
+                      />
+                    </label>
+                  </div>
+                  <div className="auth-actions">
+                    <button type="button" className="tab-button" onClick={handleCreateCombination}>
+                      Guardar combinação atual
+                    </button>
+                  </div>
+                  {combinationError && <p className="error">{combinationError}</p>}
+                  <div className="combination-list">
+                    {savedCombinations.map((item) => (
+                      <article key={item.id} className="combination-row">
+                        <div>
+                          <strong>{item.name}</strong>
+                          <p>
+                            {item.owner_email} | {item.strategies.join(", ")}
+                          </p>
+                        </div>
+                        <div className="auth-actions">
+                          <button
+                            type="button"
+                            className="config-button"
+                            onClick={() => setSelectedStrategies(item.strategies)}
+                          >
+                            Aplicar
+                          </button>
+                          {item.owner_user_id !== currentUser?.id && (
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => handleCloneCombination(item.id)}
+                            >
+                              Clonar
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="strategy-picker">
                 <span className="stats-label">Estratégias ativas (consenso)</span>
                 <div className="strategy-chip-list">
@@ -1089,69 +1533,13 @@ function App() {
                 </div>
               )}
 
-              <div className="signals-filter-grid">
-                <label className="field">
-                  <span>Início</span>
-                  <input
-                    type="date"
-                    value={signalsStartDate}
-                    onChange={(event) => setSignalsStartDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-                <label className="field">
-                  <span>Fim</span>
-                  <input
-                    type="date"
-                    value={signalsEndDate}
-                    onChange={(event) => setSignalsEndDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-                <label className="field">
-                  <span>Direção</span>
-                  <select
-                    value={signalDirectionFilter}
-                    onChange={(event) =>
-                      setSignalDirectionFilter(event.target.value as SignalDirectionFilter)
-                    }
-                    disabled={loading}
-                  >
-                    <option value="BOTH">Ambos</option>
-                    <option value="BUY">Buy</option>
-                    <option value="SELL">Sell</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Força mínima (%)</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={signalMinStrengthPct}
-                    onChange={(event) => {
-                      const parsed = Number(event.target.value);
-                      if (Number.isNaN(parsed)) {
-                        return;
-                      }
-                      const normalized = Math.max(0, Math.min(100, parsed));
-                      setSignalMinStrengthPct(normalized);
-                    }}
-                    disabled={loading}
-                  />
-                </label>
-              </div>
-
-              {signalsDateRangeInvalid && (
-                <p className="hint">No tab Sinais, a data fim tem de ser igual ou posterior à data início.</p>
-              )}
               <p className="hint">Ordem: mais recente {"->"} mais antigo.</p>
-              {signalsLoading && <p className="hint">A gerar sinais...</p>}
-              {!signalsLoading && signals.length === 0 && (
+              {(signalsGenerating || signalsLoading) && <p className="hint">A atualizar sinais...</p>}
+              {signalsError && <p className="error">{signalsError}</p>}
+              {!signalsGenerating && !signalsLoading && signals.length === 0 && (
                 <p className="hint">Sem sinais para os filtros atuais.</p>
               )}
-              {!signalsLoading && strategyContributions.length > 0 && (
+              {strategyContributions.length > 0 && (
                 <div className="contributions-list">
                   {strategyContributions.map((item) => {
                     const info = STRATEGY_SUMMARY[item.strategy];
@@ -1167,7 +1555,7 @@ function App() {
                   })}
                 </div>
               )}
-              {!signalsLoading && signals.length > 0 && (
+              {signals.length > 0 && (
                 <div className="signals-list">
                   {signals.map((signal) => (
                     <article key={signal.id} className="signal-row">
@@ -1191,6 +1579,7 @@ function App() {
 
         </div>
       </section>
+      )}
     </main>
   );
 }

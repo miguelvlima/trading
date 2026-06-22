@@ -1,16 +1,11 @@
 alembic>=1.16.0
 fastapi>=0.116.0
 python-jose[cryptography]>=3.5.0
-passlib[bcrypt]>=1.7.4
 pydantic-settings>=2.10.0
-pandas>=2.3.0
 email-validator>=2.2.0
+pandas>=2.3.0
 psycopg[binary]>=3.2.0
 sqlalchemy>=2.0.0
 structlog>=25.4.0
 uvicorn[standard]>=0.35.0
 yfinance>=1.4.0
-
-[dev]
-httpx>=0.28.0
-pytest>=8.4.0

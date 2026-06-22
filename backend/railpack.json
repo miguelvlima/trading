@@ -1,0 +1,4 @@
+{
+  "$schema": "https://railpack.com/schema.json",
+  "startCommand": "python -m alembic upgrade head && python -m app.scripts.seed_demo_data && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+}

@@ -14,6 +14,21 @@ pip install -e .[dev]
 copy .env.example .env
 ```
 
+## Segurança mínima (recomendado para partilha)
+
+No `backend/.env`, define:
+
+- `CORS_ALLOW_ORIGINS=http://localhost:5173,https://<teu-frontend>.vercel.app`
+- `JWT_SECRET_KEY=<chave-forte>`
+
+Nesta fase o registo público está desativado. Crie utilizadores internos via script:
+
+```powershell
+python -m app.scripts.create_user --email admin@empresa.com --password "StrongPass123" --display-name "Admin"
+```
+
+Os endpoints de `market-data`, `signals` e `strategy-combinations` exigem sessão com token Bearer.
+
 ## Arrancar backend
 
 ```powershell
@@ -38,6 +53,9 @@ pytest
 - `GET /signals/strategies`
 - `POST /signals/generate`
 - `GET /signals`
+- `POST /auth/login`
+- `GET /auth/me`
+- `GET/POST/PUT /strategy-combinations`
 
 ## Importar CSV OHLCV
 

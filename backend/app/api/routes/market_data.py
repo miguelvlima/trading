@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies.auth import get_current_user
 from app.db.dependencies import get_db_session
-from app.db.models import Instrument, MarketBar
+from app.db.models import Instrument, MarketBar, User
 from app.schemas.market_data import (
     CsvImportRequest,
     CsvImportResponse,
@@ -30,7 +31,10 @@ router = APIRouter(prefix="/market-data", tags=["market-data"])
 
 
 @router.get("/instruments", response_model=list[InstrumentResponse])
-def list_instruments(db: Session = Depends(get_db_session)) -> list[InstrumentResponse]:
+def list_instruments(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> list[InstrumentResponse]:
     instruments = db.execute(select(Instrument).order_by(Instrument.symbol.asc())).scalars().all()
     return [InstrumentResponse.model_validate(item, from_attributes=True) for item in instruments]
 
@@ -42,6 +46,7 @@ def list_market_bars(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    _: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> list[MarketBarResponse]:
     instrument = db.execute(
@@ -70,6 +75,7 @@ def get_indicators(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    _: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> IndicatorResponse:
     instrument = db.execute(
@@ -135,6 +141,7 @@ def get_indicators(
 )
 def import_market_data_csv(
     payload: CsvImportRequest,
+    _: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> CsvImportResponse:
     try:

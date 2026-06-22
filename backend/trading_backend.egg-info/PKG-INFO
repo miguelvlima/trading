@@ -6,8 +6,11 @@ Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: alembic>=1.16.0
 Requires-Dist: fastapi>=0.116.0
+Requires-Dist: python-jose[cryptography]>=3.5.0
+Requires-Dist: passlib[bcrypt]>=1.7.4
 Requires-Dist: pydantic-settings>=2.10.0
 Requires-Dist: pandas>=2.3.0
+Requires-Dist: email-validator>=2.2.0
 Requires-Dist: psycopg[binary]>=3.2.0
 Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: structlog>=25.4.0
@@ -17,7 +20,7 @@ Provides-Extra: dev
 Requires-Dist: httpx>=0.28.0; extra == "dev"
 Requires-Dist: pytest>=8.4.0; extra == "dev"
 
-# Trading Backend (Fase 3)
+# Trading Backend (Fase 4)
 
 ## Requisitos
 
@@ -32,6 +35,17 @@ python -m venv .venv
 pip install -e .[dev]
 copy .env.example .env
 ```
+
+## Segurança mínima (recomendado para partilha)
+
+No `backend/.env`, define:
+
+- `CORS_ALLOW_ORIGINS=http://localhost:5173,https://<teu-frontend>.vercel.app`
+- `WRITE_API_KEY=<chave-forte>`
+
+Os endpoints de escrita (`POST /signals/generate` e `POST /market-data/import-csv`) exigem o header:
+
+- `X-API-Key: <WRITE_API_KEY>`
 
 ## Arrancar backend
 
@@ -54,6 +68,9 @@ pytest
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`
 - `GET /market-data/indicators?symbol=AAPL&timeframe=1d`
+- `GET /signals/strategies`
+- `POST /signals/generate`
+- `GET /signals`
 
 ## Importar CSV OHLCV
 

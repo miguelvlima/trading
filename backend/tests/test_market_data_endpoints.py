@@ -7,9 +7,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.dependencies.auth import get_current_user
 from app.db.base import Base
 from app.db.dependencies import get_db_session
-from app.db.models import Instrument, MarketBar
+from app.db.models import Instrument, MarketBar, User
 from app.main import app
 from app.services.csv_importer import CsvImportResult
 
@@ -31,6 +32,9 @@ def test_list_instruments_and_bars(tmp_path: Path) -> None:
             session.close()
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
 
     with test_session_factory() as session:
         instrument = Instrument(symbol="AAPL", name="Apple", exchange="NASDAQ", currency="USD")
@@ -84,6 +88,9 @@ def test_import_csv_endpoint_uses_import_service(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(market_data_route, "import_ohlcv_csv", fake_importer)
     app.dependency_overrides[get_db_session] = override_get_db_session
 
+    user = User(id=1, email="user@example.com", password_hash="hash")
+    app.dependency_overrides[get_current_user] = lambda: user
+
     client = TestClient(app)
     response = client.post(
         "/market-data/import-csv",
@@ -107,6 +114,9 @@ def test_get_indicators_endpoint_returns_rows(tmp_path: Path) -> None:
             session.close()
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
 
     with test_session_factory() as session:
         instrument = Instrument(symbol="AAPL", name="Apple", exchange="NASDAQ", currency="USD")
@@ -164,6 +174,9 @@ def test_get_indicators_endpoint_respects_date_range(tmp_path: Path) -> None:
             session.close()
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
 
     with test_session_factory() as session:
         instrument = Instrument(symbol="MSFT", name="Microsoft", exchange="NASDAQ", currency="USD")

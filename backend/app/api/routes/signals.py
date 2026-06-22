@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies.auth import get_current_user
 from app.db.dependencies import get_db_session
-from app.db.models import Instrument, MarketBar, Signal
+from app.db.models import Instrument, MarketBar, Signal, User
 from app.schemas.signals import SignalGenerateRequest, SignalResponse, SignalsGenerateResponse
 from app.services.strategy_engine import BarInput, get_available_strategies, run_strategy
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 
 
 @router.get("/strategies", response_model=list[str])
-def list_strategies() -> list[str]:
+def list_strategies(_: User = Depends(get_current_user)) -> list[str]:
     return get_available_strategies()
 
 
@@ -30,8 +31,9 @@ def list_signals(
     min_strength: float = Query(default=0.0, ge=0.0, le=1.0),
     limit: int = Query(default=200, ge=1, le=2000),
     db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
 ) -> list[SignalResponse]:
-    query = select(Signal)
+    query = select(Signal).where(Signal.user_id == current_user.id)
     if symbol:
         query = query.where(Signal.symbol == symbol.upper().strip())
     if timeframe:
@@ -71,6 +73,7 @@ def list_signals(
 )
 def generate_signals(
     payload: SignalGenerateRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> SignalsGenerateResponse:
     symbol = payload.symbol.upper().strip()
@@ -115,6 +118,7 @@ def generate_signals(
 
     db.execute(
         delete(Signal).where(
+            Signal.user_id == current_user.id,
             Signal.symbol == symbol,
             Signal.timeframe == payload.timeframe,
             Signal.strategy == payload.strategy,
@@ -124,6 +128,7 @@ def generate_signals(
     inserted_signals: list[Signal] = []
     for item in generated:
         model = Signal(
+            user_id=current_user.id,
             instrument_id=instrument.id,
             symbol=symbol,
             timeframe=payload.timeframe,

@@ -1,14 +1,16 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.dependencies.auth import get_current_user
 from app.db.base import Base
 from app.db.dependencies import get_db_session
-from app.db.models import Instrument, MarketBar
+from app.db.models import Instrument, MarketBar, User
 from app.main import app
 
 
@@ -31,6 +33,11 @@ def test_generate_and_list_signals_endpoints(tmp_path: Path) -> None:
     app.dependency_overrides[get_db_session] = override_get_db_session
 
     with test_session_factory() as session:
+        user = User(email="user@example.com", password_hash="hash")
+        session.add(user)
+        session.flush()
+        user_id = user.id
+
         instrument = Instrument(symbol="AAPL", name="Apple", exchange="NASDAQ", currency="USD")
         session.add(instrument)
         session.flush()
@@ -53,6 +60,8 @@ def test_generate_and_list_signals_endpoints(tmp_path: Path) -> None:
                 )
             )
         session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id, is_active=True)
 
     client = TestClient(app)
     generate_response = client.post(

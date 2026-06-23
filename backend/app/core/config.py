@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-prod"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60 * 8
-    dev_default_user_email: str = "dev@local.test"
+    dev_default_user_email: str = "dev@tradingapp.dev"
     dev_default_user_password: str = "DevPass123!"
     dev_default_user_display_name: str = "Dev User"
     dev_default_user_is_admin: bool = True

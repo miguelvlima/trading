@@ -30,7 +30,7 @@ No arranque local via script central (`npm run dev:all` na raiz), o backend exec
 - `python -m app.scripts.bootstrap_dev_user`
 
 Isto cria automaticamente (se não existir) um user local:
-- email: `dev@local.test`
+- email: `dev@tradingapp.dev`
 - password: `DevPass123!`
 
 ## Segurança mínima (recomendado para partilha)

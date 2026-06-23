@@ -61,7 +61,7 @@ npm run dev:all
 ```
 
 O arranque local automático também cria (se não existir) um utilizador dev no backend:
-- email: `dev@local.test`
+- email: `dev@tradingapp.dev`
 - password: `DevPass123!`
 
 Estas credenciais são apenas para `ENV=dev` e podem ser alteradas em `backend/.env` via:

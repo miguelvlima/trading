@@ -42,7 +42,7 @@ First local run for a new developer:
    - `npm install`
    - `npm run dev:all`
 3. Login with the default local user created automatically on backend startup:
-   - email: `dev@local.test`
+   - email: `dev@tradingapp.dev`
    - password: `DevPass123!`
 4. If needed, change default dev credentials in `backend/.env` using:
    - `DEV_DEFAULT_USER_EMAIL`

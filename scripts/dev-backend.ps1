@@ -17,4 +17,5 @@ if ((-not (Test-Path ".env")) -and (Test-Path ".env.example")) {
 }
 
 & $pythonExe -m alembic upgrade head
+& $pythonExe -m app.scripts.bootstrap_dev_user
 & $pythonExe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

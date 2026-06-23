@@ -25,6 +25,14 @@ pip install -e .[dev]
 copy .env.example .env
 ```
 
+No arranque local via script central (`npm run dev:all` na raiz), o backend executa:
+- `alembic upgrade head`
+- `python -m app.scripts.bootstrap_dev_user`
+
+Isto cria automaticamente (se não existir) um user local:
+- email: `dev@tradingapp.dev`
+- password: `DevPass123!`
+
 ## Segurança mínima (recomendado para partilha)
 
 No `backend/.env`, define:

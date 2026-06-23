@@ -61,6 +61,16 @@ npm install
 npm run dev:all
 ```
 
+O arranque local automático também cria (se não existir) um utilizador dev no backend:
+- email: `dev@tradingapp.dev`
+- password: `DevPass123!`
+
+Estas credenciais são apenas para `ENV=dev` e podem ser alteradas em `backend/.env` via:
+- `DEV_DEFAULT_USER_EMAIL`
+- `DEV_DEFAULT_USER_PASSWORD`
+- `DEV_DEFAULT_USER_DISPLAY_NAME`
+- `DEV_DEFAULT_USER_IS_ADMIN`
+
 ### 1) PostgreSQL
 
 ```powershell
@@ -90,6 +100,8 @@ Criação de utilizador interno (registo público desativado):
 cd backend
 .\.venv\Scripts\python -m app.scripts.create_user --email admin@empresa.com --password "StrongPass123" --display-name "Admin"
 ```
+
+Nota: em desenvolvimento local via `npm run dev:all`, o bootstrap automático já cria o user dev default.
 
 ### 2.1) Importar CSV OHLCV
 

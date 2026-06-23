@@ -2,6 +2,28 @@
 
 Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose, indicadores técnicos e geração de sinais por estratégia.
 
+## Desenvolvimento em paralelo (prompt-first)
+
+Guia operacional completo:
+- `docs/development-environments-prompt-first.md`
+
+Convenção de branches:
+- `main`: produção
+- `develop`: integração/staging
+- `feature/<tema>`: trabalho por tarefa
+- `hotfix/<tema>`: correções urgentes de produção
+
+Ambientes e templates:
+- Backend local: `backend/.env.example`
+- Backend staging: `backend/.env.staging.example`
+- Backend production: `backend/.env.production.example`
+- Frontend local: `frontend/.env.example`
+- Frontend staging: `frontend/.env.staging.example`
+- Frontend production: `frontend/.env.production.example`
+
+CI:
+- Workflow em `.github/workflows/ci.yml` (backend pytest + frontend build em `develop` e `main`).
+
 ## Stack usada nesta fase
 
 - Backend: FastAPI, Uvicorn, Pydantic, SQLAlchemy, Alembic, structlog

@@ -5,6 +5,17 @@
 - Python 3.11+
 - PostgreSQL local (via Docker Compose na raiz do projeto)
 
+## Ambientes e workflow da equipa
+
+Consulte o guia completo para trabalho em paralelo (prompt-first):
+- `../docs/development-environments-prompt-first.md`
+- Inclui runbook de deploy para staging e production com smoke tests.
+
+Templates de ambiente:
+- local: `backend/.env.example`
+- staging: `backend/.env.staging.example`
+- production: `backend/.env.production.example`
+
 ## Setup rápido
 
 ```powershell
@@ -48,6 +59,16 @@ curl https://<backend>.up.railway.app/health
 ```powershell
 curl -X POST https://<backend>.up.railway.app/auth/login -H "Content-Type: application/json" -d "{\"email\":\"user@empresa.com\",\"password\":\"StrongPass123\"}"
 ```
+
+### Guardrails de migrations (trabalho paralelo)
+
+Antes de abrir PR com alterações de schema:
+
+```powershell
+alembic heads
+```
+
+O resultado deve indicar apenas um head ativo.
 
 ## Arrancar backend
 

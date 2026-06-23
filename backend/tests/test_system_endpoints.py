@@ -15,3 +15,9 @@ def test_mode_endpoint() -> None:
     response = client.get("/mode")
     assert response.status_code == 200
     assert response.json() == {"mode": "PAPER"}
+
+
+def test_version_endpoint() -> None:
+    response = client.get("/version")
+    assert response.status_code == 200
+    assert response.json() == {"version": "0.1.0"}

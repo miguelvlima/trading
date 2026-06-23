@@ -40,6 +40,7 @@ CI:
 
 - `GET /health` devolve estado da API
 - `GET /mode` devolve modo atual (`PAPER`)
+- `GET /version` devolve a versão da API
 - `GET /market-data/instruments` lista instrumentos
 - `GET /market-data/bars` consulta candles por símbolo/timeframe
 - `POST /market-data/import-csv` importa CSV OHLCV para PostgreSQL
@@ -128,13 +129,14 @@ Variáveis relevantes no `frontend/.env`:
 
 1. API em `http://localhost:8000/health` deve devolver `{"status":"ok"}`
 2. API em `http://localhost:8000/mode` deve devolver `{"mode":"PAPER"}`
-3. Importar um CSV e validar resposta com linhas importadas
-4. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
-5. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
-6. API em `http://localhost:8000/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
-7. API em `http://localhost:8000/signals/strategies` deve listar estratégias
-8. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
-9. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
+3. API em `http://localhost:8000/version` deve devolver `{"version":"0.1.0"}`
+4. Importar um CSV e validar resposta com linhas importadas
+5. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
+6. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
+7. API em `http://localhost:8000/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
+8. API em `http://localhost:8000/signals/strategies` deve listar estratégias
+9. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
+10. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
 ## Fora de escopo nesta fase
 

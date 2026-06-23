@@ -95,6 +95,7 @@ pytest
 
 - `GET /health` -> `{"status":"ok"}`
 - `GET /mode` -> `{"mode":"PAPER"}`
+- `GET /version` -> `{"version":"0.1.0"}`
 - `GET /market-data/instruments`
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`

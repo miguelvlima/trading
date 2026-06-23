@@ -18,6 +18,38 @@ This document is the operational source of truth.
 
 Critical rule: local never points to staging or production DB.
 
+## New developer onboarding (copy/paste)
+
+Use this exact message with your teammate:
+
+```text
+Nuno, here is the repository: <GITHUB_REPO_URL>.
+
+For every task, ask your AI engine to:
+1) checkout develop and create feature/<topic> from it,
+2) implement only the requested scope,
+3) run backend tests and frontend build,
+4) if schema changed, validate alembic heads (single head) and run alembic upgrade head,
+5) commit and push your feature branch,
+6) open PR to develop with test evidence.
+
+Never push directly to main or develop.
+```
+
+First local run for a new developer:
+1. Clone repository.
+2. Run from repo root:
+   - `npm install`
+   - `npm run dev:all`
+3. Login with the default local user created automatically on backend startup:
+   - email: `dev@local.test`
+   - password: `DevPass123!`
+4. If needed, change default dev credentials in `backend/.env` using:
+   - `DEV_DEFAULT_USER_EMAIL`
+   - `DEV_DEFAULT_USER_PASSWORD`
+   - `DEV_DEFAULT_USER_DISPLAY_NAME`
+   - `DEV_DEFAULT_USER_IS_ADMIN`
+
 ## First steps (do this now)
 
 1. Create persistent integration branch:

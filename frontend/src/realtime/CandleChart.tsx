@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import {
   type CandlestickData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type UTCTimestamp,
   CandlestickSeries,
   ColorType,
   createChart,
+  LineStyle,
 } from "lightweight-charts";
 
 import type { Bar, Quote } from "./api";
@@ -40,6 +42,7 @@ export function CandleChart({ bars, liveQuote }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const priceLineRef = useRef<IPriceLine | null>(null);
 
   // Create the chart once, on mount. Resize is handled by a ResizeObserver and
   // everything is torn down on unmount to avoid leaks.
@@ -88,6 +91,7 @@ export function CandleChart({ bars, liveQuote }: CandleChartProps) {
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      priceLineRef.current = null;
     };
   }, []);
 
@@ -138,6 +142,26 @@ export function CandleChart({ bars, liveQuote }: CandleChartProps) {
       return;
     }
     try {
+      const livePrice = Number(liveQuote.close);
+
+      // Always mark the current live price with a horizontal line. This is the
+      // "live" cue that works on every timeframe, even when the daily quote is
+      // older than the last intraday bar and the candle update below is skipped.
+      if (Number.isFinite(livePrice)) {
+        if (priceLineRef.current) {
+          priceLineRef.current.applyOptions({ price: livePrice });
+        } else {
+          priceLineRef.current = series.createPriceLine({
+            price: livePrice,
+            color: "#38bdf8",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: "ao vivo",
+          });
+        }
+      }
+
       const liveTime = isoToUtcTimestamp(liveQuote.timestamp);
       const lastBar = bars[bars.length - 1];
       if (lastBar && Number(liveTime) < Number(isoToUtcTimestamp(lastBar.timestamp))) {

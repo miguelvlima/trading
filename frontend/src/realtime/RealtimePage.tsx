@@ -15,7 +15,7 @@ type RealtimePageProps = {
 
 const DEFAULT_SYMBOL = (import.meta.env.VITE_REALTIME_DEFAULT_SYMBOL as string | undefined) ?? "AAPL";
 const DEFAULT_TIMEFRAME =
-  (import.meta.env.VITE_REALTIME_DEFAULT_TIMEFRAME as string | undefined) ?? "1d";
+  (import.meta.env.VITE_REALTIME_DEFAULT_TIMEFRAME as string | undefined) ?? "5m";
 const BARS_LIMIT = 300;
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 
@@ -25,6 +25,10 @@ function formatSecondsAgo(lastUpdatedMs: number | null, nowMs: number): string {
   }
   const seconds = Math.max(0, Math.round((nowMs - lastUpdatedMs) / 1000));
   return `há ${seconds}s`;
+}
+
+function formatPrice(value: number): string {
+  return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function RealtimePage(props: RealtimePageProps) {
@@ -69,6 +73,13 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
   const sessionExpired = [barsError, quoteError, healthError].some((message) =>
     message?.toLowerCase().includes("sessão expirada"),
   );
+
+  // Live price + change since the session open (derived from the quote alone).
+  const livePrice = quote ? Number(quote.close) : null;
+  const dayOpen = quote ? Number(quote.open) : null;
+  const change = livePrice !== null && dayOpen !== null ? livePrice - dayOpen : null;
+  const changePct = change !== null && dayOpen ? (change / dayOpen) * 100 : null;
+  const changeDir = change === null || change === 0 ? "flat" : change > 0 ? "up" : "down";
 
   const applySymbol = () => {
     const next = symbolInput.trim().toUpperCase();
@@ -132,15 +143,34 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
         </div>
 
         <div className="realtime-live-price">
-          <span className="realtime-live-label">Último preço</span>
-          <span className="realtime-live-value">
-            {quote ? Number(quote.close).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "—"}
-          </span>
-          {quote && !quote.is_final && (
-            <span className="realtime-live-tag" title="Barra do período ainda em formação">
-              em formação
+          <span className="realtime-live-label">Último preço · {symbol}</span>
+          <div className="realtime-live-row">
+            <span className="realtime-live-value">
+              {livePrice !== null ? formatPrice(livePrice) : "—"}
             </span>
-          )}
+            {change !== null && changePct !== null && (
+              <span
+                className={`realtime-live-change realtime-live-change-${changeDir}`}
+                title="Variação desde a abertura da sessão"
+              >
+                {change >= 0 ? "▲" : "▼"} {change >= 0 ? "+" : ""}
+                {formatPrice(change)} ({changePct >= 0 ? "+" : ""}
+                {changePct.toFixed(2)}%)
+              </span>
+            )}
+          </div>
+          <span className="realtime-live-meta">
+            {quote && !quote.is_final && (
+              <span className="realtime-live-tag" title="Barra do período ainda em formação">
+                em formação
+              </span>
+            )}
+            {quote && (
+              <span>
+                máx {formatPrice(Number(quote.high))} · mín {formatPrice(Number(quote.low))}
+              </span>
+            )}
+          </span>
           <span className="realtime-live-updated">
             atualizado {formatSecondsAgo(lastUpdatedMs, nowMs)}
           </span>

@@ -59,15 +59,48 @@
   color: #8a96ab;
 }
 
+.realtime-live-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .realtime-live-value {
-  font-size: 1.6rem;
+  font-size: 1.7rem;
   font-weight: 700;
   color: #e6ecf5;
   font-variant-numeric: tabular-nums;
 }
 
+.realtime-live-change {
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.realtime-live-change-up {
+  color: #16a34a;
+}
+
+.realtime-live-change-down {
+  color: #dc2626;
+}
+
+.realtime-live-change-flat {
+  color: #8a96ab;
+}
+
+.realtime-live-meta {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
 .realtime-live-tag {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   color: #d97706;
 }
 

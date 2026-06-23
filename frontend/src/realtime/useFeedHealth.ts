@@ -13,6 +13,8 @@ type UseFeedHealthResult = {
 export function useFeedHealth(
   baseUrl: string,
   token: string,
+  symbol: string,
+  timeframe: string,
   intervalMs = 15000,
 ): UseFeedHealthResult {
   const [health, setHealth] = useState<FeedHealth | null>(null);
@@ -33,7 +35,7 @@ export function useFeedHealth(
         return;
       }
       try {
-        const next = await fetchHealth(baseUrl, token);
+        const next = await fetchHealth(baseUrl, token, symbol, timeframe);
         if (!cancelled) {
           setHealth(next);
           setError(null);
@@ -56,7 +58,7 @@ export function useFeedHealth(
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [baseUrl, token, intervalMs]);
+  }, [baseUrl, token, symbol, timeframe, intervalMs]);
 
   return { health, loading, error };
 }

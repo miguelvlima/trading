@@ -16,6 +16,8 @@ TIMEFRAME_DELTAS: dict[str, timedelta] = {
     "60m": timedelta(hours=1),
     "1h": timedelta(hours=1),
     "90m": timedelta(minutes=90),
+    "2h": timedelta(hours=2),
+    "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
     "5d": timedelta(days=5),
     "1wk": timedelta(weeks=1),
@@ -29,6 +31,12 @@ def timeframe_delta(timeframe: str) -> timedelta:
     if delta is None:
         raise ValueError(f"Unsupported timeframe: {timeframe!r}")
     return delta
+
+
+def timeframe_seconds(timeframe: str) -> float | None:
+    """Bar interval in seconds, or None for an unknown timeframe."""
+    delta = TIMEFRAME_DELTAS.get(timeframe.strip().lower())
+    return delta.total_seconds() if delta is not None else None
 
 
 def is_period_closed(timestamp: datetime, timeframe: str, *, now: datetime) -> bool:

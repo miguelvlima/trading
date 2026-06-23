@@ -11,7 +11,7 @@ from app.db.models import User
 from app.schemas.realtime_data import RealtimeHealthResponse, RealtimeQuoteResponse
 from app.services.data_feed.providers import build_provider
 from app.services.data_feed.service import DataFeedService, normalize_symbol
-from app.services.data_feed.types import BarQuote, MarketDataProvider
+from app.services.data_feed.types import BarQuote, MarketDataProvider, timeframe_seconds
 
 logger = structlog.get_logger(__name__)
 
@@ -44,15 +44,30 @@ def _quote_response(quote: BarQuote) -> RealtimeQuoteResponse:
 
 @router.get("/health", response_model=RealtimeHealthResponse)
 def get_feed_health(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    timeframe: str | None = Query(default=None, min_length=1, max_length=16),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> RealtimeHealthResponse:
+    # Default to the configured tracked symbols/timeframe, but let the UI ask
+    # about exactly what it is showing so the badge matches the chart.
+    target_timeframe = timeframe or settings.realtime_feed_timeframe
+    symbols = [symbol] if symbol else settings.realtime_feed_symbol_list
+
+    # Staleness must scale with the timeframe: a 1d feed is naturally a day
+    # "behind", so a flat 180s threshold would always read stale. We allow up to
+    # 3 bar intervals (but never tighter than the configured minimum).
+    interval_seconds = timeframe_seconds(target_timeframe)
+    stale_after = settings.realtime_feed_stale_after_seconds
+    if interval_seconds is not None:
+        stale_after = max(stale_after, int(3 * interval_seconds))
+
     service = DataFeedService(db, provider_name=settings.realtime_feed_provider)
     health = service.get_health(
-        settings.realtime_feed_symbol_list,
-        settings.realtime_feed_timeframe,
-        stale_after_seconds=settings.realtime_feed_stale_after_seconds,
+        symbols,
+        target_timeframe,
+        stale_after_seconds=stale_after,
     )
     return RealtimeHealthResponse(
         provider=health.provider,

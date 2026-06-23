@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { CandleChart } from "./CandleChart";
 import { FeedStatusBadge } from "./FeedStatusBadge";
@@ -16,7 +16,15 @@ const DEFAULT_SYMBOL = (import.meta.env.VITE_REALTIME_DEFAULT_SYMBOL as string |
 const DEFAULT_TIMEFRAME =
   (import.meta.env.VITE_REALTIME_DEFAULT_TIMEFRAME as string | undefined) ?? "1d";
 const BARS_LIMIT = 300;
-const TIMEFRAMES = ["1d", "1h", "30m", "15m", "5m", "1m"] as const;
+const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
+
+function formatSecondsAgo(lastUpdatedMs: number | null, nowMs: number): string {
+  if (lastUpdatedMs === null) {
+    return "—";
+  }
+  const seconds = Math.max(0, Math.round((nowMs - lastUpdatedMs) / 1000));
+  return `há ${seconds}s`;
+}
 
 export function RealtimePage({ apiBaseUrl, authToken }: RealtimePageProps) {
   const [symbolInput, setSymbolInput] = useState<string>(DEFAULT_SYMBOL);
@@ -30,11 +38,24 @@ export function RealtimePage({ apiBaseUrl, authToken }: RealtimePageProps) {
     timeframe,
     BARS_LIMIT,
   );
-  const { quote, error: quoteError } = useLiveQuote(apiBaseUrl, authToken, symbol);
+  const { quote, error: quoteError, lastUpdatedMs } = useLiveQuote(
+    apiBaseUrl,
+    authToken,
+    symbol,
+  );
   const { health, loading: healthLoading, error: healthError } = useFeedHealth(
     apiBaseUrl,
     authToken,
+    symbol,
+    timeframe,
   );
+
+  // 1s tick so the "atualizado há Xs" label counts up between polls.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const sessionExpired = [barsError, quoteError, healthError].some((message) =>
     message?.toLowerCase().includes("sessão expirada"),
@@ -111,6 +132,9 @@ export function RealtimePage({ apiBaseUrl, authToken }: RealtimePageProps) {
               em formação
             </span>
           )}
+          <span className="realtime-live-updated">
+            atualizado {formatSecondsAgo(lastUpdatedMs, nowMs)}
+          </span>
         </div>
       </div>
 

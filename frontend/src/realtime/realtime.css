@@ -71,6 +71,11 @@
   color: #d97706;
 }
 
+.realtime-live-updated {
+  font-size: 0.72rem;
+  color: #8a96ab;
+}
+
 .realtime-chart {
   width: 100%;
   min-height: 420px;

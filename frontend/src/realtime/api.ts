@@ -76,6 +76,19 @@ export function fetchQuote(baseUrl: string, token: string, symbol: string): Prom
   return getJson<Quote>(baseUrl, token, `/realtime/quote?${query.toString()}`);
 }
 
-export function fetchHealth(baseUrl: string, token: string): Promise<FeedHealth> {
-  return getJson<FeedHealth>(baseUrl, token, "/realtime/health");
+export function fetchHealth(
+  baseUrl: string,
+  token: string,
+  symbol?: string,
+  timeframe?: string,
+): Promise<FeedHealth> {
+  const query = new URLSearchParams();
+  if (symbol) {
+    query.set("symbol", symbol);
+  }
+  if (timeframe) {
+    query.set("timeframe", timeframe);
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return getJson<FeedHealth>(baseUrl, token, `/realtime/health${suffix}`);
 }

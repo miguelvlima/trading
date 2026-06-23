@@ -39,33 +39,39 @@ def _handle_stop(signum: int, _frame: FrameType | None) -> None:
 def _poll_once(
     provider,
     symbols: list[str],
-    timeframe: str,
+    timeframes: list[str],
     history_limit: int,
 ) -> None:
     for symbol in symbols:
-        if _stop_event.is_set():
-            return
-        session = SessionLocal()
-        service = DataFeedService(session, provider_name=provider.name)
-        try:
-            quotes = provider.fetch_recent_bars(symbol, timeframe, history_limit)
-            if not quotes:
-                logger.info("realtime_feed_no_data", symbol=symbol, timeframe=timeframe)
-                continue
-            result = service.ingest_bars(symbol, timeframe, quotes)
-            logger.info(
-                "realtime_feed_symbol_ingested",
-                symbol=result.symbol,
-                timeframe=result.timeframe,
-                inserted=result.inserted,
-                updated=result.updated,
-            )
-        except Exception as exc:  # noqa: BLE001 - keep the loop alive on per-symbol errors
-            session.rollback()
-            service.record_error(f"{symbol}: {exc}")
-            logger.error("realtime_feed_symbol_error", symbol=symbol, error=str(exc))
-        finally:
-            session.close()
+        for timeframe in timeframes:
+            if _stop_event.is_set():
+                return
+            session = SessionLocal()
+            service = DataFeedService(session, provider_name=provider.name)
+            try:
+                quotes = provider.fetch_recent_bars(symbol, timeframe, history_limit)
+                if not quotes:
+                    logger.info("realtime_feed_no_data", symbol=symbol, timeframe=timeframe)
+                    continue
+                result = service.ingest_bars(symbol, timeframe, quotes)
+                logger.info(
+                    "realtime_feed_symbol_ingested",
+                    symbol=result.symbol,
+                    timeframe=result.timeframe,
+                    inserted=result.inserted,
+                    updated=result.updated,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive on per-symbol errors
+                session.rollback()
+                service.record_error(f"{symbol} {timeframe}: {exc}")
+                logger.error(
+                    "realtime_feed_symbol_error",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    error=str(exc),
+                )
+            finally:
+                session.close()
 
 
 def main() -> None:
@@ -73,12 +79,15 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     symbols = settings.realtime_feed_symbol_list
-    timeframe = settings.realtime_feed_timeframe
+    timeframes = settings.realtime_feed_timeframe_list
     poll_seconds = settings.realtime_feed_poll_seconds
-    history_limit = 100
+    history_limit = 300
 
     if not symbols:
         logger.error("realtime_feed_no_symbols_configured")
+        return
+    if not timeframes:
+        logger.error("realtime_feed_no_timeframes_configured")
         return
 
     provider = build_provider(settings.realtime_feed_provider)
@@ -90,13 +99,13 @@ def main() -> None:
         "realtime_feed_started",
         provider=provider.name,
         symbols=symbols,
-        timeframe=timeframe,
+        timeframes=timeframes,
         poll_seconds=poll_seconds,
     )
 
     try:
         while not _stop_event.is_set():
-            _poll_once(provider, symbols, timeframe, history_limit)
+            _poll_once(provider, symbols, timeframes, history_limit)
             if _stop_event.is_set():
                 break
             # Sleep between polling cycles, but stay responsive to stop requests.

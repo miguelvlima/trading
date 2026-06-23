@@ -25,12 +25,28 @@ _TIMEFRAME_TO_BAR_SIZE: dict[str, str] = {
     "30m": "30 mins",
     "60m": "1 hour",
     "1h": "1 hour",
+    "2h": "2 hours",
+    "4h": "4 hours",
     "1d": "1 day",
     "1wk": "1 week",
     "1mo": "1 month",
 }
 
-_INTRADAY_TIMEFRAMES = {"1m", "2m", "5m", "15m", "30m", "60m", "1h"}
+_INTRADAY_TIMEFRAMES = {"1m", "2m", "5m", "15m", "30m", "60m", "1h", "2h", "4h"}
+
+# Lookback window per intraday timeframe. Finer bars have shorter IB history
+# limits, so we request a window sized to the bar (and bounded by IB's caps).
+_INTRADAY_DURATION: dict[str, str] = {
+    "1m": "2 D",
+    "2m": "3 D",
+    "5m": "10 D",
+    "15m": "20 D",
+    "30m": "1 M",
+    "60m": "2 M",
+    "1h": "2 M",
+    "2h": "3 M",
+    "4h": "6 M",
+}
 
 
 def _to_decimal(value: object) -> Decimal:
@@ -124,9 +140,8 @@ class IBKRProvider:
 
     def _duration_for(self, timeframe: str, limit: int) -> str:
         key = timeframe.strip().lower()
-        if key in _INTRADAY_TIMEFRAMES:
-            # Generous intraday window; IB caps this server-side anyway.
-            return "5 D"
+        if key in _INTRADAY_DURATION:
+            return _INTRADAY_DURATION[key]
         if key in {"1wk", "1mo"}:
             return f"{max(limit * 7, 30)} D"
         return f"{max(limit, 1)} D"

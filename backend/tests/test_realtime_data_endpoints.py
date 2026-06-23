@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -136,6 +136,45 @@ def test_health_endpoint_reports_running(tmp_path: Path) -> None:
     assert payload["status"] == "running"
     assert "AAPL" in payload["tracked_symbols"]
     assert payload["last_update"] is not None
+
+
+def test_health_endpoint_timeframe_aware_running_for_day_old_daily_bar(tmp_path: Path) -> None:
+    # A 1d bar that closed ~1 day ago must read "running": staleness scales with
+    # the timeframe (up to 3 intervals = 3 days), not the flat 180s threshold.
+    session_factory = _build_session_factory(tmp_path)
+
+    with session_factory() as session:
+        instrument = Instrument(symbol="AAPL", name="Apple", currency="USD")
+        session.add(instrument)
+        session.flush()
+        session.add(
+            MarketBar(
+                instrument_id=instrument.id,
+                timeframe="1d",
+                timestamp=datetime.now(UTC) - timedelta(days=1),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100.5"),
+                volume=Decimal("1000"),
+            )
+        )
+        session.commit()
+
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    client = TestClient(app)
+    response = client.get("/realtime/health", params={"symbol": "AAPL", "timeframe": "1d"})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "running"
+    assert payload["tracked_symbols"] == ["AAPL"]
 
 
 def test_health_endpoint_reports_stale_for_old_bar(tmp_path: Path) -> None:

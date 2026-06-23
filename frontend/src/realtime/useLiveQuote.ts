@@ -5,6 +5,7 @@ import { type Quote, ApiError, fetchQuote } from "./api";
 type UseLiveQuoteResult = {
   quote: Quote | null;
   error: string | null;
+  lastUpdatedMs: number | null; // Date.now() of the last successful poll
 };
 
 // Polls /realtime/quote on an interval. It is "polite": a single interval is
@@ -18,15 +19,18 @@ export function useLiveQuote(
 ): UseLiveQuoteResult {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdatedMs, setLastUpdatedMs] = useState<number | null>(null);
 
   useEffect(() => {
     if (!token || !symbol) {
       setQuote(null);
+      setLastUpdatedMs(null);
       return;
     }
 
     let cancelled = false;
     setQuote(null);
+    setLastUpdatedMs(null);
     setError(null);
 
     const poll = async () => {
@@ -37,6 +41,7 @@ export function useLiveQuote(
         const next = await fetchQuote(baseUrl, token, symbol);
         if (!cancelled) {
           setQuote(next);
+          setLastUpdatedMs(Date.now());
           setError(null);
         }
       } catch (err: unknown) {
@@ -55,5 +60,5 @@ export function useLiveQuote(
     };
   }, [baseUrl, token, symbol, intervalMs]);
 
-  return { quote, error };
+  return { quote, error, lastUpdatedMs };
 }

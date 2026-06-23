@@ -132,7 +132,7 @@ def test_health_endpoint_reports_running(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider"] == "yfinance"
+    assert payload["provider"] == "ibkr"  # configured default provider
     assert payload["status"] == "running"
     assert "AAPL" in payload["tracked_symbols"]
     assert payload["last_update"] is not None

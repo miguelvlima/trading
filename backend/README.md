@@ -132,9 +132,10 @@ normalizados na tabela existente `market_bars` (reutiliza `Instrument` / `Market
 sem alterações de schema).
 
 Providers disponíveis:
-- `yfinance` (default) — REST/polling, sem dependências externas extra.
-- `ibkr` (opcional) — via IB Gateway / TWS API (paper, read-only). Requer o extra:
-  `pip install -e .[ibkr]` e um IB Gateway a correr. Selecionar com `REALTIME_FEED_PROVIDER=ibkr`.
+- `ibkr` (**default**) — via IB Gateway / TWS API (paper, read-only). Requer um IB Gateway
+  a correr (ver pré-requisitos abaixo). `ib_insync` já vem nas dependências base.
+- `yfinance` (fallback) — REST/polling, sem necessidade de Gateway. Selecionar com
+  `REALTIME_FEED_PROVIDER=yfinance` (útil para dev/CI sem IBKR).
 
 ### Contrato de dados (importante)
 
@@ -153,7 +154,7 @@ Definidas em `backend/.env` (ver `.env.example`):
 
 | Variável | Default | Descrição |
 | --- | --- | --- |
-| `REALTIME_FEED_PROVIDER` | `yfinance` | Provider de mercado (`yfinance` ou `ibkr`) |
+| `REALTIME_FEED_PROVIDER` | `ibkr` | Provider de mercado (`ibkr` default, ou `yfinance`) |
 | `REALTIME_FEED_SYMBOLS` | `AAPL,MSFT,NVDA` | Símbolos a seguir (separados por vírgula) |
 | `REALTIME_FEED_TIMEFRAME` | `1d` | Timeframe dos candles |
 | `REALTIME_FEED_POLL_SECONDS` | `60` | Intervalo entre ciclos de polling |
@@ -163,13 +164,19 @@ Definidas em `backend/.env` (ver `.env.example`):
 | `IBKR_GATEWAY_PORT` | `4002` | Porta do IB Gateway (paper API = `4002`) |
 | `IBKR_CLIENT_ID` | `7` | Client ID da ligação à API |
 
-### Pré-requisitos do IB Gateway (provider `ibkr`)
+### Pré-requisitos do IB Gateway (provider `ibkr`, default)
+
+Como o `ibkr` é o provider default, o worker e os endpoints `/realtime/quote|history`
+precisam de um IB Gateway acessível. (`ib_insync` já está nas dependências base.)
 
 1. Arrancar o **IB Gateway** em modo **paper**.
 2. Em *API → Settings*: ativar *Enable ActiveX and Socket Clients*, manter **Read-Only API**
    ligado, e confirmar a porta **4002** (paper).
 3. Adicionar `127.0.0.1` aos **Trusted IPs**.
-4. Instalar o extra: `pip install -e .[ibkr]`.
+
+> Sem Gateway acessível, o provider IBKR regista um erro estruturado e devolve vazio/None
+> (não rebenta o worker), e o `/realtime/health` reporta `error`/`stale`. Para dev/CI sem
+> IBKR, define `REALTIME_FEED_PROVIDER=yfinance`.
 
 > **Nota de fiabilidade**: o IB Gateway pode cair e reconectar silenciosamente
 > (`DISCONNECT_ON_INACTIVITY`, `Connection reset`, `HOT_RESTART`), e o relógio do sistema

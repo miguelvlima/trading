@@ -19,6 +19,9 @@ dependencies = [
   "sqlalchemy>=2.0.0",
   "structlog>=25.4.0",
   "uvicorn[standard]>=0.35.0",
+  # ib_insync is a base dependency: IBKR is the default real-time feed provider.
+  "ib_insync>=0.9.86",
+  # yfinance remains available as a REST/polling fallback provider.
   "yfinance>=1.4.0",
 ]
 
@@ -26,11 +29,6 @@ dependencies = [
 dev = [
   "httpx>=0.28.0",
   "pytest>=8.4.0",
-]
-# Optional: only needed to run the real-time feed with REALTIME_FEED_PROVIDER=ibkr.
-# Not required for tests (the suite uses a fake provider) or the yfinance default.
-ibkr = [
-  "ib_insync>=0.9.86",
 ]
 
 [tool.pytest.ini_options]

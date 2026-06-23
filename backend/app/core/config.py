@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     dev_default_user_display_name: str = "Dev User"
     dev_default_user_is_admin: bool = True
 
-    realtime_feed_provider: str = "yfinance"
+    realtime_feed_provider: str = "ibkr"
     realtime_feed_symbols: str = "AAPL,MSFT,NVDA"
     realtime_feed_timeframe: str = "1d"
     realtime_feed_poll_seconds: int = 60

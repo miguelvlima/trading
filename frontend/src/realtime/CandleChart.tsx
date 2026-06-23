@@ -16,12 +16,14 @@ type CandleChartProps = {
   liveQuote: Quote | null;
 };
 
-// The backend sends timezone-aware UTC ISO timestamps. lightweight-charts wants
-// `time` as epoch *seconds*. We parse the ISO string (the trailing "Z" makes
-// Date.parse interpret it as UTC) and divide by 1000 — staying entirely in UTC,
-// never reinterpreting through the browser's local timezone.
+// The backend stores bar times in UTC. lightweight-charts wants `time` as epoch
+// *seconds*. Some endpoints serialize without a timezone designator (e.g.
+// "2026-06-09T04:00:00") while others include "Z"; we normalize the bare form to
+// UTC by appending "Z" so Date.parse never reinterprets it through the browser's
+// local timezone. Everything stays consistently in UTC.
 function isoToUtcTimestamp(iso: string): UTCTimestamp {
-  return (Date.parse(iso) / 1000) as UTCTimestamp;
+  const hasTz = /[zZ]$|[+-]\d\d:?\d\d$/.test(iso);
+  return (Date.parse(hasTz ? iso : `${iso}Z`) / 1000) as UTCTimestamp;
 }
 
 function toCandle(bar: Bar): CandlestickData {
@@ -89,14 +91,42 @@ export function CandleChart({ bars, liveQuote }: CandleChartProps) {
     };
   }, []);
 
-  // Replace the full data set whenever the historical bars change.
+  // Replace the full data set whenever the historical bars change. lightweight-
+  // charts requires points sorted strictly ascending by time with no duplicates;
+  // we sort + dedupe + drop non-finite values defensively so a bad payload can
+  // never throw and blank the tab (it is logged instead).
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) {
       return;
     }
-    series.setData(bars.map(toCandle));
-    chartRef.current?.timeScale().fitContent();
+    try {
+      const candles = bars
+        .map(toCandle)
+        .filter(
+          (c) =>
+            Number.isFinite(c.open) &&
+            Number.isFinite(c.high) &&
+            Number.isFinite(c.low) &&
+            Number.isFinite(c.close),
+        )
+        .sort((a, b) => Number(a.time) - Number(b.time));
+
+      const deduped: CandlestickData[] = [];
+      for (const candle of candles) {
+        const last = deduped[deduped.length - 1];
+        if (last && Number(last.time) === Number(candle.time)) {
+          deduped[deduped.length - 1] = candle; // keep the latest for that time
+        } else {
+          deduped.push(candle);
+        }
+      }
+
+      series.setData(deduped);
+      chartRef.current?.timeScale().fitContent();
+    } catch (err) {
+      console.error("[Realtime] setData failed", { count: bars.length, err });
+    }
   }, [bars]);
 
   // Patch only the most recent point with the live quote (no full redraw). We
@@ -107,12 +137,16 @@ export function CandleChart({ bars, liveQuote }: CandleChartProps) {
     if (!series || !liveQuote) {
       return;
     }
-    const liveTime = isoToUtcTimestamp(liveQuote.timestamp);
-    const lastBar = bars[bars.length - 1];
-    if (lastBar && liveTime < isoToUtcTimestamp(lastBar.timestamp)) {
-      return;
+    try {
+      const liveTime = isoToUtcTimestamp(liveQuote.timestamp);
+      const lastBar = bars[bars.length - 1];
+      if (lastBar && Number(liveTime) < Number(isoToUtcTimestamp(lastBar.timestamp))) {
+        return;
+      }
+      series.update({ ...toCandle(liveQuote), time: liveTime });
+    } catch (err) {
+      console.error("[Realtime] live update failed", err);
     }
-    series.update({ ...toCandle(liveQuote), time: liveTime });
   }, [liveQuote, bars]);
 
   return <div className="realtime-chart" ref={containerRef} />;

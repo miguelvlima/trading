@@ -131,3 +131,36 @@
   background: rgba(138, 150, 171, 0.12);
   border-color: rgba(138, 150, 171, 0.3);
 }
+
+/* Error boundary fallback */
+.realtime-error {
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  background: rgba(220, 38, 38, 0.08);
+  border-radius: 8px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.realtime-error h3 {
+  margin: 0;
+  color: #f87171;
+}
+
+.realtime-error-message {
+  color: #e6ecf5;
+  font-weight: 600;
+}
+
+.realtime-error-stack {
+  max-height: 220px;
+  overflow: auto;
+  background: #0f1420;
+  border: 1px solid #1c2433;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 0.78rem;
+  color: #8a96ab;
+  white-space: pre-wrap;
+}

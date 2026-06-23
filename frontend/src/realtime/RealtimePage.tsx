@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { CandleChart } from "./CandleChart";
+import { RealtimeErrorBoundary } from "./ErrorBoundary";
 import { FeedStatusBadge } from "./FeedStatusBadge";
 import { useBars } from "./useBars";
 import { useFeedHealth } from "./useFeedHealth";
@@ -26,7 +27,15 @@ function formatSecondsAgo(lastUpdatedMs: number | null, nowMs: number): string {
   return `há ${seconds}s`;
 }
 
-export function RealtimePage({ apiBaseUrl, authToken }: RealtimePageProps) {
+export function RealtimePage(props: RealtimePageProps) {
+  return (
+    <RealtimeErrorBoundary>
+      <RealtimePageContent {...props} />
+    </RealtimeErrorBoundary>
+  );
+}
+
+function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
   const [symbolInput, setSymbolInput] = useState<string>(DEFAULT_SYMBOL);
   const [symbol, setSymbol] = useState<string>(DEFAULT_SYMBOL);
   const [timeframe, setTimeframe] = useState<string>(DEFAULT_TIMEFRAME);

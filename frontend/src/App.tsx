@@ -95,6 +95,18 @@ type StrategyCombination = {
   updated_at: string;
 };
 
+type BrokerConnection = {
+  id: number;
+  owner_user_id: number;
+  broker_name: string;
+  account_label: string;
+  environment: string;
+  connection_metadata: Record<string, string | number | boolean | null>;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
@@ -223,6 +235,15 @@ function App() {
   const [newCombinationName, setNewCombinationName] = useState("");
   const [newCombinationDescription, setNewCombinationDescription] = useState("");
   const [combinationError, setCombinationError] = useState<string | null>(null);
+  const [brokerConnections, setBrokerConnections] = useState<BrokerConnection[]>([]);
+  const [brokerConnectionsLoading, setBrokerConnectionsLoading] = useState(false);
+  const [brokerConnectionsError, setBrokerConnectionsError] = useState<string | null>(null);
+  const [brokerRefreshToken, setBrokerRefreshToken] = useState(0);
+  const [newBrokerName, setNewBrokerName] = useState("Binance");
+  const [newBrokerLabel, setNewBrokerLabel] = useState("");
+  const [newBrokerEnvironment, setNewBrokerEnvironment] = useState("paper");
+  const [newBrokerMetadataJson, setNewBrokerMetadataJson] = useState("{}");
+  const [brokerFormError, setBrokerFormError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -287,6 +308,7 @@ function App() {
     setAuthToken("");
     setCurrentUser(null);
     setSavedCombinations([]);
+    setBrokerConnections([]);
     setShowAuthPanel(false);
   };
 
@@ -428,6 +450,35 @@ function App() {
 
     loadCombinations();
   }, [authToken, isAuthenticated, signalsRefreshToken]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setBrokerConnections([]);
+      return;
+    }
+
+    const loadBrokerConnections = async () => {
+      setBrokerConnectionsLoading(true);
+      setBrokerConnectionsError(null);
+      try {
+        const response = await fetch(`${API_BASE_URL}/broker-connections`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar ligações de broker.");
+        }
+        setBrokerConnections((await response.json()) as BrokerConnection[]);
+      } catch (loadError) {
+        const message =
+          loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar brokers.";
+        setBrokerConnectionsError(message);
+      } finally {
+        setBrokerConnectionsLoading(false);
+      }
+    };
+
+    loadBrokerConnections();
+  }, [authToken, isAuthenticated, brokerRefreshToken]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -818,6 +869,101 @@ function App() {
     }
   };
 
+  const parseBrokerMetadata = (): Record<string, string | number | boolean | null> => {
+    const raw = newBrokerMetadataJson.trim();
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Metadata deve ser um objeto JSON (ex.: {\"region\":\"EU\"}).");
+    }
+    return parsed as Record<string, string | number | boolean | null>;
+  };
+
+  const handleCreateBrokerConnection = async () => {
+    if (!authToken) {
+      return;
+    }
+    if (!newBrokerName.trim() || !newBrokerLabel.trim()) {
+      setBrokerFormError("Preencha broker e etiqueta da conta.");
+      return;
+    }
+
+    setBrokerFormError(null);
+    try {
+      const metadata = parseBrokerMetadata();
+      const response = await fetch(`${API_BASE_URL}/broker-connections`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          broker_name: newBrokerName.trim(),
+          account_label: newBrokerLabel.trim(),
+          environment: newBrokerEnvironment,
+          connection_metadata: metadata,
+          is_active: true,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(parseApiError(payload, "Falha ao criar ligação de broker."));
+      }
+
+      setNewBrokerLabel("");
+      setNewBrokerMetadataJson("{}");
+      setBrokerRefreshToken((previous) => previous + 1);
+    } catch (createError) {
+      setBrokerFormError(createError instanceof Error ? createError.message : "Erro inesperado.");
+    }
+  };
+
+  const handleToggleBrokerConnection = async (connection: BrokerConnection) => {
+    if (!authToken) {
+      return;
+    }
+    setBrokerConnectionsError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/broker-connections/${connection.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ is_active: !connection.is_active }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(parseApiError(payload, "Falha ao atualizar ligação."));
+      }
+      setBrokerRefreshToken((previous) => previous + 1);
+    } catch (toggleError) {
+      setBrokerConnectionsError(toggleError instanceof Error ? toggleError.message : "Erro inesperado.");
+    }
+  };
+
+  const handleDeleteBrokerConnection = async (connectionId: number) => {
+    if (!authToken) {
+      return;
+    }
+    setBrokerConnectionsError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/broker-connections/${connectionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(parseApiError(payload, "Falha ao remover ligação."));
+      }
+      setBrokerRefreshToken((previous) => previous + 1);
+    } catch (deleteError) {
+      setBrokerConnectionsError(deleteError instanceof Error ? deleteError.message : "Erro inesperado.");
+    }
+  };
+
   const handleResetSignalListFilters = () => {
     setSignalDirectionFilter("BOTH");
     setSignalMinStrengthPct(0);
@@ -1162,11 +1308,89 @@ function App() {
               {activeConfigTab === "execution" && (
                 <section className="config-section">
                   <div className="config-section-header">
-                    <h4>Execução</h4>
-                    <p>Parâmetros para ordens, risco e simulação.</p>
+                    <h4>Execução e brokers</h4>
+                    <p>Ligações por utilizador para preparar execução, posições e integração com corretoras.</p>
                   </div>
+                  <div className="broker-config-grid">
+                    <label className="field">
+                      <span>Broker</span>
+                      <input
+                        value={newBrokerName}
+                        onChange={(event) => setNewBrokerName(event.target.value)}
+                        placeholder="Ex.: Binance, XTB, Interactive Brokers"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Etiqueta da conta</span>
+                      <input
+                        value={newBrokerLabel}
+                        onChange={(event) => setNewBrokerLabel(event.target.value)}
+                        placeholder="Ex.: Principal, Demo, Conta PT"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Ambiente</span>
+                      <select
+                        value={newBrokerEnvironment}
+                        onChange={(event) => setNewBrokerEnvironment(event.target.value)}
+                      >
+                        <option value="paper">paper</option>
+                        <option value="live">live</option>
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span>Metadata (JSON)</span>
+                      <input
+                        value={newBrokerMetadataJson}
+                        onChange={(event) => setNewBrokerMetadataJson(event.target.value)}
+                        placeholder='Ex.: {"region":"EU","leverage":2}'
+                      />
+                    </label>
+                  </div>
+                  <div className="auth-actions">
+                    <button type="button" className="tab-button" onClick={handleCreateBrokerConnection}>
+                      Guardar ligação de broker
+                    </button>
+                  </div>
+                  {brokerFormError && <p className="error">{brokerFormError}</p>}
+                  {brokerConnectionsError && <p className="error">{brokerConnectionsError}</p>}
+                  {brokerConnectionsLoading && <p className="hint">A carregar ligações...</p>}
+                  {!brokerConnectionsLoading && brokerConnections.length === 0 && (
+                    <p className="hint">Sem ligações configuradas para este utilizador.</p>
+                  )}
+                  {brokerConnections.length > 0 && (
+                    <div className="broker-connection-list">
+                      {brokerConnections.map((connection) => (
+                        <article key={connection.id} className="broker-connection-row">
+                          <div>
+                            <strong>{connection.broker_name}</strong>
+                            <p>
+                              {connection.account_label} | {connection.environment} |{" "}
+                              {connection.is_active ? "ativa" : "inativa"}
+                            </p>
+                          </div>
+                          <div className="auth-actions">
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => handleToggleBrokerConnection(connection)}
+                            >
+                              {connection.is_active ? "Desativar" : "Ativar"}
+                            </button>
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => handleDeleteBrokerConnection(connection.id)}
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
                   <div className="config-placeholder">
-                    Em breve: tamanho por ordem, slippage, comissões, risco máximo por trade e limites diários.
+                    Próximo passo: credenciais cifradas, teste de conectividade e seleção de conta para execução.
                   </div>
                 </section>
               )}

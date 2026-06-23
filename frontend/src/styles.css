@@ -584,6 +584,40 @@ body {
   gap: 0.65rem;
 }
 
+.broker-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 0.45rem;
+}
+
+.broker-connection-list {
+  margin-top: 0.6rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.broker-connection-row {
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: rgba(15, 23, 42, 0.8);
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.broker-connection-row p {
+  margin: 0.2rem 0 0;
+  color: #cbd5e1;
+  font-size: 0.84rem;
+}
+
 .strategy-picker {
   margin-bottom: 0.45rem;
 }
@@ -761,6 +795,10 @@ body {
   }
 
   .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .broker-config-grid {
     grid-template-columns: 1fr;
   }
 

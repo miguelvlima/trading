@@ -99,6 +99,9 @@ class User(Base):
     broker_connections: Mapped[list["BrokerConnection"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    backtest_runs: Mapped[list["BacktestRun"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class BrokerConnection(Base):
@@ -166,3 +169,75 @@ class StrategyCombination(Base):
     cloned_from: Mapped["StrategyCombination | None"] = relationship(
         remote_side=[id], uselist=False
     )
+
+
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    strategy_names: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    initial_capital: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    fee_bps: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False, default=Decimal("0.0"))
+    slippage_bps: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("0.0")
+    )
+    min_signal_strength: Mapped[Decimal] = mapped_column(
+        Numeric(6, 5), nullable=False, default=Decimal("0.10000")
+    )
+    bars_processed: Mapped[int] = mapped_column(nullable=False, default=0)
+    trades_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    net_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False, default=Decimal("0"))
+    net_pnl_pct: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    win_rate: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    profit_factor: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False, default=Decimal("0")
+    )
+    max_drawdown_pct: Mapped[Decimal] = mapped_column(
+        Numeric(10, 6), nullable=False, default=Decimal("0")
+    )
+    result_summary: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    owner: Mapped[User] = relationship(back_populates="backtest_runs")
+    trades: Mapped[list["BacktestTrade"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class BacktestTrade(Base):
+    __tablename__ = "backtest_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    entry_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    exit_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    exit_price: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    gross_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    fee_paid: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    net_pnl: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    return_pct: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    bars_held: Mapped[int] = mapped_column(nullable=False)
+    entry_reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    exit_reason: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    run: Mapped[BacktestRun] = relationship(back_populates="trades")

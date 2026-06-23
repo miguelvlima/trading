@@ -103,6 +103,9 @@ pytest
 - `GET /signals/strategies`
 - `POST /signals/generate`
 - `GET /signals`
+- `POST /backtests/run`
+- `GET /backtests`
+- `GET /backtests/{id}`
 - `POST /auth/login`
 - `GET /auth/me`
 - `GET/POST/PUT /strategy-combinations`

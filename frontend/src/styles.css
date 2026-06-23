@@ -262,6 +262,31 @@ body {
   margin-top: 1rem;
 }
 
+.backtests-panel {
+  margin-top: 1rem;
+}
+
+.backtests-grid {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+  gap: 0.65rem;
+}
+
+.backtest-run-row {
+  border-left: 3px solid #38bdf8;
+}
+
+.backtest-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+
+.equity-curve-list {
+  margin-top: 0.75rem;
+}
+
 .signals-header {
   display: flex;
   align-items: flex-end;
@@ -782,6 +807,14 @@ body {
   }
 
   .signals-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .backtests-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .backtest-compare-grid {
     grid-template-columns: 1fr;
   }
 

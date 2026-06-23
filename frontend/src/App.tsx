@@ -49,7 +49,7 @@ type IndicatorRow = {
 };
 
 type FilterMode = "count" | "date";
-type ViewTab = "market" | "signals";
+type ViewTab = "market" | "signals" | "backtests";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
 
@@ -107,10 +107,71 @@ type BrokerConnection = {
   updated_at: string;
 };
 
+type BacktestTrade = {
+  id: number;
+  direction: string;
+  entry_timestamp: string;
+  exit_timestamp: string;
+  entry_price: number;
+  exit_price: number;
+  quantity: number;
+  gross_pnl: number;
+  fee_paid: number;
+  net_pnl: number;
+  return_pct: number;
+  bars_held: number;
+  entry_reason: string;
+  exit_reason: string;
+};
+
+type BacktestRun = {
+  id: number;
+  owner_user_id: number;
+  symbol: string;
+  timeframe: string;
+  strategy_names: string[];
+  start_at: string | null;
+  end_at: string | null;
+  initial_capital: number;
+  fee_bps: number;
+  slippage_bps: number;
+  min_signal_strength: number;
+  bars_processed: number;
+  trades_count: number;
+  net_pnl: number;
+  net_pnl_pct: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+  created_at: string;
+  result_summary: Record<string, unknown>;
+  trades?: BacktestTrade[];
+};
+
+type BacktestPreset = {
+  id: string;
+  name: string;
+  strategies: string[];
+  initialCapital: number;
+  feeBps: number;
+  slippageBps: number;
+  minStrengthPct: number;
+  limit: number;
+  positionSizePct: number;
+  entryConfirmationBars: number;
+  exitMode: "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only";
+  stopLossPct: number | null;
+  takeProfitPct: number | null;
+  maxBarsInTrade: number | null;
+  walkforwardSplitPct: number;
+  benchmarkEnabled: boolean;
+};
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
 const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";
+const BACKTEST_PRESETS_STORAGE_KEY = "trading_backtest_presets";
 
 const readStoredNumber = (key: string, fallback: number, min: number, max: number): number => {
   const raw = localStorage.getItem(key);
@@ -122,6 +183,22 @@ const readStoredNumber = (key: string, fallback: number, min: number, max: numbe
     return fallback;
   }
   return Math.max(min, Math.min(max, parsed));
+};
+
+const readStoredBacktestPresets = (): BacktestPreset[] => {
+  const raw = localStorage.getItem(BACKTEST_PRESETS_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is BacktestPreset => Boolean(item && typeof item === "object"));
+  } catch {
+    return [];
+  }
 };
 
 const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
@@ -154,6 +231,30 @@ const formatDateLabel = (dateText: string): string =>
 
 const formatDateTimeLabel = (dateText: string): string =>
   new Date(dateText).toLocaleString("pt-PT");
+
+const getSummaryNumber = (summary: Record<string, unknown>, key: string, fallback = 0): number => {
+  const value = summary[key];
+  return typeof value === "number" ? value : fallback;
+};
+
+const getSummaryCurve = (summary: Record<string, unknown>): Array<{ timestamp: string; equity: number }> => {
+  const value = summary.equity_curve;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      if (typeof record.timestamp !== "string" || typeof record.equity !== "number") {
+        return null;
+      }
+      return { timestamp: record.timestamp, equity: record.equity };
+    })
+    .filter((item): item is { timestamp: string; equity: number } => item !== null);
+};
 
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
@@ -244,6 +345,31 @@ function App() {
   const [newBrokerEnvironment, setNewBrokerEnvironment] = useState("paper");
   const [newBrokerMetadataJson, setNewBrokerMetadataJson] = useState("{}");
   const [brokerFormError, setBrokerFormError] = useState<string | null>(null);
+  const [backtestStrategies, setBacktestStrategies] = useState<string[]>([]);
+  const [backtestInitialCapital, setBacktestInitialCapital] = useState<number>(10000);
+  const [backtestFeeBps, setBacktestFeeBps] = useState<number>(5);
+  const [backtestSlippageBps, setBacktestSlippageBps] = useState<number>(2);
+  const [backtestMinStrengthPct, setBacktestMinStrengthPct] = useState<number>(10);
+  const [backtestLimit, setBacktestLimit] = useState<number>(2000);
+  const [backtestPositionSizePct, setBacktestPositionSizePct] = useState<number>(100);
+  const [backtestEntryConfirmationBars, setBacktestEntryConfirmationBars] = useState<number>(1);
+  const [backtestExitMode, setBacktestExitMode] = useState<
+    "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only"
+  >("tp_sl_or_opposite");
+  const [backtestStopLossPct, setBacktestStopLossPct] = useState<number>(2);
+  const [backtestTakeProfitPct, setBacktestTakeProfitPct] = useState<number>(4);
+  const [backtestMaxBarsInTrade, setBacktestMaxBarsInTrade] = useState<number>(40);
+  const [backtestWalkforwardSplitPct, setBacktestWalkforwardSplitPct] = useState<number>(0);
+  const [backtestBenchmarkEnabled, setBacktestBenchmarkEnabled] = useState(true);
+  const [backtestPresets, setBacktestPresets] = useState<BacktestPreset[]>(() => readStoredBacktestPresets());
+  const [backtestPresetName, setBacktestPresetName] = useState("");
+  const [backtestCompareRunIds, setBacktestCompareRunIds] = useState<number[]>([]);
+  const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
+  const [backtestSelectedRun, setBacktestSelectedRun] = useState<BacktestRun | null>(null);
+  const [backtestLoading, setBacktestLoading] = useState(false);
+  const [backtestRunning, setBacktestRunning] = useState(false);
+  const [backtestError, setBacktestError] = useState<string | null>(null);
+  const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -284,6 +410,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem(SIGNALS_FETCH_LIMIT_STORAGE_KEY, String(signalsFetchLimit));
   }, [signalsFetchLimit]);
+
+  useEffect(() => {
+    localStorage.setItem(BACKTEST_PRESETS_STORAGE_KEY, JSON.stringify(backtestPresets));
+  }, [backtestPresets]);
 
   const buildSignalGeneratePayload = (strategy: string): Record<string, string | number> => {
     const payload: Record<string, string | number> = {
@@ -389,10 +519,12 @@ function App() {
         setAvailableStrategies(payload);
         if (payload.length > 0) {
           setSelectedStrategies([payload[0]]);
+          setBacktestStrategies([payload[0]]);
         }
       } catch {
         setAvailableStrategies([]);
         setSelectedStrategies([]);
+        setBacktestStrategies([]);
       }
     };
 
@@ -479,6 +611,45 @@ function App() {
 
     loadBrokerConnections();
   }, [authToken, isAuthenticated, brokerRefreshToken]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setBacktestRuns([]);
+      setBacktestSelectedRun(null);
+      return;
+    }
+
+    const loadBacktests = async () => {
+      setBacktestLoading(true);
+      setBacktestError(null);
+      try {
+        const query = new URLSearchParams({ limit: "30" });
+        if (selectedSymbol) {
+          query.set("symbol", selectedSymbol);
+          query.set("timeframe", selectedTimeframe);
+        }
+        const response = await fetch(`${API_BASE_URL}/backtests?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar backtests.");
+        }
+        const payload = (await response.json()) as BacktestRun[];
+        setBacktestRuns(payload);
+        setBacktestCompareRunIds((previous) =>
+          previous.filter((id) => payload.some((run) => run.id === id)).slice(0, 2),
+        );
+      } catch (loadError) {
+        const message =
+          loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar backtests.";
+        setBacktestError(message);
+      } finally {
+        setBacktestLoading(false);
+      }
+    };
+
+    loadBacktests();
+  }, [authToken, isAuthenticated, backtestRefreshToken, selectedSymbol, selectedTimeframe]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -793,6 +964,11 @@ function App() {
     });
   }, [strategyContributions]);
 
+  const comparedBacktestRuns = useMemo(
+    () => backtestRuns.filter((run) => backtestCompareRunIds.includes(run.id)),
+    [backtestRuns, backtestCompareRunIds],
+  );
+
   const handleAuthSubmit = async () => {
     setAuthLoading(true);
     setAuthError(null);
@@ -967,6 +1143,146 @@ function App() {
   const handleResetSignalListFilters = () => {
     setSignalDirectionFilter("BOTH");
     setSignalMinStrengthPct(0);
+  };
+
+  const handleRunBacktest = async () => {
+    if (!authToken || !selectedSymbol || backtestStrategies.length === 0) {
+      return;
+    }
+    if (hasDateFilterError) {
+      setBacktestError("Defina um intervalo de datas válido para correr backtest.");
+      return;
+    }
+
+    setBacktestRunning(true);
+    setBacktestError(null);
+    try {
+      const payload: Record<string, string | number | boolean | string[] | null> = {
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        strategies: backtestStrategies,
+        initial_capital: backtestInitialCapital,
+        fee_bps: backtestFeeBps,
+        slippage_bps: backtestSlippageBps,
+        min_signal_strength: backtestMinStrengthPct / 100,
+        limit: backtestLimit,
+        position_size_pct: backtestPositionSizePct,
+        entry_confirmation_bars: backtestEntryConfirmationBars,
+        exit_mode: backtestExitMode,
+        stop_loss_pct: backtestExitMode === "opposite_signal" ? null : backtestStopLossPct,
+        take_profit_pct: backtestExitMode === "opposite_signal" ? null : backtestTakeProfitPct,
+        max_bars_in_trade: backtestMaxBarsInTrade > 0 ? backtestMaxBarsInTrade : null,
+        walkforward_split_pct: backtestWalkforwardSplitPct,
+        benchmark_enabled: backtestBenchmarkEnabled,
+      };
+
+      if (filterMode === "date") {
+        payload.start = `${startDate}T00:00:00Z`;
+        payload.end = `${endDate}T23:59:59Z`;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/backtests/run`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao correr backtest."));
+      }
+
+      const run = (await response.json()) as BacktestRun;
+      setBacktestSelectedRun(run);
+      setBacktestRefreshToken((previous) => previous + 1);
+    } catch (runError) {
+      setBacktestError(runError instanceof Error ? runError.message : "Erro inesperado ao correr backtest.");
+    } finally {
+      setBacktestRunning(false);
+    }
+  };
+
+  const handleOpenBacktestRun = async (runId: number) => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/backtests/${runId}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao carregar detalhe do backtest."));
+      }
+      setBacktestSelectedRun((await response.json()) as BacktestRun);
+    } catch (loadError) {
+      setBacktestError(loadError instanceof Error ? loadError.message : "Erro inesperado.");
+    }
+  };
+
+  const handleToggleCompareRun = (runId: number) => {
+    setBacktestCompareRunIds((previous) => {
+      if (previous.includes(runId)) {
+        return previous.filter((id) => id !== runId);
+      }
+      if (previous.length >= 2) {
+        return [previous[1], runId];
+      }
+      return [...previous, runId];
+    });
+  };
+
+  const handleSaveBacktestPreset = () => {
+    const name = backtestPresetName.trim();
+    if (!name) {
+      setBacktestError("Defina um nome para guardar preset.");
+      return;
+    }
+    const preset: BacktestPreset = {
+      id: `${Date.now()}`,
+      name,
+      strategies: backtestStrategies,
+      initialCapital: backtestInitialCapital,
+      feeBps: backtestFeeBps,
+      slippageBps: backtestSlippageBps,
+      minStrengthPct: backtestMinStrengthPct,
+      limit: backtestLimit,
+      positionSizePct: backtestPositionSizePct,
+      entryConfirmationBars: backtestEntryConfirmationBars,
+      exitMode: backtestExitMode,
+      stopLossPct: backtestStopLossPct,
+      takeProfitPct: backtestTakeProfitPct,
+      maxBarsInTrade: backtestMaxBarsInTrade,
+      walkforwardSplitPct: backtestWalkforwardSplitPct,
+      benchmarkEnabled: backtestBenchmarkEnabled,
+    };
+    setBacktestPresets((previous) => [preset, ...previous].slice(0, 20));
+    setBacktestPresetName("");
+    setBacktestError(null);
+  };
+
+  const handleApplyBacktestPreset = (presetId: string) => {
+    const preset = backtestPresets.find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
+    setBacktestStrategies(preset.strategies);
+    setBacktestInitialCapital(preset.initialCapital);
+    setBacktestFeeBps(preset.feeBps);
+    setBacktestSlippageBps(preset.slippageBps);
+    setBacktestMinStrengthPct(preset.minStrengthPct);
+    setBacktestLimit(preset.limit);
+    setBacktestPositionSizePct(preset.positionSizePct);
+    setBacktestEntryConfirmationBars(preset.entryConfirmationBars);
+    setBacktestExitMode(preset.exitMode);
+    setBacktestStopLossPct(preset.stopLossPct ?? 2);
+    setBacktestTakeProfitPct(preset.takeProfitPct ?? 4);
+    setBacktestMaxBarsInTrade(preset.maxBarsInTrade ?? 40);
+    setBacktestWalkforwardSplitPct(preset.walkforwardSplitPct);
+    setBacktestBenchmarkEnabled(preset.benchmarkEnabled);
   };
 
   useEffect(() => {
@@ -1558,6 +1874,13 @@ function App() {
           >
             Sinais
           </button>
+          <button
+            type="button"
+            className={activeTab === "backtests" ? "tab-button tab-button-active" : "tab-button"}
+            onClick={() => setActiveTab("backtests")}
+          >
+            Simulação
+          </button>
         </div>
 
         {error && <p className="error">{error}</p>}
@@ -1924,6 +2247,435 @@ function App() {
                     </article>
                   ))}
                 </div>
+              )}
+            </div>
+          </div>
+
+          <div className={activeTab === "backtests" ? "tab-pane tab-pane-active" : "tab-pane"}>
+            <div className="backtests-panel">
+              <div className="signals-header">
+                <h3>Backtesting (simulação histórica)</h3>
+              </div>
+              <p className="hint">Configura o run, executa e compara resultados entre simulações.</p>
+
+              <section className="strategy-consensus-card">
+                <div className="signals-header">
+                  <h3>1) Presets rápidos</h3>
+                </div>
+                <div className="backtests-grid">
+                  <label className="field">
+                    <span>Aplicar preset guardado</span>
+                    <select
+                      defaultValue=""
+                      onChange={(event) => {
+                        if (event.target.value) {
+                          handleApplyBacktestPreset(event.target.value);
+                        }
+                      }}
+                    >
+                      <option value="">Selecionar preset...</option>
+                      {backtestPresets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Guardar preset (nome)</span>
+                    <input
+                      value={backtestPresetName}
+                      onChange={(event) => setBacktestPresetName(event.target.value)}
+                      placeholder="Ex.: Reversão diária conservadora"
+                    />
+                  </label>
+                </div>
+                <div className="auth-actions">
+                  <button type="button" className="config-button" onClick={handleSaveBacktestPreset}>
+                    Guardar preset atual
+                  </button>
+                </div>
+              </section>
+
+              <section className="strategy-consensus-card">
+                <div className="signals-header">
+                  <h3>2) Estratégias e regras de entrada</h3>
+                </div>
+                <div className="strategy-picker">
+                  <span className="stats-label">Estratégias do backtest</span>
+                  <div className="strategy-chip-list">
+                    {availableStrategies.map((strategy) => {
+                      const checked = backtestStrategies.includes(strategy);
+                      const info = STRATEGY_SUMMARY[strategy];
+                      return (
+                        <label
+                          key={`backtest-${strategy}`}
+                          className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => {
+                              setBacktestStrategies((previous) => {
+                                if (event.target.checked) {
+                                  if (previous.includes(strategy)) {
+                                    return previous;
+                                  }
+                                  return [...previous, strategy];
+                                }
+                                return previous.filter((value) => value !== strategy);
+                              });
+                            }}
+                          />
+                          <span>{info?.title ?? strategy}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="backtests-grid">
+                  <label className="field">
+                    <span>Força mínima para entrada (%)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={backtestMinStrengthPct}
+                      onChange={(event) => setBacktestMinStrengthPct(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Confirmação de entrada (velas)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={5}
+                      step={1}
+                      value={backtestEntryConfirmationBars}
+                      onChange={(event) => setBacktestEntryConfirmationBars(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Modo de saída</span>
+                    <select
+                      value={backtestExitMode}
+                      onChange={(event) =>
+                        setBacktestExitMode(
+                          event.target.value as "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only",
+                        )
+                      }
+                    >
+                      <option value="opposite_signal">Só sinal oposto</option>
+                      <option value="tp_sl_or_opposite">TP/SL + sinal oposto</option>
+                      <option value="tp_sl_only">Só TP/SL</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section className="strategy-consensus-card">
+                <div className="signals-header">
+                  <h3>3) Execução e risco</h3>
+                </div>
+                <div className="backtests-grid">
+                  <label className="field">
+                    <span>Capital inicial</span>
+                    <input
+                      type="number"
+                      min={100}
+                      max={10000000}
+                      step={100}
+                      value={backtestInitialCapital}
+                      onChange={(event) => setBacktestInitialCapital(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>% do capital por trade</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={backtestPositionSizePct}
+                      onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Fee (bps)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      step={0.5}
+                      value={backtestFeeBps}
+                      onChange={(event) => setBacktestFeeBps(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Slippage (bps)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      step={0.5}
+                      value={backtestSlippageBps}
+                      onChange={(event) => setBacktestSlippageBps(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Stop-loss (%)</span>
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={100}
+                      step={0.1}
+                      value={backtestStopLossPct}
+                      onChange={(event) => setBacktestStopLossPct(Number(event.target.value))}
+                      disabled={backtestExitMode === "opposite_signal"}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Take-profit (%)</span>
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={200}
+                      step={0.1}
+                      value={backtestTakeProfitPct}
+                      onChange={(event) => setBacktestTakeProfitPct(Number(event.target.value))}
+                      disabled={backtestExitMode === "opposite_signal"}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Máx. barras por trade</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      value={backtestMaxBarsInTrade}
+                      onChange={(event) => setBacktestMaxBarsInTrade(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Máx. velas no run</span>
+                    <input
+                      type="number"
+                      min={200}
+                      max={10000}
+                      step={100}
+                      value={backtestLimit}
+                      onChange={(event) => setBacktestLimit(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Walk-forward holdout (%)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={80}
+                      step={5}
+                      value={backtestWalkforwardSplitPct}
+                      onChange={(event) => setBacktestWalkforwardSplitPct(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Benchmark buy & hold</span>
+                    <select
+                      value={backtestBenchmarkEnabled ? "on" : "off"}
+                      onChange={(event) => setBacktestBenchmarkEnabled(event.target.value === "on")}
+                    >
+                      <option value="on">Ativo</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="auth-actions">
+                  <button
+                    type="button"
+                    className="tab-button"
+                    onClick={handleRunBacktest}
+                    disabled={backtestRunning || backtestStrategies.length === 0}
+                  >
+                    {backtestRunning ? "A correr..." : "Correr backtest"}
+                  </button>
+                </div>
+              </section>
+
+              {backtestError && <p className="error">{backtestError}</p>}
+              {backtestLoading && <p className="hint">A carregar histórico de backtests...</p>}
+
+              {!backtestLoading && backtestRuns.length === 0 && (
+                <p className="hint">Ainda sem backtests para este utilizador/símbolo.</p>
+              )}
+
+              {backtestRuns.length > 0 && (
+                <section className="strategy-consensus-card">
+                  <div className="signals-header">
+                    <h3>4) Histórico de runs (máx. 2 para comparar)</h3>
+                  </div>
+                  <div className="signals-list">
+                    {backtestRuns.map((run) => (
+                      <article key={run.id} className="signal-row backtest-run-row">
+                        <div className="signal-main">
+                          <div className="signal-top">
+                            <label className="strategy-chip">
+                              <input
+                                type="checkbox"
+                                checked={backtestCompareRunIds.includes(run.id)}
+                                onChange={() => handleToggleCompareRun(run.id)}
+                              />
+                              <span>Comparar</span>
+                            </label>
+                            <strong>{run.symbol}</strong>
+                            <span>{run.strategy_names.join(", ")}</span>
+                            <span>{formatDateTimeLabel(run.created_at)}</span>
+                            <span>Trades: {run.trades_count}</span>
+                          </div>
+                          <p>
+                            PnL:{" "}
+                            <strong className={run.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
+                              {run.net_pnl.toFixed(2)} ({(run.net_pnl_pct * 100).toFixed(2)}%)
+                            </strong>{" "}
+                            | Win rate: {(run.win_rate * 100).toFixed(1)}% | Drawdown máx.:{" "}
+                            {(run.max_drawdown_pct * 100).toFixed(2)}%
+                          </p>
+                          <div className="auth-actions">
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => handleOpenBacktestRun(run.id)}
+                            >
+                              Ver detalhe
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {comparedBacktestRuns.length === 2 && (
+                <section className="strategy-consensus-card">
+                  <div className="signals-header">
+                    <h3>Comparação lado a lado</h3>
+                  </div>
+                  <div className="backtest-compare-grid">
+                    {comparedBacktestRuns.map((run) => (
+                      <article key={`compare-${run.id}`} className="signal-row">
+                        <div className="signal-main">
+                          <div className="signal-top">
+                            <strong>Run #{run.id}</strong>
+                            <span>{run.strategy_names.join(", ")}</span>
+                          </div>
+                          <p>PnL: {run.net_pnl.toFixed(2)} | Win rate: {(run.win_rate * 100).toFixed(1)}%</p>
+                          <p>
+                            Profit factor: {run.profit_factor.toFixed(2)} | DD:{" "}
+                            {(run.max_drawdown_pct * 100).toFixed(2)}%
+                          </p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {backtestSelectedRun && (
+                <section className="strategy-consensus-card">
+                  <div className="signals-header">
+                    <h3>5) Detalhe do backtest #{backtestSelectedRun.id}</h3>
+                  </div>
+                  <div className="stats">
+                    <div>
+                      <span className="stats-label">Símbolo / intervalo</span>
+                      <strong>
+                        {backtestSelectedRun.symbol} / {backtestSelectedRun.timeframe}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="stats-label">Capital inicial {"->"} final</span>
+                      <strong>
+                        {backtestSelectedRun.initial_capital.toFixed(2)} {"->"}{" "}
+                        {getSummaryNumber(backtestSelectedRun.result_summary, "final_capital").toFixed(2)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="stats-label">Expectancy</span>
+                      <strong>{getSummaryNumber(backtestSelectedRun.result_summary, "expectancy").toFixed(2)}</strong>
+                    </div>
+                    <div>
+                      <span className="stats-label">Alpha vs benchmark</span>
+                      <strong>
+                        {(getSummaryNumber(backtestSelectedRun.result_summary, "alpha_vs_benchmark_pct") * 100).toFixed(
+                          2,
+                        )}
+                        %
+                      </strong>
+                    </div>
+                  </div>
+
+                  {typeof backtestSelectedRun.result_summary.walkforward === "object" &&
+                    backtestSelectedRun.result_summary.walkforward !== null && (
+                      <p className="hint">
+                        Walk-forward ativo: holdout{" "}
+                        {getSummaryNumber(
+                          backtestSelectedRun.result_summary.walkforward as Record<string, unknown>,
+                          "split_pct",
+                        )}
+                        %.
+                      </p>
+                    )}
+
+                  {getSummaryCurve(backtestSelectedRun.result_summary).length > 0 && (
+                    <div className="equity-curve-list">
+                      <span className="stats-label">Equity curve (últimos 20 pontos)</span>
+                      <div className="signals-list">
+                        {getSummaryCurve(backtestSelectedRun.result_summary)
+                          .slice(-20)
+                          .map((point) => (
+                            <article key={point.timestamp} className="signal-row">
+                              <div className="signal-main">
+                                <div className="signal-top">
+                                  <span>{formatDateTimeLabel(point.timestamp)}</span>
+                                  <strong>{point.equity.toFixed(2)}</strong>
+                                </div>
+                              </div>
+                            </article>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {backtestSelectedRun.trades && backtestSelectedRun.trades.length > 0 ? (
+                    <div className="signals-list">
+                      {backtestSelectedRun.trades.slice(0, 50).map((trade) => (
+                        <article key={trade.id} className="signal-row">
+                          <div className="signal-main">
+                            <div className="signal-top">
+                              <strong>{trade.direction}</strong>
+                              <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
+                              <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
+                              <span>Barras: {trade.bars_held}</span>
+                            </div>
+                            <p>
+                              PnL:{" "}
+                              <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
+                                {trade.net_pnl.toFixed(2)}
+                              </strong>{" "}
+                              | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)}{" "}
+                              {"->"} Exit {trade.exit_price.toFixed(2)}
+                            </p>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="hint">Este run não gerou trades.</p>
+                  )}
+                </section>
               )}
             </div>
           </div>

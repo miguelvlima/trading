@@ -103,6 +103,9 @@ pytest
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`
 - `GET /market-data/indicators?symbol=AAPL&timeframe=1d`
+- `GET /realtime/health`
+- `GET /realtime/quote?symbol=AAPL`
+- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100`
 - `GET /signals/strategies`
 - `POST /signals/generate`
 - `GET /signals`
@@ -121,3 +124,49 @@ CSV com cabeçalho obrigatório: `timestamp,open,high,low,close,volume`
 ```powershell
 python -m app.scripts.import_ohlcv --symbol AAPL --timeframe 1d --csv-path .\data\aapl.csv
 ```
+
+## Feed de dados em tempo real (Real-Time Market Data Feed)
+
+Liga a app a dados de mercado reais via polling de um provider REST (`yfinance` por
+omissão) e persiste candles normalizados na tabela existente `market_bars` (reutiliza
+`Instrument` / `MarketBar`, sem alterações de schema).
+
+### Variáveis de ambiente
+
+Definidas em `backend/.env` (ver `.env.example`):
+
+| Variável | Default | Descrição |
+| --- | --- | --- |
+| `REALTIME_FEED_PROVIDER` | `yfinance` | Provider de mercado a usar |
+| `REALTIME_FEED_SYMBOLS` | `AAPL,MSFT,NVDA` | Símbolos a seguir (separados por vírgula) |
+| `REALTIME_FEED_TIMEFRAME` | `1d` | Timeframe dos candles |
+| `REALTIME_FEED_POLL_SECONDS` | `60` | Intervalo entre ciclos de polling |
+| `REALTIME_FEED_STALE_AFTER_SECONDS` | `120` | Lag acima do qual o feed é considerado `stale` |
+| `REALTIME_FEED_MIN_REQUEST_INTERVAL_SECONDS` | `1.0` | Pacing mínimo entre requests ao provider |
+
+### Arrancar o worker localmente
+
+```powershell
+# a partir de backend/, com o venv ativo e a DB acessível
+python -m app.scripts.run_realtime_feed
+```
+
+O worker faz polling de cada símbolo, normaliza para o schema `MarketBar` e faz upsert
+idempotente (constraint `instrument_id + timeframe + timestamp`). Para parar, `Ctrl+C`
+(paragem limpa).
+
+### Smoke test dos endpoints
+
+Todos os endpoints exigem token Bearer (`get_current_user`):
+
+```powershell
+$token = (curl -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d "{\"email\":\"dev@tradingapp.dev\",\"password\":\"DevPass123!\"}" | ConvertFrom-Json).access_token
+
+curl http://localhost:8000/realtime/health -H "Authorization: Bearer $token"
+curl "http://localhost:8000/realtime/quote?symbol=AAPL" -H "Authorization: Bearer $token"
+curl "http://localhost:8000/realtime/history?symbol=AAPL&timeframe=1d&limit=100" -H "Authorization: Bearer $token"
+```
+
+- `GET /realtime/health` — estado do feed (`running` / `stale` / `empty`), `last_update`, `lag_seconds`, provider, símbolos seguidos.
+- `GET /realtime/quote?symbol=AAPL` — última quote normalizada (read-through ao provider).
+- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100` — histórico recente via provider (útil para debug).

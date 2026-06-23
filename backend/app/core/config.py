@@ -21,9 +21,24 @@ class Settings(BaseSettings):
     dev_default_user_display_name: str = "Dev User"
     dev_default_user_is_admin: bool = True
 
+    realtime_feed_provider: str = "yfinance"
+    realtime_feed_symbols: str = "AAPL,MSFT,NVDA"
+    realtime_feed_timeframe: str = "1d"
+    realtime_feed_poll_seconds: int = 60
+    realtime_feed_stale_after_seconds: int = 120
+    realtime_feed_min_request_interval_seconds: float = 1.0
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
+
+    @property
+    def realtime_feed_symbol_list(self) -> list[str]:
+        return [
+            symbol.strip().upper()
+            for symbol in self.realtime_feed_symbols.split(",")
+            if symbol.strip()
+        ]
 
     @property
     def sqlalchemy_database_url(self) -> str:

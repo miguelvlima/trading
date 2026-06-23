@@ -48,6 +48,8 @@ CI:
 - `GET /signals/strategies` lista estratégias disponíveis
 - `POST /signals/generate` gera e persiste sinais por estratégia
 - `GET /signals` lista sinais persistidos
+- `POST /backtests/run` corre simulação histórica e persiste resultado
+- `GET /backtests` lista backtests do utilizador autenticado
 - Dashboard com gráfico, overlays e painel de sinais explicados
 
 ## Como arrancar

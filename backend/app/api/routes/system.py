@@ -14,6 +14,10 @@ class ModeResponse(BaseModel):
     mode: str
 
 
+class VersionResponse(BaseModel):
+    version: str
+
+
 @router.get("/health", response_model=HealthResponse, tags=["system"])
 def get_health() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -23,3 +27,8 @@ def get_health() -> HealthResponse:
 def get_mode() -> ModeResponse:
     settings = get_settings()
     return ModeResponse(mode=settings.mode.upper())
+
+
+@router.get("/version", response_model=VersionResponse, tags=["system"])
+def get_version() -> VersionResponse:
+    return VersionResponse(version="0.1.0")

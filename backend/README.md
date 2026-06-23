@@ -5,6 +5,19 @@
 - Python 3.11+
 - PostgreSQL local (via Docker Compose na raiz do projeto)
 
+## Ambientes e workflow da equipa
+
+Consulte o guia completo para trabalho em paralelo (prompt-first):
+- `../docs/development-environments-prompt-first.md`
+- Inclui runbook de deploy para staging e production com smoke tests.
+- Plano funcional da próxima fase (Backtesting/Simulação):
+- `../docs/backtesting-phase-plan.md`
+
+Templates de ambiente:
+- local: `backend/.env.example`
+- staging: `backend/.env.staging.example`
+- production: `backend/.env.production.example`
+
 ## Setup rápido
 
 ```powershell
@@ -13,6 +26,14 @@ python -m venv .venv
 pip install -e .[dev]
 copy .env.example .env
 ```
+
+No arranque local via script central (`npm run dev:all` na raiz), o backend executa:
+- `alembic upgrade head`
+- `python -m app.scripts.bootstrap_dev_user`
+
+Isto cria automaticamente (se não existir) um user local:
+- email: `dev@tradingapp.dev`
+- password: `DevPass123!`
 
 ## Segurança mínima (recomendado para partilha)
 
@@ -49,6 +70,16 @@ curl https://<backend>.up.railway.app/health
 curl -X POST https://<backend>.up.railway.app/auth/login -H "Content-Type: application/json" -d "{\"email\":\"user@empresa.com\",\"password\":\"StrongPass123\"}"
 ```
 
+### Guardrails de migrations (trabalho paralelo)
+
+Antes de abrir PR com alterações de schema:
+
+```powershell
+alembic heads
+```
+
+O resultado deve indicar apenas um head ativo.
+
 ## Arrancar backend
 
 ```powershell
@@ -66,6 +97,7 @@ pytest
 
 - `GET /health` -> `{"status":"ok"}`
 - `GET /mode` -> `{"mode":"PAPER"}`
+- `GET /version` -> `{"version":"0.1.0"}`
 - `GET /market-data/instruments`
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`

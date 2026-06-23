@@ -1,0 +1,128 @@
+.realtime-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.realtime-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px;
+}
+
+.realtime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.realtime-field label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a96ab;
+}
+
+.realtime-field input,
+.realtime-field select {
+  background: #0f1420;
+  color: #e6ecf5;
+  border: 1px solid #2a3445;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.95rem;
+}
+
+.realtime-symbol-input {
+  display: flex;
+  gap: 8px;
+}
+
+.realtime-symbol-input input {
+  width: 140px;
+  text-transform: uppercase;
+}
+
+.realtime-live-price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: auto;
+  text-align: right;
+}
+
+.realtime-live-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a96ab;
+}
+
+.realtime-live-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #e6ecf5;
+  font-variant-numeric: tabular-nums;
+}
+
+.realtime-live-tag {
+  font-size: 0.72rem;
+  color: #d97706;
+}
+
+.realtime-chart {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid #1c2433;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Feed health badge */
+.realtime-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+
+.realtime-badge-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.realtime-badge-meta {
+  color: #8a96ab;
+}
+
+.realtime-badge-running {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.realtime-badge-stale {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+  border-color: rgba(217, 119, 6, 0.35);
+}
+
+.realtime-badge-error {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.realtime-badge-empty,
+.realtime-badge-unknown {
+  color: #8a96ab;
+  background: rgba(138, 150, 171, 0.12);
+  border-color: rgba(138, 150, 171, 0.3);
+}

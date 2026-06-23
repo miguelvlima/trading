@@ -77,6 +77,23 @@ Required flow:
 4. Validate on staging.
 5. Promote with PR `develop -> main`.
 
+## Parallel work tracks (current)
+
+Two independent feature tracks run in parallel on separate branches. Each track has its own spec — agents must read the spec for their track, not assume files from another architecture.
+
+| Track | Owner | Branch | Spec |
+| --- | --- | --- | --- |
+| Backtesting / Simulation | Miguel | `feature/backtesting-simulation-v1` | endpoints and UI already in `develop`; refine in owned files |
+| Real-Time Market Data Feed | Nuno | `feature/realtime-data-feed-v1` | `docs/realtime-data-feed-spec.md` |
+
+Rules:
+- Branch always from latest `develop`.
+- Do not work on the other person's branch.
+- Respect file ownership boundaries in each spec.
+- Coordinate before editing shared files (`models.py`, `main.py`, README).
+
+For Nuno's track, the AI prompt must start with: "Read `docs/realtime-data-feed-spec.md` and implement it on `feature/realtime-data-feed-v1`."
+
 ## Prompt-first team protocol
 
 Use this protocol before every task:

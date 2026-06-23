@@ -7,6 +7,9 @@ Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via
 Guia operacional completo:
 - `docs/development-environments-prompt-first.md`
 
+Specs de frentes paralelas (AI agents):
+- Real-time data feed: `docs/realtime-data-feed-spec.md`
+
 Convenção de branches:
 - `main`: produção
 - `develop`: integração/staging
@@ -140,9 +143,12 @@ Variáveis relevantes no `frontend/.env`:
 9. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
 10. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
-## Fora de escopo nesta fase
+## Próximas frentes (em paralelo)
 
-- IBKR adapter/conectividade
-- Sinais/estratégias
-- Backtesting
-- Preparação/confirmação de ordens
+- **Backtesting/Simulação** — em `develop` (tab Simulação + `/backtests/*`)
+- **Real-time market data feed** — spec em `docs/realtime-data-feed-spec.md`, branch `feature/realtime-data-feed-v1`
+
+## Fora de escopo (ainda)
+
+- Execução de ordens reais (live trading)
+- IBKR adapter (opcional numa fase futura; não bloqueia o feed v1)

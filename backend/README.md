@@ -11,6 +11,9 @@ Consulte o guia completo para trabalho em paralelo (prompt-first):
 - `../docs/development-environments-prompt-first.md`
 - Inclui runbook de deploy para staging e production com smoke tests.
 
+Spec da frente real-time (Nuno):
+- `../docs/realtime-data-feed-spec.md`
+
 Templates de ambiente:
 - local: `backend/.env.example`
 - staging: `backend/.env.staging.example`

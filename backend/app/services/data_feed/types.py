@@ -71,6 +71,17 @@ class BarQuote:
     is_final: bool = True
 
 
+@dataclass(frozen=True)
+class SymbolMatch:
+    """A contract returned by a provider's symbol search (e.g. IBKR lookup)."""
+
+    symbol: str
+    name: str | None
+    sec_type: str | None
+    exchange: str | None
+    currency: str | None
+
+
 @runtime_checkable
 class MarketDataProvider(Protocol):
     """Minimal contract every market data provider must implement.

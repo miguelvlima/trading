@@ -6,7 +6,7 @@ from decimal import Decimal
 import structlog
 
 from app.services.data_feed.pacing import PacingThrottle
-from app.services.data_feed.types import BarQuote, is_period_closed
+from app.services.data_feed.types import BarQuote, SymbolMatch, is_period_closed
 
 logger = structlog.get_logger(__name__)
 
@@ -221,3 +221,36 @@ class IBKRProvider:
     def fetch_latest_quote(self, symbol: str) -> BarQuote | None:
         bars = self.fetch_recent_bars(symbol, "1d", limit=1)
         return bars[-1] if bars else None
+
+    def search_symbols(self, query: str, limit: int = 25) -> list[SymbolMatch]:
+        """Look up matching contracts via IBKR (the full IBKR universe)."""
+        cleaned = query.strip()
+        if not cleaned:
+            return []
+        if not self._ensure_connected():
+            return []
+
+        self._throttle.wait()
+        try:
+            results = self._ib.reqMatchingSymbols(cleaned)
+            self._throttle.record_success()
+        except Exception as exc:  # noqa: BLE001 - never raise to the caller
+            self._throttle.record_failure()
+            logger.error("ibkr_search_failed", query=cleaned, error=str(exc))
+            return []
+
+        matches: list[SymbolMatch] = []
+        for description in results or []:
+            contract = getattr(description, "contract", None)
+            if contract is None:
+                continue
+            matches.append(
+                SymbolMatch(
+                    symbol=contract.symbol,
+                    name=getattr(contract, "description", None) or None,
+                    sec_type=contract.secType or None,
+                    exchange=(contract.primaryExchange or contract.exchange or None),
+                    currency=contract.currency or None,
+                )
+            )
+        return matches[:limit]

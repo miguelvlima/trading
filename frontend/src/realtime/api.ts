@@ -27,6 +27,22 @@ export type FeedHealth = {
   recent_errors: string[];
 };
 
+export type SymbolMatch = {
+  symbol: string;
+  name: string | null;
+  sec_type: string | null;
+  exchange: string | null;
+  currency: string | null;
+};
+
+export type Instrument = {
+  id: number;
+  symbol: string;
+  name: string | null;
+  exchange: string | null;
+  currency: string;
+};
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -74,6 +90,19 @@ export function fetchBars(
 export function fetchQuote(baseUrl: string, token: string, symbol: string): Promise<Quote> {
   const query = new URLSearchParams({ symbol });
   return getJson<Quote>(baseUrl, token, `/realtime/quote?${query.toString()}`);
+}
+
+export function searchSymbols(
+  baseUrl: string,
+  token: string,
+  query: string,
+): Promise<SymbolMatch[]> {
+  const params = new URLSearchParams({ q: query });
+  return getJson<SymbolMatch[]>(baseUrl, token, `/realtime/symbols/search?${params.toString()}`);
+}
+
+export function fetchInstruments(baseUrl: string, token: string): Promise<Instrument[]> {
+  return getJson<Instrument[]>(baseUrl, token, "/market-data/instruments");
 }
 
 export function fetchHealth(

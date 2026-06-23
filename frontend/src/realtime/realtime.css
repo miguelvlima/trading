@@ -34,14 +34,101 @@
   font-size: 0.95rem;
 }
 
+.realtime-symbol-search {
+  position: relative;
+}
+
 .realtime-symbol-input {
   display: flex;
   gap: 8px;
 }
 
 .realtime-symbol-input input {
-  width: 140px;
+  width: 260px;
   text-transform: uppercase;
+}
+
+.realtime-search-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 340px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #131a28;
+  border: 1px solid #2a3445;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.realtime-search-loading {
+  padding: 8px 10px;
+  color: #8a96ab;
+  font-size: 0.85rem;
+}
+
+.realtime-search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  color: #e6ecf5;
+}
+
+.realtime-search-item:hover {
+  background: #1c2433;
+}
+
+.realtime-search-symbol {
+  font-weight: 700;
+}
+
+.realtime-search-desc {
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
+.realtime-quick-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.realtime-quick-label {
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
+.realtime-chip {
+  background: #0f1420;
+  color: #c7d0e0;
+  border: 1px solid #2a3445;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.realtime-chip:hover {
+  border-color: #38bdf8;
+}
+
+.realtime-chip-active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: #38bdf8;
+  color: #e6ecf5;
 }
 
 .realtime-live-price {

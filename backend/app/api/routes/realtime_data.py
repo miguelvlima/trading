@@ -8,7 +8,11 @@ from app.api.dependencies.auth import get_current_user
 from app.core.config import Settings, get_settings
 from app.db.dependencies import get_db_session
 from app.db.models import User
-from app.schemas.realtime_data import RealtimeHealthResponse, RealtimeQuoteResponse
+from app.schemas.realtime_data import (
+    RealtimeHealthResponse,
+    RealtimeQuoteResponse,
+    SymbolMatchResponse,
+)
 from app.services.data_feed.providers import build_provider
 from app.services.data_feed.service import DataFeedService, normalize_symbol
 from app.services.data_feed.types import BarQuote, MarketDataProvider, timeframe_seconds
@@ -77,6 +81,37 @@ def get_feed_health(
         tracked_symbols=health.tracked_symbols,
         recent_errors=health.recent_errors,
     )
+
+
+@router.get("/symbols/search", response_model=list[SymbolMatchResponse])
+def search_symbols(
+    q: str = Query(min_length=1, max_length=32),
+    _: User = Depends(get_current_user),
+    provider: MarketDataProvider = Depends(get_provider),
+) -> list[SymbolMatchResponse]:
+    # Symbol search is provider-specific (IBKR contract lookup); providers that
+    # do not implement it simply return no matches.
+    search = getattr(provider, "search_symbols", None)
+    if not callable(search):
+        return []
+    try:
+        matches = search(q)
+    except Exception as exc:  # noqa: BLE001 - surface provider failures as 502
+        logger.warning("realtime_symbol_search_error", query=q, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Provider error during symbol search.",
+        ) from exc
+    return [
+        SymbolMatchResponse(
+            symbol=match.symbol,
+            name=match.name,
+            sec_type=match.sec_type,
+            exchange=match.exchange,
+            currency=match.currency,
+        )
+        for match in matches
+    ]
 
 
 @router.get("/quote", response_model=RealtimeQuoteResponse)

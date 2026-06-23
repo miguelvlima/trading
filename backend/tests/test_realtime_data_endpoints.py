@@ -232,6 +232,44 @@ def test_health_endpoint_reports_empty_without_data(tmp_path: Path) -> None:
     assert response.json()["status"] == "empty"
 
 
+def test_symbol_search_endpoint_returns_matches(tmp_path: Path) -> None:
+    from app.services.data_feed.types import SymbolMatch
+
+    session_factory = _build_session_factory(tmp_path)
+    provider = FakeProvider(
+        search_results=[
+            SymbolMatch(
+                symbol="TSLA", name="Tesla", sec_type="STK", exchange="NASDAQ", currency="USD"
+            ),
+            SymbolMatch(
+                symbol="TSM", name="Taiwan Semi", sec_type="STK", exchange="NYSE", currency="USD"
+            ),
+        ]
+    )
+
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+    app.dependency_overrides[get_provider] = lambda: provider
+
+    client = TestClient(app)
+    response = client.get("/realtime/symbols/search", params={"q": "TS"})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert [row["symbol"] for row in rows] == ["TSLA", "TSM"]
+    assert rows[0]["exchange"] == "NASDAQ"
+
+
+def test_symbol_search_requires_auth() -> None:
+    client = TestClient(app)
+    response = client.get("/realtime/symbols/search", params={"q": "TS"})
+    assert response.status_code == 401
+
+
 def test_quote_endpoint_requires_auth() -> None:
     # No get_current_user override -> oauth2 scheme rejects the missing token.
     client = TestClient(app)

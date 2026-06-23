@@ -15,6 +15,14 @@ class RealtimeQuoteResponse(BaseModel):
     is_final: bool
 
 
+class SymbolMatchResponse(BaseModel):
+    symbol: str
+    name: str | None = None
+    sec_type: str | None = None
+    exchange: str | None = None
+    currency: str | None = None
+
+
 class RealtimeHealthResponse(BaseModel):
     provider: str
     status: str

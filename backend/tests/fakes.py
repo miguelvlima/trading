@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.services.data_feed.types import BarQuote
+from app.services.data_feed.types import BarQuote, SymbolMatch
 
 
 def build_bar_quotes(
@@ -58,9 +58,11 @@ class FakeProvider:
         *,
         bars: dict[str, list[BarQuote]] | None = None,
         latest: dict[str, BarQuote] | None = None,
+        search_results: list[SymbolMatch] | None = None,
     ) -> None:
         self._bars = {key.upper(): value for key, value in (bars or {}).items()}
         self._latest = {key.upper(): value for key, value in (latest or {}).items()}
+        self._search_results = search_results
         self.calls: list[tuple[str, str, int]] = []
 
     def fetch_recent_bars(self, symbol: str, timeframe: str, limit: int) -> list[BarQuote]:
@@ -75,6 +77,10 @@ class FakeProvider:
             return self._latest[key]
         bars = self._bars.get(key, [])
         return bars[-1] if bars else None
+
+    def search_symbols(self, query: str, limit: int = 25) -> list[SymbolMatch]:
+        results = self._search_results or []
+        return results[:limit]
 
 
 # Backwards-compatible alias (earlier revision name).

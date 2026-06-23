@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { type Instrument, fetchInstruments } from "./api";
 import { CandleChart } from "./CandleChart";
 import { RealtimeErrorBoundary } from "./ErrorBoundary";
 import { FeedStatusBadge } from "./FeedStatusBadge";
 import { useBars } from "./useBars";
 import { useFeedHealth } from "./useFeedHealth";
 import { useLiveQuote } from "./useLiveQuote";
+import { useSymbolSearch } from "./useSymbolSearch";
 import "./realtime.css";
 
 type RealtimePageProps = {
@@ -70,6 +72,43 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
     return () => window.clearInterval(timer);
   }, []);
 
+  // Symbols already persisted by the feed (these have candles in the DB).
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+  useEffect(() => {
+    if (!authToken) {
+      return;
+    }
+    let cancelled = false;
+    fetchInstruments(apiBaseUrl, authToken)
+      .then((rows) => {
+        if (!cancelled) {
+          setInstruments(rows);
+        }
+      })
+      .catch(() => {
+        /* non-fatal: quick-picks just stay empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, authToken, symbol]);
+
+  // Quick-pick chips: union of persisted instruments and the configured feed.
+  const quickPicks = useMemo(() => {
+    const set = new Set<string>(instruments.map((row) => row.symbol));
+    for (const tracked of health?.tracked_symbols ?? []) {
+      set.add(tracked);
+    }
+    return Array.from(set).sort();
+  }, [instruments, health]);
+
+  const [showResults, setShowResults] = useState<boolean>(false);
+  const { results: searchResults, loading: searchLoading } = useSymbolSearch(
+    apiBaseUrl,
+    authToken,
+    symbolInput,
+  );
+
   const sessionExpired = [barsError, quoteError, healthError].some((message) =>
     message?.toLowerCase().includes("sessão expirada"),
   );
@@ -81,11 +120,14 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
   const changePct = change !== null && dayOpen ? (change / dayOpen) * 100 : null;
   const changeDir = change === null || change === 0 ? "flat" : change > 0 ? "up" : "down";
 
-  const applySymbol = () => {
-    const next = symbolInput.trim().toUpperCase();
-    if (next) {
-      setSymbol(next);
+  const selectSymbol = (next: string) => {
+    const cleaned = next.trim().toUpperCase();
+    if (!cleaned) {
+      return;
     }
+    setSymbol(cleaned);
+    setSymbolInput(cleaned);
+    setShowResults(false);
   };
 
   if (!authToken) {
@@ -100,30 +142,77 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
     <div className="realtime-page">
       <div className="realtime-toolbar">
         <div className="realtime-field">
-          <label htmlFor="realtime-symbol">Símbolo</label>
-          <div className="realtime-symbol-input">
-            <input
-              id="realtime-symbol"
-              value={symbolInput}
-              onChange={(event) => setSymbolInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  applySymbol();
-                }
-              }}
-              placeholder="AAPL"
-              list="realtime-symbol-options"
-            />
-            <button type="button" className="tab-button" onClick={applySymbol}>
-              Ver
-            </button>
+          <label htmlFor="realtime-symbol">Símbolo (pesquisa IBKR)</label>
+          <div className="realtime-symbol-search">
+            <div className="realtime-symbol-input">
+              <input
+                id="realtime-symbol"
+                value={symbolInput}
+                onChange={(event) => {
+                  setSymbolInput(event.target.value);
+                  setShowResults(true);
+                }}
+                onFocus={() => setShowResults(true)}
+                onBlur={() => window.setTimeout(() => setShowResults(false), 150)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    selectSymbol(symbolInput);
+                  }
+                }}
+                placeholder="Pesquisar (ex.: AAPL, TSLA, SPY)…"
+                autoComplete="off"
+              />
+              <button type="button" className="tab-button" onClick={() => selectSymbol(symbolInput)}>
+                Ver
+              </button>
+            </div>
+
+            {showResults && (searchLoading || searchResults.length > 0) && (
+              <ul className="realtime-search-results">
+                {searchLoading && <li className="realtime-search-loading">A pesquisar…</li>}
+                {searchResults.map((match, index) => (
+                  <li key={`${match.symbol}-${match.exchange}-${index}`}>
+                    <button
+                      type="button"
+                      className="realtime-search-item"
+                      onMouseDown={(event) => {
+                        // onMouseDown fires before input blur so the click lands.
+                        event.preventDefault();
+                        selectSymbol(match.symbol);
+                      }}
+                    >
+                      <span className="realtime-search-symbol">{match.symbol}</span>
+                      <span className="realtime-search-desc">
+                        {[match.sec_type, match.exchange, match.currency]
+                          .filter(Boolean)
+                          .join(" · ")}
+                        {match.name ? ` — ${match.name}` : ""}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          {health && health.tracked_symbols.length > 0 && (
-            <datalist id="realtime-symbol-options">
-              {health.tracked_symbols.map((tracked) => (
-                <option key={tracked} value={tracked} />
+
+          {quickPicks.length > 0 && (
+            <div className="realtime-quick-picks">
+              <span className="realtime-quick-label">Seguidos:</span>
+              {quickPicks.map((pick) => (
+                <button
+                  key={pick}
+                  type="button"
+                  className={
+                    pick === symbol
+                      ? "realtime-chip realtime-chip-active"
+                      : "realtime-chip"
+                  }
+                  onClick={() => selectSymbol(pick)}
+                >
+                  {pick}
+                </button>
               ))}
-            </datalist>
+            </div>
           )}
         </div>
 

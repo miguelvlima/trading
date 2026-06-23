@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Instrument, MarketBar
@@ -39,6 +40,7 @@ class IngestResult:
     timeframe: str
     inserted: int
     updated: int
+    skipped_non_final: int = 0
 
     @property
     def total(self) -> int:
@@ -48,7 +50,7 @@ class IngestResult:
 @dataclass
 class FeedHealth:
     provider: str
-    status: str  # "running" | "stale" | "empty"
+    status: str  # "running" | "stale" | "empty" | "error"
     last_update: datetime | None
     lag_seconds: float | None
     tracked_symbols: list[str]
@@ -61,6 +63,16 @@ class DataFeedService:
     The upsert is intentionally dialect-agnostic (select-then-write) so the same
     code path runs under the SQLite test harness and Postgres in production,
     honouring the ``uq_market_bars_instrument_timeframe_timestamp`` constraint.
+
+    Contract enforced here (see ``docs/realtime-data-feed-spec.md``):
+
+    * **Closed bars only** — bars with ``is_final=False`` (the period still in
+      formation) are skipped, so a backtest never reads a moving ``close``.
+    * **Provider/server time, UTC** — timestamps come from the provider and are
+      only coerced to UTC; the local wall clock is never used as a bar's time.
+    * **Idempotent upsert** with an ``IntegrityError``-safe instrument
+      get-or-create, since the CSV importer may create the same instrument
+      concurrently.
     """
 
     def __init__(
@@ -89,7 +101,17 @@ class DataFeedService:
 
         instrument = Instrument(symbol=symbol, currency="USD")
         self._session.add(instrument)
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError:
+            # Another writer (e.g. the CSV importer) created this instrument
+            # between our SELECT and INSERT — recover by re-reading it.
+            self._session.rollback()
+            instrument = self._session.execute(
+                select(Instrument).where(Instrument.symbol == symbol)
+            ).scalar_one()
+            logger.info("instrument_create_race_recovered", symbol=symbol)
+            return instrument
         logger.info("instrument_created", symbol=symbol)
         return instrument
 
@@ -137,7 +159,12 @@ class DataFeedService:
 
         inserted = 0
         updated = 0
+        skipped_non_final = 0
         for quote in quotes:
+            if not quote.is_final:
+                # Closed-bars-only contract: never persist an in-formation bar.
+                skipped_non_final += 1
+                continue
             if self._upsert_bar(instrument, quote, timeframe):
                 inserted += 1
             else:
@@ -150,9 +177,14 @@ class DataFeedService:
             timeframe=timeframe,
             inserted=inserted,
             updated=updated,
+            skipped_non_final=skipped_non_final,
         )
         return IngestResult(
-            symbol=normalized, timeframe=timeframe, inserted=inserted, updated=updated
+            symbol=normalized,
+            timeframe=timeframe,
+            inserted=inserted,
+            updated=updated,
+            skipped_non_final=skipped_non_final,
         )
 
     def get_health(
@@ -178,24 +210,30 @@ class DataFeedService:
                 .limit(1)
             ).scalar_one_or_none()
 
-        if last_update is None:
-            return FeedHealth(
-                provider=self._provider_name,
-                status="empty",
-                last_update=None,
-                lag_seconds=None,
-                tracked_symbols=normalized,
-                recent_errors=list(self._recent_errors[-10:]),
-            )
+        recent_errors = list(self._recent_errors[-10:])
 
-        last_update = _coerce_utc(last_update)
-        lag_seconds = (now - last_update).total_seconds()
-        status = "stale" if lag_seconds > stale_after_seconds else "running"
+        if last_update is None:
+            # No data at all: "error" if we have failures on record, else "empty".
+            base_status = "empty"
+            lag_seconds: float | None = None
+        else:
+            last_update = _coerce_utc(last_update)
+            lag_seconds = (now - last_update).total_seconds()
+            base_status = "stale" if lag_seconds > stale_after_seconds else "running"
+
+        # Staleness is the primary signal (works cross-process via the DB). A
+        # recorded error is only surfaced as "error" when the feed is *also* not
+        # fresh — a healthy, up-to-date feed stays "running" despite a stale error.
+        if base_status != "running" and recent_errors:
+            status = "error"
+        else:
+            status = base_status
+
         return FeedHealth(
             provider=self._provider_name,
             status=status,
             last_update=last_update,
             lag_seconds=lag_seconds,
             tracked_symbols=normalized,
-            recent_errors=list(self._recent_errors[-10:]),
+            recent_errors=recent_errors,
         )

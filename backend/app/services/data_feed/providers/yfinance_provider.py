@@ -6,7 +6,7 @@ from decimal import Decimal
 import structlog
 
 from app.services.data_feed.pacing import PacingThrottle
-from app.services.data_feed.types import BarQuote
+from app.services.data_feed.types import BarQuote, is_period_closed
 
 logger = structlog.get_logger(__name__)
 
@@ -92,7 +92,10 @@ class YFinanceProvider:
         assert last_exc is not None
         raise last_exc
 
-    def _frame_to_quotes(self, symbol: str, frame) -> list[BarQuote]:
+    def _frame_to_quotes(self, symbol: str, timeframe: str, frame) -> list[BarQuote]:
+        # ``now`` is used only to decide whether each bar's period has closed,
+        # never as a bar timestamp (timestamps come from the provider, in UTC).
+        now = datetime.now(UTC)
         quotes: list[BarQuote] = []
         for index, row in frame.iterrows():
             timestamp = index.to_pydatetime()
@@ -109,6 +112,7 @@ class YFinanceProvider:
                     low=_to_decimal(row["Low"]),
                     close=_to_decimal(row["Close"]),
                     volume=_to_decimal(row["Volume"]),
+                    is_final=is_period_closed(timestamp, timeframe, now=now),
                 )
             )
         return quotes
@@ -121,7 +125,7 @@ class YFinanceProvider:
         if frame is None or frame.empty:
             logger.info("yfinance_empty_result", symbol=normalized, timeframe=timeframe)
             return []
-        quotes = self._frame_to_quotes(normalized, frame.dropna())
+        quotes = self._frame_to_quotes(normalized, timeframe, frame.dropna())
         return quotes[-limit:] if limit > 0 else quotes
 
     def fetch_latest_quote(self, symbol: str) -> BarQuote | None:

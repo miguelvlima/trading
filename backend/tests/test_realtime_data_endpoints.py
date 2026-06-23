@@ -14,7 +14,7 @@ from app.db.base import Base
 from app.db.dependencies import get_db_session
 from app.db.models import Instrument, MarketBar, User
 from app.main import app
-from fakes import FakeMarketDataProvider, build_bar_quotes
+from fakes import FakeProvider, build_bar_quotes
 
 
 def _build_session_factory(tmp_path: Path) -> sessionmaker[Session]:
@@ -37,7 +37,7 @@ def _override_db(session_factory: sessionmaker[Session]):
 def test_quote_endpoint_returns_latest(tmp_path: Path) -> None:
     session_factory = _build_session_factory(tmp_path)
     quotes = build_bar_quotes("AAPL", count=3)
-    provider = FakeMarketDataProvider(bars={"AAPL": quotes})
+    provider = FakeProvider(bars={"AAPL": quotes})
 
     app.dependency_overrides[get_db_session] = _override_db(session_factory)
     app.dependency_overrides[get_current_user] = lambda: User(
@@ -54,11 +54,12 @@ def test_quote_endpoint_returns_latest(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["symbol"] == "AAPL"
     assert Decimal(payload["close"]) == quotes[-1].close
+    assert payload["is_final"] is True
 
 
 def test_quote_endpoint_404_when_no_data(tmp_path: Path) -> None:
     session_factory = _build_session_factory(tmp_path)
-    provider = FakeMarketDataProvider(bars={})
+    provider = FakeProvider(bars={})
 
     app.dependency_overrides[get_db_session] = _override_db(session_factory)
     app.dependency_overrides[get_current_user] = lambda: User(
@@ -77,7 +78,7 @@ def test_quote_endpoint_404_when_no_data(tmp_path: Path) -> None:
 def test_history_endpoint_returns_bars(tmp_path: Path) -> None:
     session_factory = _build_session_factory(tmp_path)
     quotes = build_bar_quotes("AAPL", count=4)
-    provider = FakeMarketDataProvider(bars={"AAPL": quotes})
+    provider = FakeProvider(bars={"AAPL": quotes})
 
     app.dependency_overrides[get_db_session] = _override_db(session_factory)
     app.dependency_overrides[get_current_user] = lambda: User(
@@ -135,6 +136,44 @@ def test_health_endpoint_reports_running(tmp_path: Path) -> None:
     assert payload["status"] == "running"
     assert "AAPL" in payload["tracked_symbols"]
     assert payload["last_update"] is not None
+
+
+def test_health_endpoint_reports_stale_for_old_bar(tmp_path: Path) -> None:
+    session_factory = _build_session_factory(tmp_path)
+
+    with session_factory() as session:
+        instrument = Instrument(symbol="AAPL", name="Apple", currency="USD")
+        session.add(instrument)
+        session.flush()
+        session.add(
+            MarketBar(
+                instrument_id=instrument.id,
+                timeframe="1d",
+                # Far in the past -> lag well beyond the default 180s threshold.
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                open=Decimal("100"),
+                high=Decimal("101"),
+                low=Decimal("99"),
+                close=Decimal("100.5"),
+                volume=Decimal("1000"),
+            )
+        )
+        session.commit()
+
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    client = TestClient(app)
+    response = client.get("/realtime/health")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "stale"
+    assert payload["lag_seconds"] is not None and payload["lag_seconds"] > 180
 
 
 def test_health_endpoint_reports_empty_without_data(tmp_path: Path) -> None:

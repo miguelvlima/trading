@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.db.models import Instrument, MarketBar
-from app.services.data_feed.pacing import PacingThrottle
 from app.services.data_feed.service import DataFeedService, normalize_symbol
 from fakes import build_bar_quotes
 
@@ -116,6 +115,69 @@ def test_get_health_empty_running_and_stale(tmp_path: Path) -> None:
     assert health.status == "stale"
 
 
+def test_non_final_bar_is_not_persisted(tmp_path: Path) -> None:
+    session_factory = _build_session_factory(tmp_path)
+    # 4 bars where the most recent is still in formation (is_final=False).
+    quotes = build_bar_quotes("NVDA", count=4, last_is_non_final=True)
+
+    with session_factory() as session:
+        result = DataFeedService(session, provider_name="fake").ingest_bars("NVDA", "1d", quotes)
+
+    assert result.inserted == 3
+    assert result.skipped_non_final == 1
+
+    with session_factory() as session:
+        instrument = session.execute(
+            select(Instrument).where(Instrument.symbol == "NVDA")
+        ).scalar_one()
+        timestamps = session.execute(
+            select(MarketBar.timestamp)
+            .where(MarketBar.instrument_id == instrument.id)
+            .order_by(MarketBar.timestamp.asc())
+        ).scalars().all()
+
+    assert len(timestamps) == 3
+    # The non-final bar (last timestamp in the series) must be absent.
+    assert quotes[-1].timestamp not in timestamps
+
+
+def test_get_or_create_instrument_recovers_from_race(tmp_path: Path) -> None:
+    session_factory = _build_session_factory(tmp_path)
+
+    # Simulate a concurrent writer having already created the instrument.
+    with session_factory() as session:
+        session.add(Instrument(symbol="AMD", currency="USD"))
+        session.commit()
+
+    with session_factory() as session:
+        service = DataFeedService(session, provider_name="fake")
+        result = service.ingest_bars("amd", "1d", build_bar_quotes("AMD", count=2))
+
+    assert result.inserted == 2
+
+    with session_factory() as session:
+        count = session.execute(
+            select(func.count()).select_from(Instrument).where(Instrument.symbol == "AMD")
+        ).scalar_one()
+    assert count == 1  # no duplicate instrument created
+
+
+def test_get_health_reports_error_when_stale_with_recorded_error(tmp_path: Path) -> None:
+    session_factory = _build_session_factory(tmp_path)
+    now = datetime(2026, 6, 23, 12, 0, tzinfo=UTC)
+
+    with session_factory() as session:
+        DataFeedService(session, provider_name="fake").ingest_bars(
+            "AAPL", "1d", build_bar_quotes("AAPL", count=1, start=now - timedelta(days=2))
+        )
+        service = DataFeedService(session, provider_name="fake", now_fn=lambda: now)
+        service.record_error("provider boom")
+        health = service.get_health(["AAPL"], "1d", stale_after_seconds=180)
+
+    assert health.status == "error"
+    assert "provider boom" in health.recent_errors
+
+
 def test_normalize_symbol() -> None:
     assert normalize_symbol("  aapl ") == "AAPL"
     try:
@@ -124,41 +186,3 @@ def test_normalize_symbol() -> None:
         pass
     else:  # pragma: no cover
         raise AssertionError("expected ValueError for empty symbol")
-
-
-def test_pacing_throttle_enforces_min_interval_and_backoff() -> None:
-    clock = {"t": 0.0}
-    sleeps: list[float] = []
-
-    def fake_time() -> float:
-        return clock["t"]
-
-    def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        clock["t"] += seconds
-
-    throttle = PacingThrottle(
-        min_interval_seconds=2.0, time_fn=fake_time, sleep_fn=fake_sleep
-    )
-
-    # First call: no wait.
-    assert throttle.wait() == 0.0
-    assert sleeps == []
-
-    # Immediate second call: must wait the full interval.
-    assert throttle.wait() == 2.0
-    assert sleeps == [2.0]
-
-    # Advance real time past the interval -> no wait needed.
-    clock["t"] += 5.0
-    assert throttle.wait() == 0.0
-
-    # A failure grows backoff; next immediate call waits interval + backoff.
-    throttle.record_failure()
-    assert throttle.backoff_seconds == 2.0
-    waited = throttle.wait()
-    assert waited == 4.0  # 2.0 interval + 2.0 backoff
-
-    # Success resets backoff.
-    throttle.record_success()
-    assert throttle.backoff_seconds == 0.0

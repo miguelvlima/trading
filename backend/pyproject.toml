@@ -27,6 +27,11 @@ dev = [
   "httpx>=0.28.0",
   "pytest>=8.4.0",
 ]
+# Optional: only needed to run the real-time feed with REALTIME_FEED_PROVIDER=ibkr.
+# Not required for tests (the suite uses a fake provider) or the yfinance default.
+ibkr = [
+  "ib_insync>=0.9.86",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

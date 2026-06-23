@@ -94,12 +94,18 @@ def main() -> None:
         poll_seconds=poll_seconds,
     )
 
-    while not _stop_event.is_set():
-        _poll_once(provider, symbols, timeframe, history_limit)
-        if _stop_event.is_set():
-            break
-        # Sleep between polling cycles, but stay responsive to stop requests.
-        _stop_event.wait(timeout=poll_seconds)
+    try:
+        while not _stop_event.is_set():
+            _poll_once(provider, symbols, timeframe, history_limit)
+            if _stop_event.is_set():
+                break
+            # Sleep between polling cycles, but stay responsive to stop requests.
+            _stop_event.wait(timeout=poll_seconds)
+    finally:
+        # Providers holding a socket (e.g. IBKR) get a chance to close cleanly.
+        disconnect = getattr(provider, "disconnect", None)
+        if callable(disconnect):
+            disconnect()
 
     logger.info("realtime_feed_stopped")
 

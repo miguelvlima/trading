@@ -12,6 +12,7 @@ class RealtimeQuoteResponse(BaseModel):
     low: Decimal
     close: Decimal
     volume: Decimal
+    is_final: bool
 
 
 class RealtimeHealthResponse(BaseModel):

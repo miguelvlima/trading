@@ -38,6 +38,7 @@ def _quote_response(quote: BarQuote) -> RealtimeQuoteResponse:
         low=quote.low,
         close=quote.close,
         volume=quote.volume,
+        is_final=quote.is_final,
     )
 
 

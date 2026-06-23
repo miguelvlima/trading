@@ -25,8 +25,11 @@ class Settings(BaseSettings):
     realtime_feed_symbols: str = "AAPL,MSFT,NVDA"
     realtime_feed_timeframe: str = "1d"
     realtime_feed_poll_seconds: int = 60
-    realtime_feed_stale_after_seconds: int = 120
+    realtime_feed_stale_after_seconds: int = 180
     realtime_feed_min_request_interval_seconds: float = 1.0
+    ibkr_gateway_host: str = "127.0.0.1"
+    ibkr_gateway_port: int = 4002
+    ibkr_client_id: int = 7
 
     @property
     def cors_origins(self) -> list[str]:

@@ -10,6 +10,8 @@
 Consulte o guia completo para trabalho em paralelo (prompt-first):
 - `../docs/development-environments-prompt-first.md`
 - Inclui runbook de deploy para staging e production com smoke tests.
+- Plano funcional da próxima fase (Backtesting/Simulação):
+- `../docs/backtesting-phase-plan.md`
 
 Templates de ambiente:
 - local: `backend/.env.example`

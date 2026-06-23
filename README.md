@@ -6,6 +6,8 @@ Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via
 
 Guia operacional completo:
 - `docs/development-environments-prompt-first.md`
+- Plano da próxima fase funcional (Backtesting/Simulação):
+- `docs/backtesting-phase-plan.md`
 
 Convenção de branches:
 - `main`: produção
@@ -49,6 +51,19 @@ CI:
 - `POST /signals/generate` gera e persiste sinais por estratégia
 - `GET /signals` lista sinais persistidos
 - Dashboard com gráfico, overlays e painel de sinais explicados
+
+## Próxima fase prioritária (Fase 5)
+
+Backtesting/Simulação é funcionalidade essencial do produto e será a próxima fase de implementação.
+
+Escopo da Fase 5:
+- definir estratégia + ativo + intervalo temporal de teste,
+- simular execução de ordens com regras explícitas (entrada/saída/risco),
+- gerar métricas de resultado (PnL, win rate, drawdown, equity curve),
+- disponibilizar API + UI para correr e analisar backtests.
+
+Detalhe do plano:
+- `docs/backtesting-phase-plan.md`
 
 ## Como arrancar
 
@@ -138,9 +153,8 @@ Variáveis relevantes no `frontend/.env`:
 9. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
 10. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
-## Fora de escopo nesta fase
+## Fora de escopo desta entrega técnica atual
 
-- IBKR adapter/conectividade
-- Sinais/estratégias
-- Backtesting
-- Preparação/confirmação de ordens
+- IBKR adapter/conectividade real
+- Execução real de ordens (live trading)
+- Preparação/confirmação de ordens com broker real

@@ -43,6 +43,45 @@ export type Instrument = {
   currency: string;
 };
 
+export type IndexSpec = {
+  symbol: string;
+  name: string;
+};
+
+// --- WebSocket message shapes (server -> client) ---------------------------
+// Numeric fields arrive as strings (or null when IBKR has not reported them).
+
+export type TickMessage = {
+  type: "tick";
+  symbol: string;
+  timestamp: string;
+  last: string | null;
+  bid: string | null;
+  ask: string | null;
+  bid_size: string | null;
+  ask_size: string | null;
+  last_size: string | null;
+  volume: string | null;
+  day_high: string | null;
+  day_low: string | null;
+};
+
+export type IndexMessage = {
+  type: "index";
+  symbol: string;
+  name: string;
+  timestamp: string;
+  last: string | null;
+  change_pct: string | null;
+};
+
+export type StreamMessage =
+  | TickMessage
+  | IndexMessage
+  | { type: "subscribed"; symbol: string | null; active_lines: number }
+  | { type: "error"; code: string; message: string }
+  | { type: "pong" };
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -103,6 +142,39 @@ export function searchSymbols(
 
 export function fetchInstruments(baseUrl: string, token: string): Promise<Instrument[]> {
   return getJson<Instrument[]>(baseUrl, token, "/market-data/instruments");
+}
+
+// Provider-backed history for the chart. `window` (1H..All) selects the IBKR
+// duration + throttled pagination on the backend; `limit` is the fallback for
+// providers without pagination.
+export function fetchHistory(
+  baseUrl: string,
+  token: string,
+  symbol: string,
+  timeframe: string,
+  window: string,
+  limit: number,
+): Promise<Quote[]> {
+  const query = new URLSearchParams({
+    symbol,
+    timeframe,
+    window,
+    limit: String(limit),
+  });
+  return getJson<Quote[]>(baseUrl, token, `/realtime/history?${query.toString()}`);
+}
+
+export function fetchIndices(baseUrl: string, token: string): Promise<IndexSpec[]> {
+  return getJson<IndexSpec[]>(baseUrl, token, "/realtime/indices");
+}
+
+// Build the ws(s):// URL for the tick stream from the http(s) API base, carrying
+// the JWT in the query string (the WS handshake cannot send an auth header).
+export function realtimeWsUrl(baseUrl: string, token: string): string {
+  let origin = baseUrl;
+  if (origin.startsWith("https")) origin = "wss" + origin.slice(5);
+  else if (origin.startsWith("http")) origin = "ws" + origin.slice(4);
+  return `${origin}/realtime/ws?token=${encodeURIComponent(token)}`;
 }
 
 export function fetchHealth(

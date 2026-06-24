@@ -1,26 +1,28 @@
 import { useEffect, useState } from "react";
 
-import { type Bar, ApiError, fetchBars } from "./api";
+import { type Quote, ApiError, fetchHistory } from "./api";
 
 type UseBarsResult = {
-  bars: Bar[];
+  bars: Quote[];
   loading: boolean;
   error: string | null;
 };
 
-// Loads the historical candles for a symbol/timeframe from /market-data/bars.
+// Loads the chart history for a symbol/candle/window from /realtime/history
+// (provider-backed, window-aware, paginated + throttled on the server).
 // Re-fetches on selection change AND on an interval (default 20s) so newly
-// closed bars the worker persists show up without a manual reload. The periodic
-// refresh is silent (no loading flicker) and pauses while the tab is hidden.
+// closed bars show up without a manual reload. The periodic refresh is silent
+// (no loading flicker) and pauses while the tab is hidden.
 export function useBars(
   baseUrl: string,
   token: string,
   symbol: string,
   timeframe: string,
+  window: string,
   limit: number,
   refreshMs = 20000,
 ): UseBarsResult {
-  const [bars, setBars] = useState<Bar[]>([]);
+  const [bars, setBars] = useState<Quote[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +43,7 @@ export function useBars(
         setError(null);
       }
       try {
-        const data = await fetchBars(baseUrl, token, symbol, timeframe, limit);
+        const data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
         if (!cancelled) {
           setBars(data);
           setError(null);
@@ -59,13 +61,13 @@ export function useBars(
     };
 
     void load(true);
-    const timer = window.setInterval(() => void load(false), refreshMs);
+    const timer = globalThis.setInterval(() => void load(false), refreshMs);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      globalThis.clearInterval(timer);
     };
-  }, [baseUrl, token, symbol, timeframe, limit, refreshMs]);
+  }, [baseUrl, token, symbol, timeframe, window, limit, refreshMs]);
 
   return { bars, loading, error };
 }

@@ -190,24 +190,79 @@ A simulação/backtesting e os sinais continuam a ler `market_bars` — o feed r
 
 ---
 
-## Fora de escopo desta fase
+## Fora de escopo
 
 - Execução de ordens reais (IBKR fica em paper / read-only — só market data)
-- Refactor total do frontend para `ChartPanel` / `CandleChart` / hooks isolados
-- WebSocket frontend (pode ficar para v2; polling via API basta na v1)
 - Substituir endpoints históricos `/market-data/*`
+
+> Nota: o **WebSocket de ticks** e o **refactor do frontend em componentes/hooks
+> isolados + indicadores** estavam fora de escopo na v1 e passaram a ser
+> entregues na **v2** (ver secção abaixo).
 
 ---
 
-## Critérios de done
+## Critérios de done (v1)
 
-- [ ] Branch `feature/realtime-data-feed-v1` baseada em `develop` atualizado
-- [ ] Provider + service + pacing implementados
-- [ ] Endpoints `/realtime/health`, `/realtime/quote` (e opcional `/realtime/history`)
-- [ ] Script `run_realtime_feed.py` persiste bars em `market_bars`
-- [ ] Testes novos passam; suite existente sem regressões (`pytest`)
-- [ ] `backend/README.md` atualizado com runbook do feed
-- [ ] PR para `develop` com evidência de testes
+- [x] Branch `feature/realtime-data-feed-v1` baseada em `develop` atualizado
+- [x] Provider + service + pacing implementados
+- [x] Endpoints `/realtime/health`, `/realtime/quote` (e opcional `/realtime/history`)
+- [x] Script `run_realtime_feed.py` persiste bars em `market_bars`
+- [x] Testes novos passam; suite existente sem regressões (`pytest`)
+- [x] `backend/README.md` atualizado com runbook do feed
+- [x] PR para `develop` com evidência de testes
+
+---
+
+## v2 — Tempo real por WebSocket + UI rica
+
+Branch: `feature/realtime-tab-ws-v2` (a partir de `develop`). A v2 mantém o
+contrato e os endpoints da v1 e acrescenta streaming push e uma aba reconstruída.
+**A aba Realtime vive dentro de `App.tsx` (ficheiro partilhado) — só o ponto de
+entrada que renderiza `<RealtimePage>` é tocado; toda a lógica vive em
+`frontend/src/realtime/`.**
+
+### Backend
+
+- **WebSocket `/realtime/ws`** (`api/routes/realtime_ws.py`): JWT validado no
+  handshake (token na query string), bridge de um `StreamingProvider` para o
+  socket via uma fila + tarefa única de envio. Mensagens cliente→servidor
+  `{"action":"subscribe","symbol":...}`; servidor→cliente `tick` / `index` /
+  `subscribed` / `error`.
+- **Três canais** (`providers/ibkr_provider.py::IBKRStreamingProvider`, em thread
+  com event-loop próprio): ticks (`reqMktData`), barras em formação
+  (`keepUpToDate`) e índices (`Index(...)`/`Forex`).
+- **Gestão do teto de ~100 linhas** (`data_feed/streaming.py::SubscriptionManager`):
+  conta as subscrições ativas e cancela (`cancelMktData`) a linha anterior ao
+  trocar de símbolo — sem subscrições órfãs. Degrada com mensagem clara se o teto
+  for atingido.
+- **Paginação histórica throttled** (`fetch_history_paginated`): a janela "All"
+  pagina recuando `endDateTime`, **cada página pelo `PacingThrottle`**.
+- **Contrato crítico mantido**: a barra **em formação** (`is_final=False`) é
+  estado efémero de stream/UI e **nunca** é escrita em `market_bars`; só barras
+  fechadas são persistidas. Timestamps sempre UTC do servidor/IBKR.
+- Endpoints REST novos: `GET /realtime/history?...&window=` (paginado) e
+  `GET /realtime/indices`. Settings: `REALTIME_MAX_MARKET_DATA_LINES`,
+  `IBKR_MARKET_DATA_TYPE` (1 live / 3 delayed p/ paper).
+
+### Frontend (`frontend/src/realtime/`)
+
+- `RealtimePage` orquestrador; `SymbolBar`, `ChartControls` (híbrido janela↔vela
+  com sugestão/override manual), `LiveDataPanel` (stream por tick, flash),
+  `LastBarPanel` (SNAPSHOT vs EM FORMAÇÃO), `IndexStrip`.
+- `useTickStream` (WebSocket), `useBars` (history por janela), `CandleChart`
+  estendido (overlays + panes de osciladores + barra em formação + chart-head).
+- `indicators/`: módulos puros e testáveis — SMA, EMA, WMA, VWAP, Bollinger
+  (overlays) e RSI, MACD, ATR, Stochastic, ADX, OBV (osciladores).
+- CSS confinado a `realtime.css` (tokens em `.rt-page`), sem afetar a barra de
+  abas nem a Simulação.
+
+### Testes (offline, sem Gateway)
+
+- `tests/test_subscription_manager.py` — teto de linhas + cancel-on-switch.
+- `tests/test_realtime_ws.py` — handshake JWT, stream de ticks/índices,
+  cancelamento ao trocar símbolo, degradação no teto (via `FakeStreamingProvider`).
+- `tests/test_realtime_data_endpoints.py` — `/realtime/indices` + fallback do
+  `window`.
 
 ---
 

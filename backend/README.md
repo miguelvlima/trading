@@ -211,3 +211,32 @@ curl "http://localhost:8000/realtime/history?symbol=AAPL&timeframe=1d&limit=100"
 - `GET /realtime/health` — estado por **staleness** (`running` / `stale` / `error` / `empty`), `last_update` (UTC), `lag_seconds` (idade da última barra), `provider`, símbolos seguidos e últimos erros.
 - `GET /realtime/quote?symbol=AAPL` — última quote normalizada (read-through ao provider).
 - `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100` — histórico recente via provider (útil para debug).
+- `GET /realtime/history?symbol=AAPL&timeframe=5m&window=4h` — histórico por **janela** (1H..All): usa a paginação throttled do IBKR quando disponível, com fallback para `limit`.
+- `GET /realtime/indices` — descritores da faixa de índices (valores ao vivo chegam pelo WebSocket).
+
+### WebSocket de ticks (`/realtime/ws`) — v2
+
+Stream push de ticks ao vivo + valores dos índices para a aba Realtime.
+
+- **Auth no handshake**: o token JWT vai na query string (o handshake WS não leva
+  header `Authorization`): `ws://localhost:8000/realtime/ws?token=<jwt>`.
+- **Cliente → servidor**: `{"action":"subscribe","symbol":"AAPL"}` (troca de
+  símbolo), `{"action":"unsubscribe"}`, `{"action":"ping"}`.
+- **Servidor → cliente**: `tick` (last/bid/ask/sizes/volume/high/low do dia),
+  `index` (símbolo, nome, last, change_pct), `subscribed` (ack + nº de linhas
+  ativas), `error` (ex.: `line_budget`).
+- **Teto de linhas**: cada símbolo seguido e cada índice consome uma linha
+  `reqMktData`; ao trocar de símbolo a linha anterior é cancelada
+  (`REALTIME_MAX_MARKET_DATA_LINES`, default 100).
+- **Paper sem dados live**: `IBKR_MARKET_DATA_TYPE=3` (delayed) faz o feed receber
+  ticks atrasados em vez de nada.
+- A **barra em formação** é mostrada no chart/UI mas **nunca** é persistida em
+  `market_bars` (só barras fechadas são gravadas).
+
+Smoke test do WebSocket (com `websocat` ou equivalente):
+
+```bash
+websocat "ws://localhost:8000/realtime/ws?token=$token"
+# depois de ligado, enviar:
+{"action":"subscribe","symbol":"AAPL"}
+```

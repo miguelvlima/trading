@@ -446,6 +446,31 @@ body {
   margin-top: 0.75rem;
 }
 
+.backtest-trades-list {
+  margin-top: 0.75rem;
+}
+
+.backtest-trades-list-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.backtest-trades-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.backtest-trades-pagination .hint {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
 .backtest-compare-toggle {
   display: inline-flex;
   align-items: center;

@@ -175,6 +175,7 @@ type BacktestPreset = {
 
 const DEFAULT_BACKTEST_STRENGTH_PCT = 10;
 const BACKTEST_MIN_BARS = 200;
+const BACKTEST_TRADES_PAGE_SIZE = 20;
 
 const strengthLevelLabel = (pct: number): string => {
   if (pct <= 20) {
@@ -604,6 +605,7 @@ function App() {
   const [demoDataLoading, setDemoDataLoading] = useState(false);
   const [backtestTradesOnChartRunId, setBacktestTradesOnChartRunId] = useState<number | null>(null);
   const [backtestTradesOnChart, setBacktestTradesOnChart] = useState<BacktestTrade[]>([]);
+  const [backtestTradesPage, setBacktestTradesPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -766,6 +768,10 @@ function App() {
   }, [isAuthenticated, authToken]);
 
   useEffect(() => {
+    setBacktestTradesPage(1);
+  }, [backtestSelectedRun?.id]);
+
+  useEffect(() => {
     if (!authToken) {
       setCurrentUser(null);
       setSavedCombinations([]);
@@ -882,6 +888,10 @@ function App() {
 
     loadBacktests();
   }, [authToken, isAuthenticated, backtestRefreshToken, selectedSymbol, selectedTimeframe]);
+
+  useEffect(() => {
+    setBacktestTradesPage(1);
+  }, [backtestSelectedRun?.id]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -1598,6 +1608,8 @@ function App() {
     const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
     const runConfig = getRunConfigSnapshot(run);
     const benchmarkEnabled = runConfig.benchmark_enabled !== false;
+    const trades = run.trades ?? [];
+    const totalTradePages = Math.max(1, Math.ceil(trades.length / BACKTEST_TRADES_PAGE_SIZE));
 
     const renderWalkforwardColumn = (label: string, metrics: WalkforwardMetrics) => (
       <article className="backtest-wf-col">
@@ -1774,32 +1786,66 @@ function App() {
           </div>
         )}
 
-        {run.trades && run.trades.length > 0 ? (
-          <div className="signals-list">
-            {run.trades.slice(0, 50).map((trade) => (
-              <article key={trade.id} className="signal-row">
-                <div className="signal-main">
-                  <div className="signal-top">
-                    <strong>{trade.direction}</strong>
-                    <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
-                    <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
-                    <span>Barras: {trade.bars_held}</span>
-                  </div>
-                  <p>
-                    PnL:{" "}
-                    <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
-                      {trade.net_pnl.toFixed(2)}
-                    </strong>{" "}
-                    | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)} {"->"}{" "}
-                    Exit {trade.exit_price.toFixed(2)}
-                  </p>
-                  <p className="backtest-trade-reason">
-                    <span>Entrada: {trade.entry_reason}</span>
-                    <span>Saída: {trade.exit_reason}</span>
-                  </p>
+        {trades.length > 0 ? (
+          <div className="backtest-trades-list">
+            <div className="backtest-trades-list-header">
+              <span className="stats-label">Trades ({trades.length})</span>
+              {trades.length > BACKTEST_TRADES_PAGE_SIZE && (
+                <div className="backtest-trades-pagination">
+                  <button
+                    type="button"
+                    className="config-button"
+                    disabled={backtestTradesPage <= 1}
+                    onClick={() => setBacktestTradesPage((page) => Math.max(1, page - 1))}
+                  >
+                    Anterior
+                  </button>
+                  <span className="hint">
+                    {Math.min((backtestTradesPage - 1) * BACKTEST_TRADES_PAGE_SIZE + 1, trades.length)}–
+                    {Math.min(backtestTradesPage * BACKTEST_TRADES_PAGE_SIZE, trades.length)} de {trades.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="config-button"
+                    disabled={backtestTradesPage >= totalTradePages}
+                    onClick={() => setBacktestTradesPage((page) => Math.min(totalTradePages, page + 1))}
+                  >
+                    Seguinte
+                  </button>
                 </div>
-              </article>
-            ))}
+              )}
+            </div>
+            <div className="signals-list">
+              {trades
+                .slice(
+                  (backtestTradesPage - 1) * BACKTEST_TRADES_PAGE_SIZE,
+                  backtestTradesPage * BACKTEST_TRADES_PAGE_SIZE,
+                )
+                .map((trade) => (
+                  <article key={trade.id} className="signal-row">
+                    <div className="signal-main">
+                      <div className="signal-top">
+                        <strong>{trade.direction}</strong>
+                        <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
+                        <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
+                        <span>Barras: {trade.bars_held}</span>
+                      </div>
+                      <p>
+                        PnL:{" "}
+                        <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
+                          {trade.net_pnl.toFixed(2)}
+                        </strong>{" "}
+                        | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)}{" "}
+                        {"->"} Exit {trade.exit_price.toFixed(2)}
+                      </p>
+                      <p className="backtest-trade-reason">
+                        <span>Entrada: {trade.entry_reason}</span>
+                        <span>Saída: {trade.exit_reason}</span>
+                      </p>
+                    </div>
+                  </article>
+                ))}
+            </div>
           </div>
         ) : (
           <p className="hint">Este run não gerou trades.</p>

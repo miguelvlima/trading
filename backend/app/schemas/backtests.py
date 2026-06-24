@@ -15,6 +15,8 @@ class BacktestRunRequest(BaseModel):
     fee_bps: float = Field(default=5.0, ge=0.0, le=500.0)
     slippage_bps: float = Field(default=2.0, ge=0.0, le=500.0)
     min_signal_strength: float = Field(default=0.1, ge=0.0, le=1.0)
+    strategy_min_strengths: dict[str, float] = Field(default_factory=dict)
+    min_consensus_strength: float | None = Field(default=None, ge=0.0, le=1.0)
     position_size_pct: float = Field(default=100.0, gt=0.0, le=100.0)
     entry_confirmation_bars: int = Field(default=1, ge=1, le=5)
     exit_mode: Literal["opposite_signal", "tp_sl_or_opposite", "tp_sl_only"] = "tp_sl_or_opposite"

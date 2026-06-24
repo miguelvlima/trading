@@ -447,14 +447,17 @@ class IBKRStreamingProvider:
     # -- IB loop thread --------------------------------------------------------
 
     def _run_loop(self) -> None:
+        # Create + install the loop BEFORE importing ib_insync: its eventkit
+        # dependency calls asyncio.get_event_loop() at import time, which raises
+        # on Python 3.12 in a fresh thread when no loop is set.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             from ib_insync import IB
         except ImportError:
             logger.error("ibkr_library_missing", hint="pip install ib_insync")
+            loop.close()
             return
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         self._ib = IB()
         try:
             loop.run_until_complete(self._connect())

@@ -1362,6 +1362,11 @@ function App() {
     const walkforwardInSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.in_sample) : null;
     const walkforwardOutSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.out_sample) : null;
     const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
+    const runConfig =
+      typeof run.result_summary.config === "object" && run.result_summary.config !== null
+        ? (run.result_summary.config as Record<string, unknown>)
+        : null;
+    const benchmarkEnabled = runConfig?.benchmark_enabled !== false;
 
     const renderWalkforwardColumn = (label: string, metrics: WalkforwardMetrics) => (
       <article className="backtest-wf-col">
@@ -1420,7 +1425,12 @@ function App() {
         {equityCurve.length > 0 && (
           <div className="equity-curve-list">
             <span className="stats-label">Curva de equity</span>
-            <BacktestEquityChart points={equityCurve} />
+            <BacktestEquityChart
+              points={equityCurve}
+              initialCapital={run.initial_capital}
+              benchmarkReturnPct={benchmarkReturnPct}
+              benchmarkEnabled={benchmarkEnabled}
+            />
           </div>
         )}
 

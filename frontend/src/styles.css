@@ -611,6 +611,47 @@ body {
   overflow: hidden;
 }
 
+.backtest-equity-chart-wrap {
+  margin-top: 0.45rem;
+}
+
+.backtest-equity-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+}
+
+.backtest-equity-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.backtest-equity-legend-item::before {
+  content: "";
+  width: 1.1rem;
+  height: 0.15rem;
+  border-radius: 999px;
+}
+
+.backtest-equity-legend-strategy::before {
+  background: #38bdf8;
+}
+
+.backtest-equity-legend-benchmark::before {
+  background: repeating-linear-gradient(
+    90deg,
+    #f59e0b 0,
+    #f59e0b 4px,
+    transparent 4px,
+    transparent 7px
+  );
+  height: 0.2rem;
+}
+
 .backtest-walkforward-panel {
   margin-top: 0.85rem;
   padding: 0.75rem 0.85rem;

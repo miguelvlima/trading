@@ -1,5 +1,5 @@
 import { LineSeries, createChart, type LineData, type UTCTimestamp } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 export type EquityCurvePoint = {
   timestamp: string;
@@ -9,16 +9,49 @@ export type EquityCurvePoint = {
 
 type BacktestEquityChartProps = {
   points: EquityCurvePoint[];
+  initialCapital: number;
+  benchmarkReturnPct?: number;
+  benchmarkEnabled?: boolean;
 };
 
 const toChartTime = (timestamp: string): UTCTimestamp =>
   Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp;
 
-export function BacktestEquityChart({ points }: BacktestEquityChartProps) {
+const enrichBenchmarkCurve = (
+  points: EquityCurvePoint[],
+  initialCapital: number,
+  benchmarkReturnPct: number,
+): EquityCurvePoint[] => {
+  if (points.length < 2 || initialCapital <= 0) {
+    return points;
+  }
+  const lastIndex = points.length - 1;
+  return points.map((point, index) => ({
+    ...point,
+    benchmark_equity: initialCapital * (1 + benchmarkReturnPct * (index / lastIndex)),
+  }));
+};
+
+export function BacktestEquityChart({
+  points,
+  initialCapital,
+  benchmarkReturnPct = 0,
+  benchmarkEnabled = true,
+}: BacktestEquityChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const chartPoints = useMemo(() => {
+    const hasStoredBenchmark = points.some((point) => typeof point.benchmark_equity === "number");
+    if (hasStoredBenchmark || !benchmarkEnabled) {
+      return points;
+    }
+    return enrichBenchmarkCurve(points, initialCapital, benchmarkReturnPct);
+  }, [benchmarkEnabled, benchmarkReturnPct, initialCapital, points]);
+
+  const showBenchmark = benchmarkEnabled && chartPoints.some((point) => typeof point.benchmark_equity === "number");
+
   useEffect(() => {
-    if (!containerRef.current || points.length === 0) {
+    if (!containerRef.current || chartPoints.length === 0) {
       return;
     }
 
@@ -36,23 +69,27 @@ export function BacktestEquityChart({ points }: BacktestEquityChartProps) {
       color: "#38bdf8",
       lineWidth: 2,
       title: "Estratégia",
+      priceLineVisible: false,
+      lastValueVisible: true,
     });
-    const equityData: LineData[] = points.map((point) => ({
-      time: toChartTime(point.timestamp),
-      value: point.equity,
-    }));
-    equitySeries.setData(equityData);
+    equitySeries.setData(
+      chartPoints.map((point) => ({
+        time: toChartTime(point.timestamp),
+        value: point.equity,
+      })),
+    );
 
-    const hasBenchmark = points.some((point) => typeof point.benchmark_equity === "number");
-    if (hasBenchmark) {
+    if (showBenchmark) {
       const benchmarkSeries = chart.addSeries(LineSeries, {
-        color: "#94a3b8",
-        lineWidth: 1,
+        color: "#f59e0b",
+        lineWidth: 2,
         lineStyle: 2,
         title: "Buy & hold",
+        priceLineVisible: false,
+        lastValueVisible: true,
       });
       benchmarkSeries.setData(
-        points
+        chartPoints
           .filter((point) => typeof point.benchmark_equity === "number")
           .map((point) => ({
             time: toChartTime(point.timestamp),
@@ -75,11 +112,21 @@ export function BacktestEquityChart({ points }: BacktestEquityChartProps) {
       resizeObserver.disconnect();
       chart.remove();
     };
-  }, [points]);
+  }, [chartPoints, showBenchmark]);
 
-  if (points.length === 0) {
+  if (chartPoints.length === 0) {
     return null;
   }
 
-  return <div ref={containerRef} className="backtest-equity-chart" role="img" aria-label="Curva de equity" />;
+  return (
+    <div className="backtest-equity-chart-wrap">
+      <div ref={containerRef} className="backtest-equity-chart" role="img" aria-label="Curva de equity" />
+      <div className="backtest-equity-legend">
+        <span className="backtest-equity-legend-item backtest-equity-legend-strategy">Estratégia</span>
+        {showBenchmark && (
+          <span className="backtest-equity-legend-item backtest-equity-legend-benchmark">Buy &amp; hold</span>
+        )}
+      </div>
+    </div>
+  );
 }

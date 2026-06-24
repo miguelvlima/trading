@@ -1,0 +1,31 @@
+name: Auto request review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+    branches:
+      - develop
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request-review:
+    runs-on: ubuntu-latest
+    if: github.actor != 'ncraveiroai'
+    steps:
+      - name: Request review from Nuno
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const reviewers = ['ncraveiroai'];
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                reviewers,
+              });
+            } catch (error) {
+              core.info(`Review request skipped or already present: ${error.message}`);
+            }

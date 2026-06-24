@@ -128,6 +128,21 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
     assert owner_detail.status_code == 200
     assert owner_detail.json()["id"] == run_id
 
+    export_trades = client.get(
+        f"/backtests/{run_id}/export?type=trades",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert export_trades.status_code == 200
+    assert export_trades.headers["content-type"].startswith("text/csv")
+    assert "direction,entry_timestamp" in export_trades.text
+
+    export_equity = client.get(
+        f"/backtests/{run_id}/export?type=equity",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert export_equity.status_code == 200
+    assert "timestamp,equity" in export_equity.text
+
     other_detail = client.get(f"/backtests/{run_id}", headers={"Authorization": f"Bearer {other_token}"})
     assert other_detail.status_code == 404
 

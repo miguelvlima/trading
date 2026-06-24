@@ -172,6 +172,7 @@ type BacktestPreset = {
 };
 
 const DEFAULT_BACKTEST_STRENGTH_PCT = 10;
+const BACKTEST_MIN_BARS = 200;
 
 const strengthLevelLabel = (pct: number): string => {
   if (pct <= 20) {
@@ -498,6 +499,8 @@ function App() {
   const [backtestRunning, setBacktestRunning] = useState(false);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
+  const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
+  const [demoDataLoading, setDemoDataLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -626,7 +629,7 @@ function App() {
     };
 
     loadInstruments();
-  }, [isAuthenticated, authToken]);
+  }, [isAuthenticated, authToken, marketDataRefreshToken]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -808,7 +811,17 @@ function App() {
     };
 
     loadBars();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
+  }, [
+    selectedSymbol,
+    selectedTimeframe,
+    barLimit,
+    filterMode,
+    startDate,
+    endDate,
+    hasDateFilterError,
+    authToken,
+    marketDataRefreshToken,
+  ]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -1095,6 +1108,62 @@ function App() {
     [backtestRuns, backtestCompareRunIds],
   );
 
+  const simulationBarLimit = filterMode === "count" ? barLimit : backtestLimit;
+
+  const backtestDataAvailability = useMemo(() => {
+    if (!selectedSymbol) {
+      return { status: "no_symbol" as const };
+    }
+    if (loading) {
+      return { status: "loading" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    const hasInstrument = instruments.some((item) => item.symbol === selectedSymbol);
+    if (!hasInstrument) {
+      return { status: "no_instrument" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    const availableBars = bars.length;
+    if (availableBars === 0) {
+      return { status: "no_bars" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    if (availableBars < BACKTEST_MIN_BARS) {
+      return {
+        status: "insufficient_bars" as const,
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        availableBars,
+        requiredBars: BACKTEST_MIN_BARS,
+      };
+    }
+    if (availableBars < simulationBarLimit) {
+      return {
+        status: "partial_window" as const,
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        availableBars,
+        requestedBars: simulationBarLimit,
+      };
+    }
+    return {
+      status: "ready" as const,
+      symbol: selectedSymbol,
+      timeframe: selectedTimeframe,
+      availableBars,
+      requestedBars: simulationBarLimit,
+    };
+  }, [
+    bars.length,
+    instruments,
+    loading,
+    selectedSymbol,
+    selectedTimeframe,
+    simulationBarLimit,
+  ]);
+
+  const canRunBacktest =
+    backtestStrategies.length > 0 &&
+    !backtestRunning &&
+    (backtestDataAvailability.status === "ready" || backtestDataAvailability.status === "partial_window");
+
   const handleAuthSubmit = async () => {
     setAuthLoading(true);
     setAuthError(null);
@@ -1271,12 +1340,71 @@ function App() {
     setSignalMinStrengthPct(0);
   };
 
+  const handleLoadDemoMarketData = async () => {
+    if (!authToken || !selectedSymbol) {
+      return;
+    }
+    setDemoDataLoading(true);
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/market-data/load-demo`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          symbols: [selectedSymbol],
+          period: "2y",
+          include_weekly: selectedTimeframe === "1w",
+        }),
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao carregar dados demo."));
+      }
+      const payload = (await response.json()) as {
+        results: Array<{ symbol: string; imported_rows_1d: number; imported_rows_1w: number }>;
+      };
+      const result = payload.results[0];
+      if (!result) {
+        throw new Error("Nenhum dado foi importado.");
+      }
+      const importedForTimeframe =
+        selectedTimeframe === "1w" ? result.imported_rows_1w : result.imported_rows_1d;
+      if (importedForTimeframe === 0) {
+        throw new Error(
+          selectedTimeframe === "1w"
+            ? "Dados diários importados, mas sem velas semanais. Tente intervalo 1d ou volte a carregar com semanal."
+            : "Nenhuma vela diária foi importada para este símbolo.",
+        );
+      }
+      setMarketDataRefreshToken((previous) => previous + 1);
+    } catch (loadError) {
+      setBacktestError(toUserFetchError(loadError, "Erro inesperado ao carregar dados demo."));
+    } finally {
+      setDemoDataLoading(false);
+    }
+  };
+
   const handleRunBacktest = async () => {
     if (!authToken || !selectedSymbol || backtestStrategies.length === 0) {
       return;
     }
     if (hasDateFilterError) {
       setBacktestError("Defina um intervalo de datas válido para correr backtest.");
+      return;
+    }
+    if (backtestDataAvailability.status === "no_instrument" || backtestDataAvailability.status === "no_bars") {
+      setBacktestError(
+        `Sem velas para ${selectedSymbol} / ${selectedTimeframe}. Importe dados ou use "Carregar dados demo".`,
+      );
+      return;
+    }
+    if (backtestDataAvailability.status === "insufficient_bars") {
+      setBacktestError(
+        `Só ${backtestDataAvailability.availableBars} velas disponíveis; o backtest precisa de pelo menos ${BACKTEST_MIN_BARS}.`,
+      );
       return;
     }
 
@@ -1294,8 +1422,6 @@ function App() {
       const fallbackMinStrength = singleStrategyOnly
         ? strategyMinStrengths[backtestStrategies[0]]
         : backtestConsensusStrengthPct / 100;
-
-      const simulationBarLimit = filterMode === "count" ? barLimit : backtestLimit;
 
       const payload: Record<string, string | number | boolean | string[] | Record<string, number> | null> = {
         symbol: selectedSymbol,
@@ -2556,6 +2682,78 @@ function App() {
               </div>
               <p className="hint">Configura o run, executa e compara resultados entre simulações.</p>
 
+              {backtestDataAvailability.status !== "ready" &&
+                backtestDataAvailability.status !== "loading" &&
+                backtestDataAvailability.status !== "no_symbol" && (
+                  <div className="backtest-data-banner backtest-data-banner-warning">
+                    {backtestDataAvailability.status === "no_instrument" && (
+                      <p>
+                        <strong>{backtestDataAvailability.symbol}</strong> não está na base de dados. A simulação
+                        precisa de velas OHLCV importadas para{" "}
+                        <strong>{backtestDataAvailability.timeframe}</strong>.
+                      </p>
+                    )}
+                    {backtestDataAvailability.status === "no_bars" && (
+                      <p>
+                        Sem velas para <strong>{backtestDataAvailability.symbol}</strong> /{" "}
+                        <strong>{backtestDataAvailability.timeframe}</strong>
+                        {filterMode === "date"
+                          ? ` no intervalo ${startDate} – ${endDate}.`
+                          : "."}{" "}
+                        Importe CSV ou carregue dados demo.
+                      </p>
+                    )}
+                    {backtestDataAvailability.status === "insufficient_bars" && (
+                      <p>
+                        Só <strong>{backtestDataAvailability.availableBars}</strong> velas disponíveis para{" "}
+                        <strong>
+                          {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
+                        </strong>
+                        ; são necessárias pelo menos <strong>{backtestDataAvailability.requiredBars}</strong> para
+                        simular.
+                      </p>
+                    )}
+                    {backtestDataAvailability.status === "partial_window" && (
+                      <p>
+                        Há <strong>{backtestDataAvailability.availableBars}</strong> velas, mas pediste{" "}
+                        <strong>{backtestDataAvailability.requestedBars}</strong>. O backtest usará só as velas
+                        disponíveis.
+                      </p>
+                    )}
+                    {(backtestDataAvailability.status === "no_instrument" ||
+                      backtestDataAvailability.status === "no_bars" ||
+                      backtestDataAvailability.status === "insufficient_bars") && (
+                      <div className="backtest-data-banner-actions">
+                        <button
+                          type="button"
+                          className="tab-button"
+                          onClick={() => void handleLoadDemoMarketData()}
+                          disabled={demoDataLoading || !selectedSymbol}
+                        >
+                          {demoDataLoading ? "A importar..." : "Carregar dados demo (Yahoo, 2 anos)"}
+                        </button>
+                        <p className="hint backtest-data-banner-hint">
+                          Alternativa manual:{" "}
+                          <code>
+                            python -m app.scripts.import_ohlcv --symbol {selectedSymbol || "AAPL"} --timeframe{" "}
+                            {selectedTimeframe} --csv-path .\data\candles.csv
+                          </code>
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              {backtestDataAvailability.status === "ready" && (
+                <p className="hint backtest-data-ready">
+                  Dados OK: <strong>{backtestDataAvailability.availableBars}</strong> velas para{" "}
+                  <strong>
+                    {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
+                  </strong>
+                  .
+                </p>
+              )}
+
               <details className="strategy-library-expand">
                 <summary>Presets de simulação</summary>
                 <div className="strategy-library">
@@ -2881,7 +3079,7 @@ function App() {
                     type="button"
                     className="tab-button"
                     onClick={handleRunBacktest}
-                    disabled={backtestRunning || backtestStrategies.length === 0}
+                    disabled={!canRunBacktest}
                   >
                     {backtestRunning ? "A correr..." : "Correr backtest"}
                   </button>

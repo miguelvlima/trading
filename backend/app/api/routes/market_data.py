@@ -13,8 +13,12 @@ from app.schemas.market_data import (
     IndicatorResponse,
     IndicatorRowResponse,
     InstrumentResponse,
+    LoadDemoDataRequest,
+    LoadDemoDataResponse,
+    LoadDemoSymbolResult,
     MarketBarResponse,
 )
+from app.scripts.load_demo_data import load_symbol
 from app.services.csv_importer import import_ohlcv_csv
 from app.services.indicator_engine import (
     atr,
@@ -163,3 +167,36 @@ def import_market_data_csv(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/load-demo",
+    response_model=LoadDemoDataResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def load_demo_market_data(
+    payload: LoadDemoDataRequest,
+    _: User = Depends(get_current_user),
+) -> LoadDemoDataResponse:
+    symbols = sorted({item.upper().strip() for item in payload.symbols if item.strip()})
+    if not symbols:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one symbol is required.")
+
+    results: list[LoadDemoSymbolResult] = []
+    include_weekly = payload.include_weekly
+    for symbol in symbols:
+        daily_rows, weekly_rows = load_symbol(symbol, payload.period, include_weekly)
+        if daily_rows == 0 and weekly_rows == 0:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not download market data for {symbol}.",
+            )
+        results.append(
+            LoadDemoSymbolResult(
+                symbol=symbol,
+                imported_rows_1d=daily_rows,
+                imported_rows_1w=weekly_rows,
+            )
+        )
+
+    return LoadDemoDataResponse(results=results)

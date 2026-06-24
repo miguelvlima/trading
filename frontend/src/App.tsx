@@ -10,6 +10,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
 
+import { RealtimePage } from "./realtime/RealtimePage";
+
 type Instrument = {
   id: number;
   symbol: string;
@@ -52,7 +54,7 @@ type IndicatorRow = {
 };
 
 type FilterMode = "count" | "date";
-type ViewTab = "market" | "signals" | "backtests";
+type ViewTab = "market" | "signals" | "backtests" | "realtime";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
 
@@ -2719,11 +2721,23 @@ function App() {
           >
             Simulação
           </button>
+          <button
+            type="button"
+            className={activeTab === "realtime" ? "tab-button tab-button-active" : "tab-button"}
+            onClick={() => setActiveTab("realtime")}
+          >
+            Realtime
+          </button>
         </div>
 
         {error && <p className="error">{error}</p>}
 
         <div className="tab-content">
+          <div className={activeTab === "realtime" ? "tab-pane tab-pane-active" : "tab-pane"}>
+            {activeTab === "realtime" && (
+              <RealtimePage apiBaseUrl={API_BASE_URL} authToken={authToken} />
+            )}
+          </div>
           <div
             className={activeTab === "market" ? "tab-pane tab-pane-active" : "tab-pane"}
           >

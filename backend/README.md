@@ -103,6 +103,9 @@ pytest
 - `GET /market-data/bars?symbol=AAPL&timeframe=1d`
 - `POST /market-data/import-csv`
 - `GET /market-data/indicators?symbol=AAPL&timeframe=1d`
+- `GET /realtime/health`
+- `GET /realtime/quote?symbol=AAPL`
+- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100`
 - `GET /signals/strategies`
 - `POST /signals/generate`
 - `GET /signals`
@@ -121,3 +124,90 @@ CSV com cabeçalho obrigatório: `timestamp,open,high,low,close,volume`
 ```powershell
 python -m app.scripts.import_ohlcv --symbol AAPL --timeframe 1d --csv-path .\data\aapl.csv
 ```
+
+## Feed de dados em tempo real (Real-Time Market Data Feed)
+
+Liga a app a dados de mercado reais via polling de um provider e persiste candles
+normalizados na tabela existente `market_bars` (reutiliza `Instrument` / `MarketBar`,
+sem alterações de schema).
+
+Providers disponíveis:
+- `ibkr` (**default**) — via IB Gateway / TWS API (paper, read-only). Requer um IB Gateway
+  a correr (ver pré-requisitos abaixo). `ib_insync` já vem nas dependências base.
+- `yfinance` (fallback) — REST/polling, sem necessidade de Gateway. Selecionar com
+  `REALTIME_FEED_PROVIDER=yfinance` (útil para dev/CI sem IBKR).
+
+### Contrato de dados (importante)
+
+- **Só barras fechadas (`is_final`)**: a barra do período ainda em formação (ex.: a barra
+  `1d` de hoje a meio do dia) **não** é persistida. Assim o backtesting nunca lê um `close`
+  que ainda vai mudar. O serviço (`data_feed/service.py`) descarta `is_final=False`.
+- **Time-source = servidor, em UTC**: os timestamps das barras vêm do provider normalizados
+  a UTC, nunca de `datetime.now()` local (o relógio da máquina não é de confiança —
+  ver nota do IB Gateway abaixo). `now()` só é usado para decidir se um período já fechou.
+- **Upsert idempotente**: respeita a constraint `instrument_id + timeframe + timestamp`; o
+  get-or-create de `Instrument` trata `IntegrityError` (corrida com o importador de CSV).
+
+### Variáveis de ambiente
+
+Definidas em `backend/.env` (ver `.env.example`):
+
+| Variável | Default | Descrição |
+| --- | --- | --- |
+| `REALTIME_FEED_PROVIDER` | `ibkr` | Provider de mercado (`ibkr` default, ou `yfinance`) |
+| `REALTIME_FEED_SYMBOLS` | `AAPL,MSFT,NVDA` | Símbolos a seguir (separados por vírgula) |
+| `REALTIME_FEED_TIMEFRAME` | `1d` | Timeframe dos candles |
+| `REALTIME_FEED_POLL_SECONDS` | `60` | Intervalo entre ciclos de polling |
+| `REALTIME_FEED_STALE_AFTER_SECONDS` | `180` | Lag acima do qual o feed é considerado `stale` |
+| `REALTIME_FEED_MIN_REQUEST_INTERVAL_SECONDS` | `1.0` | Pacing mínimo entre requests ao provider |
+| `IBKR_GATEWAY_HOST` | `127.0.0.1` | Host do IB Gateway (só provider `ibkr`) |
+| `IBKR_GATEWAY_PORT` | `4002` | Porta do IB Gateway (paper API = `4002`) |
+| `IBKR_CLIENT_ID` | `7` | Client ID da ligação à API |
+
+### Pré-requisitos do IB Gateway (provider `ibkr`, default)
+
+Como o `ibkr` é o provider default, o worker e os endpoints `/realtime/quote|history`
+precisam de um IB Gateway acessível. (`ib_insync` já está nas dependências base.)
+
+1. Arrancar o **IB Gateway** em modo **paper**.
+2. Em *API → Settings*: ativar *Enable ActiveX and Socket Clients*, manter **Read-Only API**
+   ligado, e confirmar a porta **4002** (paper).
+3. Adicionar `127.0.0.1` aos **Trusted IPs**.
+
+> Sem Gateway acessível, o provider IBKR regista um erro estruturado e devolve vazio/None
+> (não rebenta o worker), e o `/realtime/health` reporta `error`/`stale`. Para dev/CI sem
+> IBKR, define `REALTIME_FEED_PROVIDER=yfinance`.
+
+> **Nota de fiabilidade**: o IB Gateway pode cair e reconectar silenciosamente
+> (`DISCONNECT_ON_INACTIVITY`, `Connection reset`, `HOT_RESTART`), e o relógio do sistema
+> pode ser ajustado (`SYSTEM CLOCK HAS BEEN CHANGED...`). Por isso o `/realtime/health`
+> mede **staleness** (idade da última barra persistida) e não apenas o estado do socket,
+> e os timestamps vêm sempre do servidor em UTC. O worker e o provider IBKR reconectam com
+> backoff e nunca morrem ao primeiro erro de ligação.
+
+### Arrancar o worker localmente
+
+```powershell
+# a partir de backend/, com o venv ativo e a DB acessível
+python -m app.scripts.run_realtime_feed
+```
+
+O worker faz polling de cada símbolo, normaliza para o schema `MarketBar` e faz upsert
+idempotente **apenas de barras fechadas**. Para parar, `Ctrl+C` (paragem limpa; fecha a
+ligação ao Gateway se aplicável).
+
+### Smoke test dos endpoints
+
+Todos os endpoints exigem token Bearer (`get_current_user`):
+
+```powershell
+$token = (curl -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d "{\"email\":\"dev@tradingapp.dev\",\"password\":\"DevPass123!\"}" | ConvertFrom-Json).access_token
+
+curl http://localhost:8000/realtime/health -H "Authorization: Bearer $token"
+curl "http://localhost:8000/realtime/quote?symbol=AAPL" -H "Authorization: Bearer $token"
+curl "http://localhost:8000/realtime/history?symbol=AAPL&timeframe=1d&limit=100" -H "Authorization: Bearer $token"
+```
+
+- `GET /realtime/health` — estado por **staleness** (`running` / `stale` / `error` / `empty`), `last_update` (UTC), `lag_seconds` (idade da última barra), `provider`, símbolos seguidos e últimos erros.
+- `GET /realtime/quote?symbol=AAPL` — última quote normalizada (read-through ao provider).
+- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100` — histórico recente via provider (útil para debug).

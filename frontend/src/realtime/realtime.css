@@ -1,0 +1,286 @@
+.realtime-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.realtime-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px;
+}
+
+.realtime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.realtime-field label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a96ab;
+}
+
+.realtime-field input,
+.realtime-field select {
+  background: #0f1420;
+  color: #e6ecf5;
+  border: 1px solid #2a3445;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.95rem;
+}
+
+.realtime-symbol-search {
+  position: relative;
+}
+
+.realtime-symbol-input {
+  display: flex;
+  gap: 8px;
+}
+
+.realtime-symbol-input input {
+  width: 260px;
+  text-transform: uppercase;
+}
+
+.realtime-search-results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 340px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #131a28;
+  border: 1px solid #2a3445;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.realtime-search-loading {
+  padding: 8px 10px;
+  color: #8a96ab;
+  font-size: 0.85rem;
+}
+
+.realtime-search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  color: #e6ecf5;
+}
+
+.realtime-search-item:hover {
+  background: #1c2433;
+}
+
+.realtime-search-symbol {
+  font-weight: 700;
+}
+
+.realtime-search-desc {
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
+.realtime-quick-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.realtime-quick-label {
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
+.realtime-chip {
+  background: #0f1420;
+  color: #c7d0e0;
+  border: 1px solid #2a3445;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.realtime-chip:hover {
+  border-color: #38bdf8;
+}
+
+.realtime-chip-active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: #38bdf8;
+  color: #e6ecf5;
+}
+
+.realtime-live-price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: auto;
+  text-align: right;
+}
+
+.realtime-live-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a96ab;
+}
+
+.realtime-live-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.realtime-live-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: #e6ecf5;
+  font-variant-numeric: tabular-nums;
+}
+
+.realtime-live-change {
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.realtime-live-change-up {
+  color: #16a34a;
+}
+
+.realtime-live-change-down {
+  color: #dc2626;
+}
+
+.realtime-live-change-flat {
+  color: #8a96ab;
+}
+
+.realtime-live-meta {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  font-size: 0.74rem;
+  color: #8a96ab;
+}
+
+.realtime-live-tag {
+  font-size: 0.74rem;
+  color: #d97706;
+}
+
+.realtime-live-updated {
+  font-size: 0.72rem;
+  color: #8a96ab;
+}
+
+.realtime-chart {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid #1c2433;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Feed health badge */
+.realtime-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+
+.realtime-badge-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.realtime-badge-meta {
+  color: #8a96ab;
+}
+
+.realtime-badge-running {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.realtime-badge-stale {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+  border-color: rgba(217, 119, 6, 0.35);
+}
+
+.realtime-badge-error {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.realtime-badge-empty,
+.realtime-badge-unknown {
+  color: #8a96ab;
+  background: rgba(138, 150, 171, 0.12);
+  border-color: rgba(138, 150, 171, 0.3);
+}
+
+/* Error boundary fallback */
+.realtime-error {
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  background: rgba(220, 38, 38, 0.08);
+  border-radius: 8px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.realtime-error h3 {
+  margin: 0;
+  color: #f87171;
+}
+
+.realtime-error-message {
+  color: #e6ecf5;
+  font-weight: 600;
+}
+
+.realtime-error-stack {
+  max-height: 220px;
+  overflow: auto;
+  background: #0f1420;
+  border: 1px solid #1c2433;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 0.78rem;
+  color: #8a96ab;
+  white-space: pre-wrap;
+}

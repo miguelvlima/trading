@@ -13,7 +13,7 @@ Paralelo a: Backtesting/Simulação (Miguel, branch `feature/backtesting-simulat
 
 Ligar a aplicação a **dados de mercado reais** e mantê-los **atualizados em tempo (quase) real**, persistindo candles normalizados na base de dados existente (`instruments`, `market_bars`).
 
-Esta fase **não** exige IBKR. O provider inicial pode ser polling REST (ex.: yfinance, Polygon, Alpaca, Binance) — escolher um e documentar.
+O provider **default** desta fase é o **IBKR** (via IB Gateway / TWS API, em modo paper read-only — apenas market data, sem execução de ordens). A camada de provider é uma abstração, por isso ficam suportados providers REST/polling alternativos (ex.: **yfinance** como fallback para dev/CI sem Gateway), mas o default e o caminho principal é IBKR.
 
 ---
 
@@ -57,12 +57,12 @@ Criar abstração de provider de mercado:
     - `fetch_latest_quote(symbol: str) -> BarQuote | None`
     - `fetch_recent_bars(symbol: str, timeframe: str, limit: int) -> list[BarQuote]`
 
-- `backend/app/services/data_feed/providers/yfinance_provider.py` (ou outro provider escolhido)
-  - implementação concreta com rate-limit/retry básico
+- `backend/app/services/data_feed/providers/ibkr_provider.py` (**default**)
+  - implementação concreta via IB Gateway / TWS (`ib_insync`), com reconexão/backoff, timeouts e rate-limit básico; normaliza tudo para UTC e marca `is_final`.
 
-Opcional (não obrigatório nesta fase):
+Fallback (selecionável via `REALTIME_FEED_PROVIDER=yfinance`):
 
-- `backend/app/services/data_feed/providers/ibkr_provider.py` — só se houver tempo; **não bloquear** a fase por IBKR.
+- `backend/app/services/data_feed/providers/yfinance_provider.py` — provider REST/polling, sem necessidade de Gateway (útil para dev/CI).
 
 ### 2) Serviço de ingestão e normalização
 
@@ -111,10 +111,14 @@ Comportamento:
 
 Variáveis sugeridas em `backend/.env.example`:
 
-- `REALTIME_FEED_PROVIDER=yfinance`
+- `REALTIME_FEED_PROVIDER=ibkr`
 - `REALTIME_FEED_SYMBOLS=AAPL,MSFT,NVDA`
 - `REALTIME_FEED_TIMEFRAME=1d`
 - `REALTIME_FEED_POLL_SECONDS=60`
+- `REALTIME_FEED_STALE_AFTER_SECONDS=180`
+- `IBKR_GATEWAY_HOST=127.0.0.1`
+- `IBKR_GATEWAY_PORT=4002`
+- `IBKR_CLIENT_ID=7`
 
 ### 6) Testes
 
@@ -188,8 +192,7 @@ A simulação/backtesting e os sinais continuam a ler `market_bars` — o feed r
 
 ## Fora de escopo desta fase
 
-- Execução de ordens reais
-- Integração IBKR obrigatória
+- Execução de ordens reais (IBKR fica em paper / read-only — só market data)
 - Refactor total do frontend para `ChartPanel` / `CandleChart` / hooks isolados
 - WebSocket frontend (pode ficar para v2; polling via API basta na v1)
 - Substituir endpoints históricos `/market-data/*`
@@ -224,7 +227,7 @@ Important interpretation rules:
 1) Files listed in the spec (adapter, types, service, pacing, fakes, realtime endpoints) are DELIVERABLES TO BUILD — they do not exist yet and that is expected.
 2) Reuse existing models Instrument/MarketBar and existing auth pattern (get_current_user).
 3) Do NOT refactor unrelated modules (backtests, signals UI, broker_connections).
-4) Do NOT require IBKR in v1; pick one REST/polling provider and document it.
+4) Default provider is IBKR (IB Gateway / TWS, paper read-only, market data only); yfinance stays as a selectable REST fallback for dev/CI without a Gateway.
 5) Keep /market-data/* endpoints backward compatible.
 
 Deliverables:

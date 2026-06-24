@@ -226,6 +226,13 @@ def run_backtest_simulation(
                 "min_consensus_strength": payload.min_consensus_strength
                 if payload.min_consensus_strength is not None
                 else payload.min_signal_strength,
+                "position_size_pct": payload.position_size_pct,
+                "entry_confirmation_bars": payload.entry_confirmation_bars,
+                "exit_mode": payload.exit_mode,
+                "stop_loss_pct": payload.stop_loss_pct,
+                "take_profit_pct": payload.take_profit_pct,
+                "max_bars_in_trade": payload.max_bars_in_trade,
+                "benchmark_enabled": payload.benchmark_enabled,
             },
         },
     )
@@ -262,3 +269,21 @@ def run_backtest_simulation(
         **_to_run_summary(run_model).model_dump(),
         trades=[_to_trade_response(item) for item in trade_models],
     )
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_backtest_run(
+    run_id: int,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    run = db.execute(
+        select(BacktestRun).where(
+            BacktestRun.id == run_id,
+            BacktestRun.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backtest run not found.")
+    db.delete(run)
+    db.commit()

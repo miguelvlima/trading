@@ -407,7 +407,17 @@ body {
   flex-direction: column;
   align-items: stretch;
   gap: 0.45rem;
-  min-width: 7rem;
+  min-width: 8.5rem;
+}
+
+.backtest-delete-button {
+  color: #fca5a5;
+  border-color: #7f1d1d;
+}
+
+.backtest-delete-button:hover {
+  color: #fecaca;
+  border-color: #ef4444;
 }
 
 .backtest-compare-toggle {
@@ -693,9 +703,29 @@ body {
   font-size: 0.78rem;
 }
 
-.backtest-data-banner {
+.backtest-data-section {
   margin: 0.75rem 0 0.85rem;
   padding: 0.8rem 0.9rem;
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.backtest-section-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.backtest-data-partial {
+  color: #fde68a !important;
+}
+
+.backtest-data-banner {
+  margin: 0.45rem 0;
+  padding: 0.65rem 0.75rem;
   border-radius: 8px;
   border: 1px solid #475569;
 }
@@ -721,23 +751,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
-}
-
-.backtest-data-banner-hint {
-  margin: 0 !important;
-  color: #cbd5e1 !important;
-  font-size: 0.78rem !important;
-}
-
-.backtest-data-banner-hint code {
-  display: block;
-  margin-top: 0.25rem;
-  padding: 0.35rem 0.45rem;
-  background: rgba(2, 6, 23, 0.55);
-  border-radius: 6px;
-  color: #e2e8f0;
-  font-size: 0.74rem;
-  word-break: break-all;
 }
 
 .backtest-data-ready {

@@ -396,6 +396,35 @@ const formatExitModeLabel = (mode: string): string => {
 const formatStrengthPct = (value: unknown): string =>
   typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
 
+const getRunConfigSnapshot = (run: BacktestRun): Record<string, unknown> => {
+  const stored =
+    typeof run.result_summary.config === "object" && run.result_summary.config !== null
+      ? (run.result_summary.config as Record<string, unknown>)
+      : {};
+  return {
+    ...stored,
+    strategies: stored.strategies ?? run.strategy_names,
+    fee_bps: stored.fee_bps ?? run.fee_bps,
+    slippage_bps: stored.slippage_bps ?? run.slippage_bps,
+    initial_capital: stored.initial_capital ?? run.initial_capital,
+    min_consensus_strength: stored.min_consensus_strength ?? run.min_signal_strength,
+  };
+};
+
+const buildStrategyStrengthPctFromRun = (run: BacktestRun, config: Record<string, unknown>) => {
+  const fallbackPct = Math.round(run.min_signal_strength * 100);
+  const rawStrengths = config.strategy_min_strengths;
+  if (!rawStrengths || typeof rawStrengths !== "object") {
+    return Object.fromEntries(run.strategy_names.map((strategy) => [strategy, fallbackPct]));
+  }
+  return Object.fromEntries(
+    run.strategy_names.map((strategy) => {
+      const value = (rawStrengths as Record<string, unknown>)[strategy];
+      return [strategy, typeof value === "number" ? Math.round(value * 100) : fallbackPct];
+    }),
+  );
+};
+
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
     return strength;
@@ -1504,11 +1533,8 @@ function App() {
     const walkforwardInSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.in_sample) : null;
     const walkforwardOutSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.out_sample) : null;
     const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
-    const runConfig =
-      typeof run.result_summary.config === "object" && run.result_summary.config !== null
-        ? (run.result_summary.config as Record<string, unknown>)
-        : null;
-    const benchmarkEnabled = runConfig?.benchmark_enabled !== false;
+    const runConfig = getRunConfigSnapshot(run);
+    const benchmarkEnabled = runConfig.benchmark_enabled !== false;
 
     const renderWalkforwardColumn = (label: string, metrics: WalkforwardMetrics) => (
       <article className="backtest-wf-col">
@@ -1552,94 +1578,97 @@ function App() {
           </div>
         </div>
 
-        {runConfig && (
-          <div className="backtest-run-config-panel">
-            <span className="stats-label">Configuração deste run</span>
-            <div className="backtest-run-config-grid">
+        <div className="backtest-run-config-panel">
+          <span className="stats-label">Configuração deste run</span>
+          <div className="backtest-run-config-grid">
+            <div>
+              <span className="stats-label">Estratégias</span>
+              <strong>
+                {(Array.isArray(runConfig.strategies) ? runConfig.strategies : run.strategy_names)
+                  .map((name) => STRATEGY_SUMMARY[String(name)]?.title ?? String(name))
+                  .join(" · ")}
+              </strong>
+            </div>
+            <div>
+              <span className="stats-label">Fees / slippage</span>
+              <strong>
+                {Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps /{" "}
+                {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps
+              </strong>
+            </div>
+            {typeof runConfig.position_size_pct === "number" && (
               <div>
-                <span className="stats-label">Estratégias</span>
-                <strong>
-                  {run.strategy_names
-                    .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
-                    .join(" · ")}
-                </strong>
+                <span className="stats-label">Capital por trade</span>
+                <strong>{runConfig.position_size_pct.toFixed(0)}%</strong>
               </div>
+            )}
+            {typeof runConfig.entry_confirmation_bars === "number" && (
               <div>
-                <span className="stats-label">Fees / slippage</span>
-                <strong>
-                  {Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps /{" "}
-                  {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps
-                </strong>
+                <span className="stats-label">Confirmação entrada</span>
+                <strong>{runConfig.entry_confirmation_bars} vela(s)</strong>
               </div>
-              {typeof runConfig.position_size_pct === "number" && (
-                <div>
-                  <span className="stats-label">Capital por trade</span>
-                  <strong>{runConfig.position_size_pct.toFixed(0)}%</strong>
-                </div>
-              )}
-              {typeof runConfig.entry_confirmation_bars === "number" && (
-                <div>
-                  <span className="stats-label">Confirmação entrada</span>
-                  <strong>{runConfig.entry_confirmation_bars} vela(s)</strong>
-                </div>
-              )}
-              {typeof runConfig.exit_mode === "string" && (
-                <div>
-                  <span className="stats-label">Modo de saída</span>
-                  <strong>{formatExitModeLabel(runConfig.exit_mode)}</strong>
-                </div>
-              )}
-              {typeof runConfig.stop_loss_pct === "number" && (
-                <div>
-                  <span className="stats-label">Stop-loss</span>
-                  <strong>{runConfig.stop_loss_pct.toFixed(1)}%</strong>
-                </div>
-              )}
-              {typeof runConfig.take_profit_pct === "number" && (
-                <div>
-                  <span className="stats-label">Take-profit</span>
-                  <strong>{runConfig.take_profit_pct.toFixed(1)}%</strong>
-                </div>
-              )}
-              {typeof runConfig.max_bars_in_trade === "number" && (
-                <div>
-                  <span className="stats-label">Máx. barras</span>
-                  <strong>{runConfig.max_bars_in_trade}</strong>
-                </div>
-              )}
-              {typeof runConfig.walkforward_split_pct === "number" && runConfig.walkforward_split_pct > 0 && (
-                <div>
-                  <span className="stats-label">Walk-forward holdout</span>
-                  <strong>{runConfig.walkforward_split_pct.toFixed(0)}%</strong>
-                </div>
-              )}
-              {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length > 1 && (
-                <div>
-                  <span className="stats-label">Consenso mínimo</span>
-                  <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
-                </div>
+            )}
+            {typeof runConfig.exit_mode === "string" && (
+              <div>
+                <span className="stats-label">Modo de saída</span>
+                <strong>{formatExitModeLabel(runConfig.exit_mode)}</strong>
+              </div>
+            )}
+            {typeof runConfig.stop_loss_pct === "number" && (
+              <div>
+                <span className="stats-label">Stop-loss</span>
+                <strong>{runConfig.stop_loss_pct.toFixed(1)}%</strong>
+              </div>
+            )}
+            {typeof runConfig.take_profit_pct === "number" && (
+              <div>
+                <span className="stats-label">Take-profit</span>
+                <strong>{runConfig.take_profit_pct.toFixed(1)}%</strong>
+              </div>
+            )}
+            {typeof runConfig.max_bars_in_trade === "number" && (
+              <div>
+                <span className="stats-label">Máx. barras</span>
+                <strong>{runConfig.max_bars_in_trade}</strong>
+              </div>
+            )}
+            {typeof runConfig.walkforward_split_pct === "number" && runConfig.walkforward_split_pct > 0 && (
+              <div>
+                <span className="stats-label">Walk-forward holdout</span>
+                <strong>{Number(runConfig.walkforward_split_pct).toFixed(0)}%</strong>
+              </div>
+            )}
+            {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length > 1 && (
+              <div>
+                <span className="stats-label">Consenso mínimo</span>
+                <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
+              </div>
+            )}
+            {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length === 1 && (
+              <div>
+                <span className="stats-label">Limiar de força</span>
+                <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
+              </div>
+            )}
+          </div>
+          {typeof runConfig.strategy_min_strengths === "object" && runConfig.strategy_min_strengths !== null && (
+            <div className="backtest-run-config-thresholds">
+              {Object.entries(runConfig.strategy_min_strengths as Record<string, number>).map(
+                ([strategy, strength]) => (
+                  <span key={strategy} className="backtest-config-chip">
+                    {STRATEGY_SUMMARY[strategy]?.title ?? strategy}: {formatStrengthPct(strength)}
+                  </span>
+                ),
               )}
             </div>
-            {typeof runConfig.strategy_min_strengths === "object" &&
-              runConfig.strategy_min_strengths !== null && (
-                <div className="backtest-run-config-thresholds">
-                  {Object.entries(runConfig.strategy_min_strengths as Record<string, number>).map(
-                    ([strategy, strength]) => (
-                      <span key={strategy} className="backtest-config-chip">
-                        {STRATEGY_SUMMARY[strategy]?.title ?? strategy}: {formatStrengthPct(strength)}
-                      </span>
-                    ),
-                  )}
-                </div>
-              )}
-            <p className="hint backtest-run-config-meta">
-              {run.bars_processed} barras processadas
-              {run.start_at || run.end_at
-                ? ` · ${run.start_at ? formatDateLabel(run.start_at) : "…"} – ${run.end_at ? formatDateLabel(run.end_at) : "…"}`
-                : ""}
-            </p>
-          </div>
-        )}
+          )}
+          <p className="hint backtest-run-config-meta">
+            {run.bars_processed} barras processadas
+            {run.start_at || run.end_at
+              ? ` · ${run.start_at ? formatDateLabel(run.start_at) : "…"} – ${run.end_at ? formatDateLabel(run.end_at) : "…"}`
+              : ""}
+          </p>
+        </div>
 
         {walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
           <div className="backtest-walkforward-panel">
@@ -1791,6 +1820,97 @@ function App() {
     setBacktestMaxBarsInTrade(normalized.maxBarsInTrade ?? 40);
     setBacktestWalkforwardSplitPct(normalized.walkforwardSplitPct);
     setBacktestBenchmarkEnabled(normalized.benchmarkEnabled);
+    setBacktestError(null);
+  };
+
+  const applyBacktestConfigFromRun = (run: BacktestRun) => {
+    const config = getRunConfigSnapshot(run);
+    const strategyStrengthPct = buildStrategyStrengthPctFromRun(run, config);
+    const consensusPct =
+      typeof config.min_consensus_strength === "number"
+        ? Math.round(config.min_consensus_strength * 100)
+        : Math.round(run.min_signal_strength * 100);
+    const runLimit = typeof config.limit === "number" ? config.limit : run.bars_processed || 2000;
+
+    if (instruments.some((item) => item.symbol === run.symbol)) {
+      setSelectedSymbol(run.symbol);
+    }
+    setSelectedTimeframe(run.timeframe);
+    setBacktestStrategies([...run.strategy_names]);
+    setBacktestInitialCapital(Number(config.initial_capital ?? run.initial_capital));
+    setBacktestFeeBps(Number(config.fee_bps ?? run.fee_bps));
+    setBacktestSlippageBps(Number(config.slippage_bps ?? run.slippage_bps));
+    setBacktestStrategyMinStrengthPct(strategyStrengthPct);
+    setBacktestConsensusStrengthPct(consensusPct);
+
+    if (run.start_at && run.end_at) {
+      setFilterMode("date");
+      setStartDate(toInputDate(new Date(run.start_at)));
+      setEndDate(toInputDate(new Date(run.end_at)));
+      setBacktestLimit(runLimit);
+    } else {
+      setFilterMode("count");
+      setBarLimit(runLimit);
+      setBarLimitInput(String(runLimit));
+    }
+
+    if (typeof config.position_size_pct === "number") {
+      setBacktestPositionSizePct(config.position_size_pct);
+    }
+    if (typeof config.entry_confirmation_bars === "number") {
+      setBacktestEntryConfirmationBars(config.entry_confirmation_bars);
+    }
+    if (config.exit_mode === "opposite_signal" || config.exit_mode === "tp_sl_or_opposite" || config.exit_mode === "tp_sl_only") {
+      setBacktestExitMode(config.exit_mode);
+    }
+    if (typeof config.stop_loss_pct === "number") {
+      setBacktestStopLossPct(config.stop_loss_pct);
+    }
+    if (typeof config.take_profit_pct === "number") {
+      setBacktestTakeProfitPct(config.take_profit_pct);
+    }
+    if (typeof config.max_bars_in_trade === "number") {
+      setBacktestMaxBarsInTrade(config.max_bars_in_trade);
+    }
+    if (typeof config.walkforward_split_pct === "number") {
+      setBacktestWalkforwardSplitPct(config.walkforward_split_pct);
+    }
+    if (typeof config.benchmark_enabled === "boolean") {
+      setBacktestBenchmarkEnabled(config.benchmark_enabled);
+    }
+
+    setBacktestError(null);
+  };
+
+  const handleApplyBacktestRunConfig = (run: BacktestRun) => {
+    applyBacktestConfigFromRun(run);
+  };
+
+  const handleDeleteBacktestRun = async (runId: number) => {
+    if (!authToken) {
+      return;
+    }
+    if (!window.confirm(`Apagar a simulação #${runId}? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/backtests/${runId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao apagar simulação."));
+      }
+      if (backtestSelectedRun?.id === runId) {
+        setBacktestSelectedRun(null);
+      }
+      setBacktestCompareRunIds((previous) => previous.filter((id) => id !== runId));
+      setBacktestRefreshToken((previous) => previous + 1);
+    } catch (deleteError) {
+      setBacktestError(toUserFetchError(deleteError, "Erro inesperado ao apagar simulação."));
+    }
   };
 
   const handleToggleBacktestStrategy = (strategy: string, checked: boolean) => {
@@ -2791,14 +2911,33 @@ function App() {
               </div>
               <p className="hint">Configura o run, executa e compara resultados entre simulações.</p>
 
-              {backtestDataAvailability.status !== "ready" &&
-                backtestDataAvailability.status !== "loading" &&
-                backtestDataAvailability.status !== "no_symbol" && (
+              <section className="backtest-data-section">
+                <h4 className="backtest-section-title">Dados de mercado</h4>
+                {backtestDataAvailability.status === "loading" && (
+                  <p className="hint">A verificar velas disponíveis...</p>
+                )}
+                {backtestDataAvailability.status === "ready" && (
+                  <p className="hint backtest-data-ready">
+                    Dados OK: <strong>{backtestDataAvailability.availableBars}</strong> velas para{" "}
+                    <strong>
+                      {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
+                    </strong>
+                    .
+                  </p>
+                )}
+                {backtestDataAvailability.status === "partial_window" && (
+                  <p className="hint backtest-data-partial">
+                    Há <strong>{backtestDataAvailability.availableBars}</strong> velas (pediste{" "}
+                    {backtestDataAvailability.requestedBars}); o backtest usará só as disponíveis.
+                  </p>
+                )}
+                {(backtestDataAvailability.status === "no_instrument" ||
+                  backtestDataAvailability.status === "no_bars" ||
+                  backtestDataAvailability.status === "insufficient_bars") && (
                   <div className="backtest-data-banner backtest-data-banner-warning">
                     {backtestDataAvailability.status === "no_instrument" && (
                       <p>
-                        <strong>{backtestDataAvailability.symbol}</strong> não está na base de dados. A simulação
-                        precisa de velas OHLCV importadas para{" "}
+                        <strong>{backtestDataAvailability.symbol}</strong> não está na base de dados para{" "}
                         <strong>{backtestDataAvailability.timeframe}</strong>.
                       </p>
                     )}
@@ -2808,60 +2947,33 @@ function App() {
                         <strong>{backtestDataAvailability.timeframe}</strong>
                         {filterMode === "date"
                           ? ` no intervalo ${startDate} – ${endDate}.`
-                          : "."}{" "}
-                        Importe CSV ou carregue dados demo.
+                          : "."}
                       </p>
                     )}
                     {backtestDataAvailability.status === "insufficient_bars" && (
                       <p>
-                        Só <strong>{backtestDataAvailability.availableBars}</strong> velas disponíveis para{" "}
-                        <strong>
-                          {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
-                        </strong>
-                        ; são necessárias pelo menos <strong>{backtestDataAvailability.requiredBars}</strong> para
-                        simular.
+                        Só <strong>{backtestDataAvailability.availableBars}</strong> velas; são necessárias pelo
+                        menos <strong>{backtestDataAvailability.requiredBars}</strong>.
                       </p>
-                    )}
-                    {backtestDataAvailability.status === "partial_window" && (
-                      <p>
-                        Há <strong>{backtestDataAvailability.availableBars}</strong> velas, mas pediste{" "}
-                        <strong>{backtestDataAvailability.requestedBars}</strong>. O backtest usará só as velas
-                        disponíveis.
-                      </p>
-                    )}
-                    {(backtestDataAvailability.status === "no_instrument" ||
-                      backtestDataAvailability.status === "no_bars" ||
-                      backtestDataAvailability.status === "insufficient_bars") && (
-                      <div className="backtest-data-banner-actions">
-                        <button
-                          type="button"
-                          className="tab-button"
-                          onClick={() => void handleLoadDemoMarketData()}
-                          disabled={demoDataLoading || !selectedSymbol}
-                        >
-                          {demoDataLoading ? "A importar..." : "Carregar dados demo (Yahoo, 2 anos)"}
-                        </button>
-                        <p className="hint backtest-data-banner-hint">
-                          Alternativa manual:{" "}
-                          <code>
-                            python -m app.scripts.import_ohlcv --symbol {selectedSymbol || "AAPL"} --timeframe{" "}
-                            {selectedTimeframe} --csv-path .\data\candles.csv
-                          </code>
-                        </p>
-                      </div>
                     )}
                   </div>
                 )}
-
-              {backtestDataAvailability.status === "ready" && (
-                <p className="hint backtest-data-ready">
-                  Dados OK: <strong>{backtestDataAvailability.availableBars}</strong> velas para{" "}
-                  <strong>
-                    {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
-                  </strong>
-                  .
-                </p>
-              )}
+                <div className="backtest-data-banner-actions">
+                  <button
+                    type="button"
+                    className="tab-button"
+                    onClick={() => void handleLoadDemoMarketData()}
+                    disabled={demoDataLoading || !selectedSymbol}
+                  >
+                    {demoDataLoading
+                      ? "A importar..."
+                      : backtestDataAvailability.status === "ready" ||
+                          backtestDataAvailability.status === "partial_window"
+                        ? "Atualizar dados demo (Yahoo, 2 anos)"
+                        : "Carregar dados demo (Yahoo, 2 anos)"}
+                  </button>
+                </div>
+              </section>
 
               <details className="strategy-library-expand">
                 <summary>Presets de simulação</summary>
@@ -3200,7 +3312,10 @@ function App() {
               <div className="backtests-results-zone">
                 <div className="backtests-results-header">
                   <h3>Resultados</h3>
-                  <p className="hint">Histórico de simulações. Selecione até 2 runs para comparar.</p>
+                  <p className="hint">
+                    Histórico de simulações. Selecione até 2 runs para comparar. Use{" "}
+                    <strong>Ver detalhe</strong> para config, gráfico de equity e trades.
+                  </p>
                 </div>
 
                 {backtestLoading && <p className="hint">A carregar histórico...</p>}
@@ -3267,6 +3382,20 @@ function App() {
                                 onClick={() => void handleToggleBacktestRunDetail(run.id)}
                               >
                                 {isDetailOpen ? "Ocultar detalhe" : "Ver detalhe"}
+                              </button>
+                              <button
+                                type="button"
+                                className="config-button"
+                                onClick={() => handleApplyBacktestRunConfig(run)}
+                              >
+                                Reutilizar config
+                              </button>
+                              <button
+                                type="button"
+                                className="config-button backtest-delete-button"
+                                onClick={() => void handleDeleteBacktestRun(run.id)}
+                              >
+                                Apagar
                               </button>
                             </div>
                           </article>

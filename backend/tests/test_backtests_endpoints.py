@@ -131,4 +131,14 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
     other_detail = client.get(f"/backtests/{run_id}", headers={"Authorization": f"Bearer {other_token}"})
     assert other_detail.status_code == 404
 
+    delete_other = client.delete(f"/backtests/{run_id}", headers={"Authorization": f"Bearer {other_token}"})
+    assert delete_other.status_code == 404
+
+    delete_owner = client.delete(f"/backtests/{run_id}", headers={"Authorization": f"Bearer {owner_token}"})
+    assert delete_owner.status_code == 204
+
+    owner_list_after_delete = client.get("/backtests", headers={"Authorization": f"Bearer {owner_token}"})
+    assert owner_list_after_delete.status_code == 200
+    assert owner_list_after_delete.json() == []
+
     app.dependency_overrides.clear()

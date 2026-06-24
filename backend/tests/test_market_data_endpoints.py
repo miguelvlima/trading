@@ -103,6 +103,34 @@ def test_import_csv_endpoint_uses_import_service(monkeypatch: pytest.MonkeyPatch
     assert response.json() == {"symbol": "AAPL", "timeframe": "1d", "imported_rows": 2}
 
 
+def test_load_demo_endpoint_uses_demo_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_load_symbol(symbol: str, period: str, include_weekly: bool) -> tuple[int, int]:
+        assert symbol == "AAPL"
+        assert period == "2y"
+        assert include_weekly is False
+        return 120, 0
+
+    import app.api.routes.market_data as market_data_route
+
+    monkeypatch.setattr(market_data_route, "load_symbol", fake_load_symbol)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/market-data/load-demo",
+        json={"symbols": ["AAPL"], "period": "2y", "include_weekly": False},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "results": [{"symbol": "AAPL", "imported_rows_1d": 120, "imported_rows_1w": 0}],
+    }
+
+
 def test_get_indicators_endpoint_returns_rows(tmp_path: Path) -> None:
     test_session_factory = _build_test_session_factory(tmp_path)
 

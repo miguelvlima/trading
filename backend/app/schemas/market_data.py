@@ -36,6 +36,22 @@ class CsvImportResponse(BaseModel):
     imported_rows: int
 
 
+class LoadDemoDataRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=8)
+    period: str = Field(default="2y", min_length=2, max_length=8)
+    include_weekly: bool = False
+
+
+class LoadDemoSymbolResult(BaseModel):
+    symbol: str
+    imported_rows_1d: int
+    imported_rows_1w: int
+
+
+class LoadDemoDataResponse(BaseModel):
+    results: list[LoadDemoSymbolResult]
+
+
 class IndicatorRowResponse(BaseModel):
     timestamp: datetime
     sma_20: float | None = None

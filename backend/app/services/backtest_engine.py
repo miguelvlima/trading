@@ -66,11 +66,18 @@ class BacktestOutput:
 def aggregate_signals(
     per_strategy: dict[str, list[tuple[datetime, str, float]]],
     min_signal_strength: float,
+    strategy_min_strengths: dict[str, float] | None = None,
+    min_consensus_strength: float | None = None,
 ) -> dict[datetime, AggregatedSignal]:
+    strategy_thresholds = strategy_min_strengths or {}
+    consensus_threshold = (
+        min_consensus_strength if min_consensus_strength is not None else min_signal_strength
+    )
     by_timestamp: dict[datetime, dict[str, float]] = {}
     for strategy_name, signals in per_strategy.items():
+        strategy_threshold = strategy_thresholds.get(strategy_name, min_signal_strength)
         for timestamp, direction, strength in signals:
-            if strength < min_signal_strength:
+            if strength < strategy_threshold:
                 continue
             bucket = by_timestamp.setdefault(timestamp, {"buy": 0.0, "sell": 0.0})
             if direction == "BUY":
@@ -87,7 +94,7 @@ def aggregate_signals(
             continue
         net = buy_score - sell_score
         confidence = abs(net) / total
-        if confidence < min_signal_strength or net == 0:
+        if confidence < consensus_threshold or net == 0:
             continue
         direction = "BUY" if net > 0 else "SELL"
         rationale = (
@@ -192,6 +199,7 @@ def _simulate_window(
 
     peak_equity = capital
     max_drawdown_pct = 0.0
+    first_close = bars[0].close
 
     def execution_price(close_price: float, side: str) -> float:
         if side == "BUY":
@@ -338,9 +346,14 @@ def _simulate_window(
         if peak_equity > 0:
             drawdown_pct = (peak_equity - equity) / peak_equity
             max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
-        equity_curve.append(
-            {"timestamp": bar.timestamp.isoformat(), "equity": equity, "drawdown_pct": drawdown_pct}
-        )
+        curve_point: dict[str, float | str] = {
+            "timestamp": bar.timestamp.isoformat(),
+            "equity": equity,
+            "drawdown_pct": drawdown_pct,
+        }
+        if config.benchmark_enabled and first_close > 0:
+            curve_point["benchmark_equity"] = initial_capital * (bar.close / first_close)
+        equity_curve.append(curve_point)
 
     if position_direction is not None:
         close_position(bars[-1], reason="End of backtest window.")

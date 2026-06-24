@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.services.indicator_engine import atr, relative_volume
 from app.services.strategy_engine import BarInput
 
 
@@ -48,12 +49,21 @@ class BacktestConfig:
     fee_bps: float
     slippage_bps: float
     position_size_pct: float
+    position_sizing_model: str  # "fixed_pct" | "atr_risk"
+    risk_per_trade_pct: float
     entry_confirmation_bars: int
+    execution_timing: str  # "signal_close" | "next_open"
     exit_mode: str
     stop_loss_pct: float | None
     take_profit_pct: float | None
     max_bars_in_trade: int | None
     benchmark_enabled: bool
+    slippage_model: str  # "fixed" | "atr_volume"
+
+
+# Typical daily ATR/close for liquid US equities; used to scale dynamic slippage around 1x.
+_DYNAMIC_SLIPPAGE_BASELINE_ATR_PCT = 0.015
+_ATR_RISK_STOP_ATR_MULTIPLIER = 2.0
 
 
 @dataclass
@@ -159,6 +169,112 @@ def _metrics_as_dict(metrics: BacktestMetrics) -> dict[str, float | int]:
     }
 
 
+def _resolve_long_risk_exit(
+    bar: BarInput,
+    entry_price: float,
+    stop_loss_rate: float | None,
+    take_profit_rate: float | None,
+) -> tuple[str, float] | None:
+    """Return (reason, raw_exit_price) when SL/TP is hit within the bar."""
+    stop_price = entry_price * (1.0 - stop_loss_rate) if stop_loss_rate is not None else None
+    tp_price = entry_price * (1.0 + take_profit_rate) if take_profit_rate is not None else None
+
+    if stop_price is not None and bar.open <= stop_price:
+        return "Stop-loss triggered (gap at open).", bar.open
+    if tp_price is not None and bar.open >= tp_price:
+        return "Take-profit triggered (gap at open).", bar.open
+
+    stop_hit = stop_price is not None and bar.low <= stop_price
+    tp_hit = tp_price is not None and bar.high >= tp_price
+    if stop_hit and tp_hit:
+        return "Stop-loss triggered (intrabar).", stop_price
+    if stop_hit:
+        return "Stop-loss triggered.", stop_price
+    if tp_hit:
+        return "Take-profit triggered.", tp_price
+    return None
+
+
+def _resolve_short_risk_exit(
+    bar: BarInput,
+    entry_price: float,
+    stop_loss_rate: float | None,
+    take_profit_rate: float | None,
+) -> tuple[str, float] | None:
+    """Return (reason, raw_exit_price) when SL/TP is hit within the bar."""
+    stop_price = entry_price * (1.0 + stop_loss_rate) if stop_loss_rate is not None else None
+    tp_price = entry_price * (1.0 - take_profit_rate) if take_profit_rate is not None else None
+
+    if stop_price is not None and bar.open >= stop_price:
+        return "Stop-loss triggered (gap at open).", bar.open
+    if tp_price is not None and bar.open <= tp_price:
+        return "Take-profit triggered (gap at open).", bar.open
+
+    stop_hit = stop_price is not None and bar.high >= stop_price
+    tp_hit = tp_price is not None and bar.low <= tp_price
+    if stop_hit and tp_hit:
+        return "Stop-loss triggered (intrabar).", stop_price
+    if stop_hit:
+        return "Stop-loss triggered.", stop_price
+    if tp_hit:
+        return "Take-profit triggered.", tp_price
+    return None
+
+
+def _dynamic_slippage_bps(
+    *,
+    base_bps: float,
+    atr_value: float | None,
+    close: float,
+    relative_vol: float | None,
+) -> float:
+    if close <= 0:
+        return base_bps
+    if atr_value is None:
+        return base_bps
+
+    atr_pct = atr_value / close
+    atr_mult = max(0.5, min(4.0, atr_pct / _DYNAMIC_SLIPPAGE_BASELINE_ATR_PCT))
+    if relative_vol is None or relative_vol <= 0:
+        vol_mult = 1.0
+    else:
+        vol_mult = max(0.75, min(2.5, 1.0 / (relative_vol**0.5)))
+    return base_bps * atr_mult * vol_mult
+
+
+def _compute_position_quantity(
+    *,
+    capital: float,
+    exec_price: float,
+    bar_idx: int,
+    atr_values: list[float | None],
+    config: BacktestConfig,
+    stop_loss_rate: float | None,
+    position_size_rate: float,
+) -> float:
+    if exec_price <= 0 or capital <= 0:
+        return 0.0
+
+    if config.position_sizing_model == "atr_risk":
+        risk_amount = capital * max(0.0, config.risk_per_trade_pct / 100.0)
+        if stop_loss_rate:
+            stop_distance = exec_price * stop_loss_rate
+        else:
+            atr_value = atr_values[bar_idx]
+            stop_distance = (
+                _ATR_RISK_STOP_ATR_MULTIPLIER * atr_value
+                if atr_value is not None and atr_value > 0
+                else exec_price * 0.02
+            )
+        qty = risk_amount / stop_distance if stop_distance > 0 else 0.0
+        max_notional = capital * position_size_rate
+        if exec_price * qty > max_notional:
+            qty = max_notional / exec_price
+        return qty
+
+    return (capital * position_size_rate) / exec_price
+
+
 def _simulate_window(
     bars: list[BarInput],
     aggregated_signals: dict[datetime, AggregatedSignal],
@@ -179,10 +295,18 @@ def _simulate_window(
         return BacktestOutput(metrics=metrics, trades=[], summary={"note": "No bars available."})
 
     fee_rate = max(0.0, config.fee_bps / 10000.0)
-    slippage_rate = max(0.0, config.slippage_bps / 10000.0)
+    base_slippage_bps = max(0.0, config.slippage_bps)
     position_size_rate = max(0.01, min(1.0, config.position_size_pct / 100.0))
     stop_loss_rate = (config.stop_loss_pct / 100.0) if config.stop_loss_pct else None
     take_profit_rate = (config.take_profit_pct / 100.0) if config.take_profit_pct else None
+    uses_next_open = config.execution_timing == "next_open"
+
+    highs = [bar.high for bar in bars]
+    lows = [bar.low for bar in bars]
+    closes = [bar.close for bar in bars]
+    volumes = [bar.volume for bar in bars]
+    atr_values = atr(highs, lows, closes, 14)
+    relative_volume_values = relative_volume(volumes, 20)
 
     capital = initial_capital
     trades: list[SimulatedTrade] = []
@@ -196,17 +320,35 @@ def _simulate_window(
     entry_fee = 0.0
     entry_reason = ""
     entry_bar_idx = 0
+    pending_entry: AggregatedSignal | None = None
+    pending_exit: tuple[str, float | None] | None = None
 
     peak_equity = capital
     max_drawdown_pct = 0.0
     first_close = bars[0].close
 
-    def execution_price(close_price: float, side: str) -> float:
-        if side == "BUY":
-            return close_price * (1.0 + slippage_rate)
-        return close_price * (1.0 - slippage_rate)
+    def slippage_rate_for_bar(bar_idx: int) -> float:
+        if config.slippage_model != "atr_volume":
+            return base_slippage_bps / 10000.0
+        dynamic_bps = _dynamic_slippage_bps(
+            base_bps=base_slippage_bps,
+            atr_value=atr_values[bar_idx],
+            close=bars[bar_idx].close,
+            relative_vol=relative_volume_values[bar_idx],
+        )
+        return dynamic_bps / 10000.0
 
-    def close_position(current_bar: BarInput, reason: str) -> None:
+    def execution_price(raw_price: float, side: str, bar_idx: int) -> float:
+        slip = slippage_rate_for_bar(bar_idx)
+        if side == "BUY":
+            return raw_price * (1.0 + slip)
+        return raw_price * (1.0 - slip)
+
+    def close_position(
+        current_bar: BarInput,
+        reason: str,
+        exit_base_price: float | None = None,
+    ) -> None:
         nonlocal capital
         nonlocal position_direction
         nonlocal entry_price
@@ -215,11 +357,14 @@ def _simulate_window(
         nonlocal entry_fee
         nonlocal entry_reason
         nonlocal entry_bar_idx
+        nonlocal pending_exit
         if position_direction is None or entry_timestamp is None:
             return
 
         exit_side = "SELL" if position_direction == "LONG" else "BUY"
-        exit_price = execution_price(current_bar.close, exit_side)
+        raw_exit = exit_base_price if exit_base_price is not None else current_bar.close
+        exit_idx = bar_index[current_bar.timestamp]
+        exit_price = execution_price(raw_exit, exit_side, exit_idx)
         exit_notional = abs(exit_price * quantity)
         exit_fee = exit_notional * fee_rate
 
@@ -259,8 +404,23 @@ def _simulate_window(
         entry_fee = 0.0
         entry_reason = ""
         entry_bar_idx = 0
+        pending_exit = None
 
-    def open_position(current_bar: BarInput, signal: AggregatedSignal, index: int) -> None:
+    def schedule_or_close(reason: str, bar: BarInput, idx: int, raw_price: float | None = None) -> None:
+        nonlocal pending_exit
+        if position_direction is None:
+            return
+        if uses_next_open and idx + 1 < len(bars):
+            pending_exit = (reason, raw_price)
+            return
+        close_position(bar, reason=reason, exit_base_price=raw_price)
+
+    def open_position_at_price(
+        current_bar: BarInput,
+        signal: AggregatedSignal,
+        index: int,
+        raw_price: float,
+    ) -> None:
         nonlocal position_direction
         nonlocal entry_price
         nonlocal entry_timestamp
@@ -273,8 +433,16 @@ def _simulate_window(
 
         entry_side = "BUY" if signal.direction == "BUY" else "SELL"
         direction = "LONG" if signal.direction == "BUY" else "SHORT"
-        exec_price = execution_price(current_bar.close, entry_side)
-        qty = (capital * position_size_rate) / exec_price if exec_price > 0 else 0.0
+        exec_price = execution_price(raw_price, entry_side, index)
+        qty = _compute_position_quantity(
+            capital=capital,
+            exec_price=exec_price,
+            bar_idx=index,
+            atr_values=atr_values,
+            config=config,
+            stop_loss_rate=stop_loss_rate,
+            position_size_rate=position_size_rate,
+        )
         if qty <= 0:
             return
 
@@ -288,22 +456,26 @@ def _simulate_window(
         entry_reason = signal.rationale
         entry_bar_idx = index
 
-    def should_exit_by_risk(current_bar: BarInput, index: int) -> str | None:
+    def should_exit_by_risk(current_bar: BarInput, index: int) -> tuple[str, float] | None:
         if position_direction is None:
             return None
-        if config.max_bars_in_trade and (index - entry_bar_idx) >= config.max_bars_in_trade:
-            return "Max bars in trade reached."
-        if stop_loss_rate is not None:
-            if position_direction == "LONG" and current_bar.close <= entry_price * (1 - stop_loss_rate):
-                return "Stop-loss triggered."
-            if position_direction == "SHORT" and current_bar.close >= entry_price * (1 + stop_loss_rate):
-                return "Stop-loss triggered."
-        if take_profit_rate is not None:
-            if position_direction == "LONG" and current_bar.close >= entry_price * (1 + take_profit_rate):
-                return "Take-profit triggered."
-            if position_direction == "SHORT" and current_bar.close <= entry_price * (1 - take_profit_rate):
-                return "Take-profit triggered."
-        return None
+        if index < entry_bar_idx:
+            return None
+        if index == entry_bar_idx and not uses_next_open:
+            return None
+        if position_direction == "LONG":
+            return _resolve_long_risk_exit(
+                current_bar,
+                entry_price,
+                stop_loss_rate,
+                take_profit_rate,
+            )
+        return _resolve_short_risk_exit(
+            current_bar,
+            entry_price,
+            stop_loss_rate,
+            take_profit_rate,
+        )
 
     def has_confirmed_signal(index: int, direction: str) -> AggregatedSignal | None:
         if index < 0:
@@ -314,38 +486,70 @@ def _simulate_window(
         current_signal = aggregated_signals.get(bars[index].timestamp)
         if current_signal is None or current_signal.direction != direction:
             return None
-        for idx in range(start_idx, index + 1):
-            step_signal = aggregated_signals.get(bars[idx].timestamp)
+        for step_idx in range(start_idx, index + 1):
+            step_signal = aggregated_signals.get(bars[step_idx].timestamp)
             if step_signal is None or step_signal.direction != direction:
                 return None
         return current_signal
 
     for idx, bar in enumerate(bars):
-        risk_exit_reason = should_exit_by_risk(bar, idx)
-        if risk_exit_reason:
-            close_position(bar, reason=risk_exit_reason)
+        if pending_exit is not None and position_direction is not None:
+            reason, raw_price = pending_exit
+            close_position(bar, reason=reason, exit_base_price=raw_price if raw_price is not None else bar.open)
+
+        if pending_entry is not None and position_direction is None:
+            open_position_at_price(bar, pending_entry, idx, bar.open)
+            pending_entry = None
+
+        risk_exit = should_exit_by_risk(bar, idx)
+        if risk_exit:
+            reason, exit_base_price = risk_exit
+            close_position(bar, reason=reason, exit_base_price=exit_base_price)
+
+        if (
+            config.max_bars_in_trade
+            and position_direction is not None
+            and pending_exit is None
+            and (idx - entry_bar_idx) >= config.max_bars_in_trade
+        ):
+            schedule_or_close("Max bars in trade reached.", bar, idx, bar.close if not uses_next_open else None)
 
         signal = aggregated_signals.get(bar.timestamp)
         if signal is not None:
             target_direction = "LONG" if signal.direction == "BUY" else "SHORT"
             allow_opposite_exit = config.exit_mode in {"opposite_signal", "tp_sl_or_opposite"}
+            confirmed_signal = has_confirmed_signal(idx, signal.direction)
             if allow_opposite_exit and position_direction and position_direction != target_direction:
-                close_position(bar, reason="Opposite consensus signal.")
-            if position_direction is None:
-                confirmed_signal = has_confirmed_signal(idx, signal.direction)
-                if confirmed_signal:
-                    open_position(bar, confirmed_signal, idx)
+                if uses_next_open and idx + 1 < len(bars):
+                    pending_exit = ("Opposite consensus signal.", None)
+                    if confirmed_signal:
+                        pending_entry = confirmed_signal
+                else:
+                    close_position(bar, reason="Opposite consensus signal.")
+                    if confirmed_signal:
+                        open_position_at_price(bar, confirmed_signal, idx, bar.close)
+            elif position_direction is None and pending_entry is None and confirmed_signal:
+                if uses_next_open:
+                    if idx + 1 < len(bars):
+                        pending_entry = confirmed_signal
+                else:
+                    open_position_at_price(bar, confirmed_signal, idx, bar.close)
 
         equity = capital
+        equity_worst = capital
         if position_direction == "LONG":
             equity += (bar.close - entry_price) * quantity
+            equity_worst += (bar.low - entry_price) * quantity
         elif position_direction == "SHORT":
             equity += (entry_price - bar.close) * quantity
+            equity_worst += (entry_price - bar.high) * quantity
 
         peak_equity = max(peak_equity, equity)
         if peak_equity > 0:
-            drawdown_pct = (peak_equity - equity) / peak_equity
+            drawdown_pct = max(0.0, (peak_equity - equity_worst) / peak_equity)
             max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
+        else:
+            drawdown_pct = 0.0
         curve_point: dict[str, float | str] = {
             "timestamp": bar.timestamp.isoformat(),
             "equity": equity,
@@ -398,12 +602,18 @@ def _simulate_window(
         "alpha_vs_benchmark_pct": net_pnl_pct - benchmark_return,
         "config": {
             "position_size_pct": config.position_size_pct,
+            "position_sizing_model": config.position_sizing_model,
+            "risk_per_trade_pct": config.risk_per_trade_pct,
             "entry_confirmation_bars": config.entry_confirmation_bars,
+            "execution_timing": config.execution_timing,
             "exit_mode": config.exit_mode,
             "stop_loss_pct": config.stop_loss_pct,
             "take_profit_pct": config.take_profit_pct,
             "max_bars_in_trade": config.max_bars_in_trade,
             "benchmark_enabled": config.benchmark_enabled,
+            "slippage_model": config.slippage_model,
+            "execution_model": "intrabar_ohlc_pessimistic",
+            "signal_decision_point": "bar_close",
         },
         "equity_curve": equity_curve,
     }

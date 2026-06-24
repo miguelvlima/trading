@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+"""
+Strategy signal generation for backtesting and live signal views.
+
+Signal contract (no lookahead across bars):
+- A signal timestamped at bar *T* uses OHLCV from bars ``0..T`` inclusive.
+- The decision point is the **close of bar T** (end-of-bar), never a future bar.
+- Pair with ``execution_timing=next_open`` in the backtest engine to enter at T+1 open,
+  or ``signal_close`` to enter at the close of T after the signal is known.
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -188,9 +198,13 @@ class BollingerBreakoutStrategy(BaseStrategy):
         upper, middle, lower = bollinger_bands(closes, 20, 2.0)
         signals: list[StrategySignal] = []
 
-        for bar, close_price, upper_band, middle_band, lower_band in zip(
-            bars, closes, upper, middle, lower, strict=False
-        ):
+        # Bands at T-1 vs close at T: avoids same-bar circularity (close moving the band it breaks).
+        for index in range(1, len(bars)):
+            bar = bars[index]
+            close_price = closes[index]
+            upper_band = upper[index - 1]
+            middle_band = middle[index - 1]
+            lower_band = lower[index - 1]
             if upper_band is None or middle_band is None or lower_band is None:
                 continue
 

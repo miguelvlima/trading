@@ -160,6 +160,7 @@ type BacktestPreset = {
   initialCapital: number;
   feeBps: number;
   slippageBps: number;
+  slippageModel: "fixed" | "atr_volume";
   strategyMinStrengthPct: Record<string, number>;
   consensusStrengthPct: number;
   /** @deprecated legacy single threshold */
@@ -167,6 +168,11 @@ type BacktestPreset = {
   limit: number;
   positionSizePct: number;
   entryConfirmationBars: number;
+  executionTiming: "signal_close" | "next_open";
+  positionSizingModel: "fixed_pct" | "atr_risk";
+  riskPerTradePct: number;
+  /** @deprecated legacy preset field */
+  entryTiming?: "signal_close" | "next_open";
   exitMode: "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only";
   stopLossPct: number | null;
   takeProfitPct: number | null;
@@ -231,6 +237,10 @@ const normalizeBacktestPreset = (item: BacktestPreset): BacktestPreset => {
     ...item,
     consensusStrengthPct,
     strategyMinStrengthPct,
+    slippageModel: item.slippageModel ?? "atr_volume",
+    executionTiming: item.executionTiming ?? item.entryTiming ?? "next_open",
+    positionSizingModel: item.positionSizingModel ?? "fixed_pct",
+    riskPerTradePct: item.riskPerTradePct ?? 1,
   };
 };
 
@@ -396,6 +406,36 @@ const formatExitModeLabel = (mode: string): string => {
     return "Só TP/SL";
   }
   return mode;
+};
+
+const formatExecutionTimingLabel = (timing: string): string => {
+  if (timing === "next_open") {
+    return "Abertura da vela seguinte (entrada e saída)";
+  }
+  if (timing === "signal_close") {
+    return "Fecho da vela do sinal";
+  }
+  return timing;
+};
+
+const formatPositionSizingLabel = (model: string): string => {
+  if (model === "atr_risk") {
+    return "Risco por trade (ATR/SL)";
+  }
+  if (model === "fixed_pct") {
+    return "% fixo do capital";
+  }
+  return model;
+};
+
+const formatSlippageModelLabel = (model: string): string => {
+  if (model === "atr_volume") {
+    return "Dinâmico (ATR + volume)";
+  }
+  if (model === "fixed") {
+    return "Fixo";
+  }
+  return model;
 };
 
 const formatStrengthPct = (value: unknown): string =>
@@ -577,6 +617,7 @@ function App() {
   const [backtestInitialCapital, setBacktestInitialCapital] = useState<number>(10000);
   const [backtestFeeBps, setBacktestFeeBps] = useState<number>(5);
   const [backtestSlippageBps, setBacktestSlippageBps] = useState<number>(2);
+  const [backtestSlippageModel, setBacktestSlippageModel] = useState<"fixed" | "atr_volume">("atr_volume");
   const [backtestStrategyMinStrengthPct, setBacktestStrategyMinStrengthPct] = useState<
     Record<string, number>
   >({});
@@ -585,7 +626,14 @@ function App() {
   );
   const [backtestLimit, setBacktestLimit] = useState<number>(2000);
   const [backtestPositionSizePct, setBacktestPositionSizePct] = useState<number>(100);
+  const [backtestPositionSizingModel, setBacktestPositionSizingModel] = useState<
+    "fixed_pct" | "atr_risk"
+  >("fixed_pct");
+  const [backtestRiskPerTradePct, setBacktestRiskPerTradePct] = useState<number>(1);
   const [backtestEntryConfirmationBars, setBacktestEntryConfirmationBars] = useState<number>(1);
+  const [backtestExecutionTiming, setBacktestExecutionTiming] = useState<"signal_close" | "next_open">(
+    "next_open",
+  );
   const [backtestExitMode, setBacktestExitMode] = useState<
     "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only"
   >("tp_sl_or_opposite");
@@ -1550,12 +1598,16 @@ function App() {
         initial_capital: backtestInitialCapital,
         fee_bps: backtestFeeBps,
         slippage_bps: backtestSlippageBps,
+        slippage_model: backtestSlippageModel,
         min_signal_strength: fallbackMinStrength,
         strategy_min_strengths: strategyMinStrengths,
         min_consensus_strength: singleStrategyOnly ? null : backtestConsensusStrengthPct / 100,
         limit: simulationBarLimit,
         position_size_pct: backtestPositionSizePct,
+        position_sizing_model: backtestPositionSizingModel,
+        risk_per_trade_pct: backtestRiskPerTradePct,
         entry_confirmation_bars: backtestEntryConfirmationBars,
+        execution_timing: backtestExecutionTiming,
         exit_mode: backtestExitMode,
         stop_loss_pct: backtestExitMode === "opposite_signal" ? null : backtestStopLossPct,
         take_profit_pct: backtestExitMode === "opposite_signal" ? null : backtestTakeProfitPct,
@@ -1671,18 +1723,46 @@ function App() {
               <strong>
                 {Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps /{" "}
                 {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps
+                {typeof runConfig.slippage_model === "string"
+                  ? ` · ${formatSlippageModelLabel(runConfig.slippage_model)}`
+                  : ""}
               </strong>
             </div>
             {typeof runConfig.position_size_pct === "number" && (
               <div>
                 <span className="stats-label">Capital por trade</span>
-                <strong>{runConfig.position_size_pct.toFixed(0)}%</strong>
+                <strong>
+                  {typeof runConfig.position_sizing_model === "string"
+                    ? `${formatPositionSizingLabel(runConfig.position_sizing_model)} · `
+                    : ""}
+                  {runConfig.position_sizing_model === "atr_risk" &&
+                  typeof runConfig.risk_per_trade_pct === "number"
+                    ? `${Number(runConfig.risk_per_trade_pct).toFixed(1)}% risco`
+                    : `${runConfig.position_size_pct.toFixed(0)}%`}
+                  {runConfig.position_sizing_model === "atr_risk" &&
+                  typeof runConfig.position_size_pct === "number"
+                    ? ` · teto ${runConfig.position_size_pct.toFixed(0)}%`
+                    : ""}
+                </strong>
               </div>
             )}
             {typeof runConfig.entry_confirmation_bars === "number" && (
               <div>
                 <span className="stats-label">Confirmação entrada</span>
                 <strong>{runConfig.entry_confirmation_bars} vela(s)</strong>
+              </div>
+            )}
+            {typeof runConfig.execution_timing === "string" && (
+              <div>
+                <span className="stats-label">Timing execução</span>
+                <strong>{formatExecutionTimingLabel(runConfig.execution_timing)}</strong>
+              </div>
+            )}
+            {(typeof runConfig.execution_timing !== "string" &&
+              typeof runConfig.entry_timing === "string") && (
+              <div>
+                <span className="stats-label">Timing execução</span>
+                <strong>{formatExecutionTimingLabel(runConfig.entry_timing)}</strong>
               </div>
             )}
             {typeof runConfig.exit_mode === "string" && (
@@ -1900,6 +1980,7 @@ function App() {
       initialCapital: backtestInitialCapital,
       feeBps: backtestFeeBps,
       slippageBps: backtestSlippageBps,
+      slippageModel: backtestSlippageModel,
       strategyMinStrengthPct: Object.fromEntries(
         backtestStrategies.map((strategy) => [
           strategy,
@@ -1909,7 +1990,10 @@ function App() {
       consensusStrengthPct: backtestConsensusStrengthPct,
       limit: filterMode === "count" ? barLimit : backtestLimit,
       positionSizePct: backtestPositionSizePct,
+      positionSizingModel: backtestPositionSizingModel,
+      riskPerTradePct: backtestRiskPerTradePct,
       entryConfirmationBars: backtestEntryConfirmationBars,
+      executionTiming: backtestExecutionTiming,
       exitMode: backtestExitMode,
       stopLossPct: backtestStopLossPct,
       takeProfitPct: backtestTakeProfitPct,
@@ -1932,6 +2016,7 @@ function App() {
     setBacktestInitialCapital(normalized.initialCapital);
     setBacktestFeeBps(normalized.feeBps);
     setBacktestSlippageBps(normalized.slippageBps);
+    setBacktestSlippageModel(normalized.slippageModel);
     setBacktestStrategyMinStrengthPct(normalized.strategyMinStrengthPct);
     setBacktestConsensusStrengthPct(normalized.consensusStrengthPct);
     if (filterMode === "count") {
@@ -1941,7 +2026,10 @@ function App() {
       setBacktestLimit(normalized.limit);
     }
     setBacktestPositionSizePct(normalized.positionSizePct);
+    setBacktestPositionSizingModel(normalized.positionSizingModel);
+    setBacktestRiskPerTradePct(normalized.riskPerTradePct);
     setBacktestEntryConfirmationBars(normalized.entryConfirmationBars);
+    setBacktestExecutionTiming(normalized.executionTiming);
     setBacktestExitMode(normalized.exitMode);
     setBacktestStopLossPct(normalized.stopLossPct ?? 2);
     setBacktestTakeProfitPct(normalized.takeProfitPct ?? 4);
@@ -1968,6 +2056,9 @@ function App() {
     setBacktestInitialCapital(Number(config.initial_capital ?? run.initial_capital));
     setBacktestFeeBps(Number(config.fee_bps ?? run.fee_bps));
     setBacktestSlippageBps(Number(config.slippage_bps ?? run.slippage_bps));
+    if (config.slippage_model === "fixed" || config.slippage_model === "atr_volume") {
+      setBacktestSlippageModel(config.slippage_model);
+    }
     setBacktestStrategyMinStrengthPct(strategyStrengthPct);
     setBacktestConsensusStrengthPct(consensusPct);
 
@@ -1985,8 +2076,19 @@ function App() {
     if (typeof config.position_size_pct === "number") {
       setBacktestPositionSizePct(config.position_size_pct);
     }
+    if (config.position_sizing_model === "fixed_pct" || config.position_sizing_model === "atr_risk") {
+      setBacktestPositionSizingModel(config.position_sizing_model);
+    }
+    if (typeof config.risk_per_trade_pct === "number") {
+      setBacktestRiskPerTradePct(config.risk_per_trade_pct);
+    }
     if (typeof config.entry_confirmation_bars === "number") {
       setBacktestEntryConfirmationBars(config.entry_confirmation_bars);
+    }
+    if (config.execution_timing === "signal_close" || config.execution_timing === "next_open") {
+      setBacktestExecutionTiming(config.execution_timing);
+    } else if (config.entry_timing === "signal_close" || config.entry_timing === "next_open") {
+      setBacktestExecutionTiming(config.entry_timing);
     }
     if (config.exit_mode === "opposite_signal" || config.exit_mode === "tp_sl_or_opposite" || config.exit_mode === "tp_sl_only") {
       setBacktestExitMode(config.exit_mode);
@@ -3369,6 +3471,18 @@ function App() {
                     </select>
                   </label>
                   <label className="field">
+                    <span>Timing de execução</span>
+                    <select
+                      value={backtestExecutionTiming}
+                      onChange={(event) =>
+                        setBacktestExecutionTiming(event.target.value as "signal_close" | "next_open")
+                      }
+                    >
+                      <option value="next_open">Abertura da vela seguinte (entrada e saída)</option>
+                      <option value="signal_close">Fecho da vela do sinal</option>
+                    </select>
+                  </label>
+                  <label className="field">
                     <span>Modo de saída</span>
                     <select
                       value={backtestExitMode}
@@ -3403,16 +3517,55 @@ function App() {
                     />
                   </label>
                   <label className="field">
-                    <span>% do capital por trade</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={backtestPositionSizePct}
-                      onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
-                    />
+                    <span>Modelo de tamanho</span>
+                    <select
+                      value={backtestPositionSizingModel}
+                      onChange={(event) =>
+                        setBacktestPositionSizingModel(event.target.value as "fixed_pct" | "atr_risk")
+                      }
+                    >
+                      <option value="fixed_pct">% fixo do capital</option>
+                      <option value="atr_risk">Risco por trade (ATR/SL)</option>
+                    </select>
                   </label>
+                  {backtestPositionSizingModel === "fixed_pct" ? (
+                    <label className="field">
+                      <span>% do capital por trade</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={backtestPositionSizePct}
+                        onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
+                      />
+                    </label>
+                  ) : (
+                    <>
+                      <label className="field">
+                        <span>Risco por trade (%)</span>
+                        <input
+                          type="number"
+                          min={0.1}
+                          max={100}
+                          step={0.1}
+                          value={backtestRiskPerTradePct}
+                          onChange={(event) => setBacktestRiskPerTradePct(Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Teto (% capital)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          step={1}
+                          value={backtestPositionSizePct}
+                          onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
+                        />
+                      </label>
+                    </>
+                  )}
                   <label className="field">
                     <span>Fee (bps)</span>
                     <input
@@ -3434,6 +3587,18 @@ function App() {
                       value={backtestSlippageBps}
                       onChange={(event) => setBacktestSlippageBps(Number(event.target.value))}
                     />
+                  </label>
+                  <label className="field">
+                    <span>Modelo slippage</span>
+                    <select
+                      value={backtestSlippageModel}
+                      onChange={(event) =>
+                        setBacktestSlippageModel(event.target.value as "fixed" | "atr_volume")
+                      }
+                    >
+                      <option value="atr_volume">Dinâmico (ATR + volume)</option>
+                      <option value="fixed">Fixo</option>
+                    </select>
                   </label>
                   <label className="field">
                     <span>Stop-loss (%)</span>

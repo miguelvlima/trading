@@ -99,6 +99,58 @@ def test_history_endpoint_returns_bars(tmp_path: Path) -> None:
     assert rows[-1]["symbol"] == "AAPL"
 
 
+def test_history_endpoint_window_falls_back_for_non_paginating_provider(
+    tmp_path: Path,
+) -> None:
+    # FakeProvider has no fetch_history_paginated, so a windowed request must
+    # gracefully fall back to the limit-based recent fetch.
+    session_factory = _build_session_factory(tmp_path)
+    quotes = build_bar_quotes("AAPL", count=5)
+    provider = FakeProvider(bars={"AAPL": quotes})
+
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+    app.dependency_overrides[get_provider] = lambda: provider
+
+    client = TestClient(app)
+    response = client.get(
+        "/realtime/history",
+        params={"symbol": "AAPL", "timeframe": "1d", "window": "all", "limit": 3},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(response.json()) == 3
+
+
+def test_indices_endpoint_returns_strip_specs(tmp_path: Path) -> None:
+    session_factory = _build_session_factory(tmp_path)
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    client = TestClient(app)
+    response = client.get("/realtime/indices")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    rows = response.json()
+    symbols = [row["symbol"] for row in rows]
+    assert "SPX" in symbols and "VIX" in symbols
+    assert all(row["name"] for row in rows)
+
+
+def test_indices_endpoint_requires_auth() -> None:
+    client = TestClient(app)
+    response = client.get("/realtime/indices")
+    assert response.status_code == 401
+
+
 def test_health_endpoint_reports_running(tmp_path: Path) -> None:
     session_factory = _build_session_factory(tmp_path)
 

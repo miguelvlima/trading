@@ -19,6 +19,7 @@ against ``FakeStreamingProvider`` (no Gateway).
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import Callable
 from contextlib import suppress
 from decimal import Decimal
@@ -53,6 +54,12 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 # provider cannot stream (e.g. yfinance), so the route degrades gracefully.
 StreamProviderFactory = Callable[[], StreamingProvider | None]
 
+# Rotating client-id offset per streaming session. A fixed id collides ("326
+# client id in use" -> handshake timeout) when a previous session has not fully
+# released — common with rapid reconnects or React StrictMode double-mounts — so
+# each new session takes a distinct id, well clear of the polling worker's.
+_stream_client_seq = itertools.count()
+
 
 def _build_ibkr_streaming_provider(settings: Settings) -> StreamingProvider | None:
     """Best-effort IBKR streaming provider; None if unavailable.
@@ -67,10 +74,12 @@ def _build_ibkr_streaming_provider(settings: Settings) -> StreamingProvider | No
     except ImportError:
         logger.error("ibkr_streaming_unavailable", hint="pip install ib_insync")
         return None
+    # base+10 .. base+209, distinct from the worker (base) and per session.
+    client_id = settings.ibkr_client_id + 10 + (next(_stream_client_seq) % 200)
     return IBKRStreamingProvider(
         host=settings.ibkr_gateway_host,
         port=settings.ibkr_gateway_port,
-        client_id=settings.ibkr_client_id + 1,  # distinct from the polling worker
+        client_id=client_id,
         market_data_type=settings.ibkr_market_data_type,
     )
 

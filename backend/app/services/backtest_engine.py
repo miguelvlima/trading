@@ -199,6 +199,7 @@ def _simulate_window(
 
     peak_equity = capital
     max_drawdown_pct = 0.0
+    first_close = bars[0].close
 
     def execution_price(close_price: float, side: str) -> float:
         if side == "BUY":
@@ -345,9 +346,14 @@ def _simulate_window(
         if peak_equity > 0:
             drawdown_pct = (peak_equity - equity) / peak_equity
             max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
-        equity_curve.append(
-            {"timestamp": bar.timestamp.isoformat(), "equity": equity, "drawdown_pct": drawdown_pct}
-        )
+        curve_point: dict[str, float | str] = {
+            "timestamp": bar.timestamp.isoformat(),
+            "equity": equity,
+            "drawdown_pct": drawdown_pct,
+        }
+        if config.benchmark_enabled and first_close > 0:
+            curve_point["benchmark_equity"] = initial_capital * (bar.close / first_close)
+        equity_curve.append(curve_point)
 
     if position_direction is not None:
         close_position(bars[-1], reason="End of backtest window.")

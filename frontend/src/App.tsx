@@ -6,6 +6,7 @@ import {
   type LineData,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
 
 type Instrument = {
   id: number;
@@ -309,7 +310,7 @@ const getSummaryNumber = (summary: Record<string, unknown>, key: string, fallbac
   return typeof value === "number" ? value : fallback;
 };
 
-const getSummaryCurve = (summary: Record<string, unknown>): Array<{ timestamp: string; equity: number }> => {
+const getSummaryCurve = (summary: Record<string, unknown>): EquityCurvePoint[] => {
   const value = summary.equity_curve;
   if (!Array.isArray(value)) {
     return [];
@@ -323,10 +324,60 @@ const getSummaryCurve = (summary: Record<string, unknown>): Array<{ timestamp: s
       if (typeof record.timestamp !== "string" || typeof record.equity !== "number") {
         return null;
       }
-      return { timestamp: record.timestamp, equity: record.equity };
+      const point: EquityCurvePoint = {
+        timestamp: record.timestamp,
+        equity: record.equity,
+      };
+      if (typeof record.benchmark_equity === "number") {
+        point.benchmark_equity = record.benchmark_equity;
+      }
+      return point;
     })
-    .filter((item): item is { timestamp: string; equity: number } => item !== null);
+    .filter((item): item is EquityCurvePoint => item !== null);
 };
+
+type WalkforwardMetrics = {
+  bars_processed: number;
+  trades_count: number;
+  net_pnl_pct: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+};
+
+const getWalkforwardMetrics = (value: unknown): WalkforwardMetrics | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const readNumber = (key: string) => (typeof record[key] === "number" ? (record[key] as number) : null);
+  const barsProcessed = readNumber("bars_processed");
+  const tradesCount = readNumber("trades_count");
+  const netPnlPct = readNumber("net_pnl_pct");
+  const winRate = readNumber("win_rate");
+  const profitFactor = readNumber("profit_factor");
+  const maxDrawdownPct = readNumber("max_drawdown_pct");
+  if (
+    barsProcessed === null ||
+    tradesCount === null ||
+    netPnlPct === null ||
+    winRate === null ||
+    profitFactor === null ||
+    maxDrawdownPct === null
+  ) {
+    return null;
+  }
+  return {
+    bars_processed: barsProcessed,
+    trades_count: tradesCount,
+    net_pnl_pct: netPnlPct,
+    win_rate: winRate,
+    profit_factor: profitFactor,
+    max_drawdown_pct: maxDrawdownPct,
+  };
+};
+
+const formatPct = (value: number, digits = 2): string => `${(value * 100).toFixed(digits)}%`;
 
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
@@ -1302,80 +1353,106 @@ function App() {
     await handleOpenBacktestRun(runId);
   };
 
-  const renderBacktestRunDetail = (run: BacktestRun) => (
-    <div className="backtest-detail-panel backtest-detail-inline">
-      <div className="stats">
-        <div>
-          <span className="stats-label">Capital inicial {"->"} final</span>
-          <strong>
-            {run.initial_capital.toFixed(2)} {"->"} {getSummaryNumber(run.result_summary, "final_capital").toFixed(2)}
-          </strong>
-        </div>
-        <div>
-          <span className="stats-label">Expectancy</span>
-          <strong>{getSummaryNumber(run.result_summary, "expectancy").toFixed(2)}</strong>
-        </div>
-        <div>
-          <span className="stats-label">Alpha vs benchmark</span>
-          <strong>{(getSummaryNumber(run.result_summary, "alpha_vs_benchmark_pct") * 100).toFixed(2)}%</strong>
-        </div>
-      </div>
+  const renderBacktestRunDetail = (run: BacktestRun) => {
+    const equityCurve = getSummaryCurve(run.result_summary);
+    const walkforwardBlock =
+      typeof run.result_summary.walkforward === "object" && run.result_summary.walkforward !== null
+        ? (run.result_summary.walkforward as Record<string, unknown>)
+        : null;
+    const walkforwardInSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.in_sample) : null;
+    const walkforwardOutSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.out_sample) : null;
+    const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
 
-      {typeof run.result_summary.walkforward === "object" && run.result_summary.walkforward !== null && (
-        <p className="hint">
-          Walk-forward ativo: holdout{" "}
-          {getSummaryNumber(run.result_summary.walkforward as Record<string, unknown>, "split_pct")}%.
+    const renderWalkforwardColumn = (label: string, metrics: WalkforwardMetrics) => (
+      <article className="backtest-wf-col">
+        <strong>{label}</strong>
+        <p>PnL {formatPct(metrics.net_pnl_pct)}</p>
+        <p>
+          {metrics.trades_count} trades · Win {formatPct(metrics.win_rate, 0)}
         </p>
-      )}
+        <p>
+          PF {metrics.profit_factor.toFixed(2)} · DD {formatPct(metrics.max_drawdown_pct, 1)}
+        </p>
+        <p className="hint">{metrics.bars_processed} barras</p>
+      </article>
+    );
 
-      {getSummaryCurve(run.result_summary).length > 0 && (
-        <div className="equity-curve-list">
-          <span className="stats-label">Equity curve (últimos 20 pontos)</span>
-          <div className="signals-list">
-            {getSummaryCurve(run.result_summary)
-              .slice(-20)
-              .map((point) => (
-                <article key={point.timestamp} className="signal-row">
-                  <div className="signal-main">
-                    <div className="signal-top">
-                      <span>{formatDateTimeLabel(point.timestamp)}</span>
-                      <strong>{point.equity.toFixed(2)}</strong>
-                    </div>
-                  </div>
-                </article>
-              ))}
+    return (
+      <div className="backtest-detail-panel backtest-detail-inline">
+        <div className="stats">
+          <div>
+            <span className="stats-label">Capital inicial {"->"} final</span>
+            <strong>
+              {run.initial_capital.toFixed(2)} {"->"}{" "}
+              {getSummaryNumber(run.result_summary, "final_capital").toFixed(2)}
+            </strong>
+          </div>
+          <div>
+            <span className="stats-label">Profit factor</span>
+            <strong>{run.profit_factor.toFixed(2)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Expectancy</span>
+            <strong>{getSummaryNumber(run.result_summary, "expectancy").toFixed(2)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Retorno buy & hold</span>
+            <strong>{formatPct(benchmarkReturnPct)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Alpha vs benchmark</span>
+            <strong>{formatPct(getSummaryNumber(run.result_summary, "alpha_vs_benchmark_pct"))}</strong>
           </div>
         </div>
-      )}
 
-      {run.trades && run.trades.length > 0 ? (
-        <div className="signals-list">
-          {run.trades.slice(0, 50).map((trade) => (
-            <article key={trade.id} className="signal-row">
-              <div className="signal-main">
-                <div className="signal-top">
-                  <strong>{trade.direction}</strong>
-                  <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
-                  <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
-                  <span>Barras: {trade.bars_held}</span>
+        {walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
+          <div className="backtest-walkforward-panel">
+            <span className="stats-label">
+              Walk-forward · holdout {getSummaryNumber(walkforwardBlock, "split_pct", 0).toFixed(0)}%
+            </span>
+            <div className="backtest-wf-grid">
+              {renderWalkforwardColumn("In-sample", walkforwardInSample)}
+              {renderWalkforwardColumn("Out-of-sample", walkforwardOutSample)}
+            </div>
+          </div>
+        )}
+
+        {equityCurve.length > 0 && (
+          <div className="equity-curve-list">
+            <span className="stats-label">Curva de equity</span>
+            <BacktestEquityChart points={equityCurve} />
+          </div>
+        )}
+
+        {run.trades && run.trades.length > 0 ? (
+          <div className="signals-list">
+            {run.trades.slice(0, 50).map((trade) => (
+              <article key={trade.id} className="signal-row">
+                <div className="signal-main">
+                  <div className="signal-top">
+                    <strong>{trade.direction}</strong>
+                    <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
+                    <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
+                    <span>Barras: {trade.bars_held}</span>
+                  </div>
+                  <p>
+                    PnL:{" "}
+                    <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
+                      {trade.net_pnl.toFixed(2)}
+                    </strong>{" "}
+                    | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)} {"->"}{" "}
+                    Exit {trade.exit_price.toFixed(2)}
+                  </p>
                 </div>
-                <p>
-                  PnL:{" "}
-                  <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
-                    {trade.net_pnl.toFixed(2)}
-                  </strong>{" "}
-                  | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)} {"->"}{" "}
-                  Exit {trade.exit_price.toFixed(2)}
-                </p>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <p className="hint">Este run não gerou trades.</p>
-      )}
-    </div>
-  );
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="hint">Este run não gerou trades.</p>
+        )}
+      </div>
+    );
+  };
 
   const handleOpenBacktestRun = async (runId: number) => {
     if (!authToken) {

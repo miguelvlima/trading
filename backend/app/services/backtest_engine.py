@@ -66,11 +66,18 @@ class BacktestOutput:
 def aggregate_signals(
     per_strategy: dict[str, list[tuple[datetime, str, float]]],
     min_signal_strength: float,
+    strategy_min_strengths: dict[str, float] | None = None,
+    min_consensus_strength: float | None = None,
 ) -> dict[datetime, AggregatedSignal]:
+    strategy_thresholds = strategy_min_strengths or {}
+    consensus_threshold = (
+        min_consensus_strength if min_consensus_strength is not None else min_signal_strength
+    )
     by_timestamp: dict[datetime, dict[str, float]] = {}
     for strategy_name, signals in per_strategy.items():
+        strategy_threshold = strategy_thresholds.get(strategy_name, min_signal_strength)
         for timestamp, direction, strength in signals:
-            if strength < min_signal_strength:
+            if strength < strategy_threshold:
                 continue
             bucket = by_timestamp.setdefault(timestamp, {"buy": 0.0, "sell": 0.0})
             if direction == "BUY":
@@ -87,7 +94,7 @@ def aggregate_signals(
             continue
         net = buy_score - sell_score
         confidence = abs(net) / total
-        if confidence < min_signal_strength or net == 0:
+        if confidence < consensus_threshold or net == 0:
             continue
         direction = "BUY" if net > 0 else "SELL"
         rationale = (

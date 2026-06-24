@@ -163,6 +163,8 @@ def run_backtest_simulation(
     aggregated = aggregate_signals(
         per_strategy=per_strategy_signals,
         min_signal_strength=payload.min_signal_strength,
+        strategy_min_strengths=payload.strategy_min_strengths,
+        min_consensus_strength=payload.min_consensus_strength,
     )
     if payload.exit_mode in {"tp_sl_or_opposite", "tp_sl_only"} and (
         payload.stop_loss_pct is None and payload.take_profit_pct is None
@@ -210,7 +212,15 @@ def run_backtest_simulation(
         win_rate=Decimal(f"{output.metrics.win_rate:.6f}"),
         profit_factor=Decimal(f"{output.metrics.profit_factor:.8f}"),
         max_drawdown_pct=Decimal(f"{output.metrics.max_drawdown_pct:.6f}"),
-        result_summary=output.summary,
+        result_summary={
+            **output.summary,
+            "config": {
+                "strategy_min_strengths": payload.strategy_min_strengths,
+                "min_consensus_strength": payload.min_consensus_strength
+                if payload.min_consensus_strength is not None
+                else payload.min_signal_strength,
+            },
+        },
     )
     db.add(run_model)
     db.flush()

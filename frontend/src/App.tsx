@@ -380,6 +380,22 @@ const getWalkforwardMetrics = (value: unknown): WalkforwardMetrics | null => {
 
 const formatPct = (value: number, digits = 2): string => `${(value * 100).toFixed(digits)}%`;
 
+const formatExitModeLabel = (mode: string): string => {
+  if (mode === "opposite_signal") {
+    return "Só sinal oposto";
+  }
+  if (mode === "tp_sl_or_opposite") {
+    return "TP/SL + sinal oposto";
+  }
+  if (mode === "tp_sl_only") {
+    return "Só TP/SL";
+  }
+  return mode;
+};
+
+const formatStrengthPct = (value: unknown): string =>
+  typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
+
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
     return strength;
@@ -1536,6 +1552,95 @@ function App() {
           </div>
         </div>
 
+        {runConfig && (
+          <div className="backtest-run-config-panel">
+            <span className="stats-label">Configuração deste run</span>
+            <div className="backtest-run-config-grid">
+              <div>
+                <span className="stats-label">Estratégias</span>
+                <strong>
+                  {run.strategy_names
+                    .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                    .join(" · ")}
+                </strong>
+              </div>
+              <div>
+                <span className="stats-label">Fees / slippage</span>
+                <strong>
+                  {Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps /{" "}
+                  {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps
+                </strong>
+              </div>
+              {typeof runConfig.position_size_pct === "number" && (
+                <div>
+                  <span className="stats-label">Capital por trade</span>
+                  <strong>{runConfig.position_size_pct.toFixed(0)}%</strong>
+                </div>
+              )}
+              {typeof runConfig.entry_confirmation_bars === "number" && (
+                <div>
+                  <span className="stats-label">Confirmação entrada</span>
+                  <strong>{runConfig.entry_confirmation_bars} vela(s)</strong>
+                </div>
+              )}
+              {typeof runConfig.exit_mode === "string" && (
+                <div>
+                  <span className="stats-label">Modo de saída</span>
+                  <strong>{formatExitModeLabel(runConfig.exit_mode)}</strong>
+                </div>
+              )}
+              {typeof runConfig.stop_loss_pct === "number" && (
+                <div>
+                  <span className="stats-label">Stop-loss</span>
+                  <strong>{runConfig.stop_loss_pct.toFixed(1)}%</strong>
+                </div>
+              )}
+              {typeof runConfig.take_profit_pct === "number" && (
+                <div>
+                  <span className="stats-label">Take-profit</span>
+                  <strong>{runConfig.take_profit_pct.toFixed(1)}%</strong>
+                </div>
+              )}
+              {typeof runConfig.max_bars_in_trade === "number" && (
+                <div>
+                  <span className="stats-label">Máx. barras</span>
+                  <strong>{runConfig.max_bars_in_trade}</strong>
+                </div>
+              )}
+              {typeof runConfig.walkforward_split_pct === "number" && runConfig.walkforward_split_pct > 0 && (
+                <div>
+                  <span className="stats-label">Walk-forward holdout</span>
+                  <strong>{runConfig.walkforward_split_pct.toFixed(0)}%</strong>
+                </div>
+              )}
+              {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length > 1 && (
+                <div>
+                  <span className="stats-label">Consenso mínimo</span>
+                  <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
+                </div>
+              )}
+            </div>
+            {typeof runConfig.strategy_min_strengths === "object" &&
+              runConfig.strategy_min_strengths !== null && (
+                <div className="backtest-run-config-thresholds">
+                  {Object.entries(runConfig.strategy_min_strengths as Record<string, number>).map(
+                    ([strategy, strength]) => (
+                      <span key={strategy} className="backtest-config-chip">
+                        {STRATEGY_SUMMARY[strategy]?.title ?? strategy}: {formatStrengthPct(strength)}
+                      </span>
+                    ),
+                  )}
+                </div>
+              )}
+            <p className="hint backtest-run-config-meta">
+              {run.bars_processed} barras processadas
+              {run.start_at || run.end_at
+                ? ` · ${run.start_at ? formatDateLabel(run.start_at) : "…"} – ${run.end_at ? formatDateLabel(run.end_at) : "…"}`
+                : ""}
+            </p>
+          </div>
+        )}
+
         {walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
           <div className="backtest-walkforward-panel">
             <span className="stats-label">
@@ -1578,6 +1683,10 @@ function App() {
                     </strong>{" "}
                     | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)} {"->"}{" "}
                     Exit {trade.exit_price.toFixed(2)}
+                  </p>
+                  <p className="backtest-trade-reason">
+                    <span>Entrada: {trade.entry_reason}</span>
+                    <span>Saída: {trade.exit_reason}</span>
                   </p>
                 </div>
               </article>

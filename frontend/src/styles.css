@@ -744,6 +744,52 @@ body {
   margin-top: 0.35rem;
 }
 
+.backtest-run-config-panel {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  background: rgba(2, 6, 23, 0.35);
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.backtest-run-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.55rem 0.75rem;
+  margin-top: 0.45rem;
+}
+
+.backtest-run-config-thresholds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.backtest-config-chip {
+  display: inline-block;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  font-size: 0.76rem;
+}
+
+.backtest-run-config-meta {
+  margin: 0.5rem 0 0 !important;
+}
+
+.backtest-trade-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.35rem 0 0 !important;
+  color: #94a3b8 !important;
+  font-size: 0.78rem !important;
+  line-height: 1.35;
+}
+
 .signals-header {
   display: flex;
   align-items: flex-end;

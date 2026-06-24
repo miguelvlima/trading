@@ -215,6 +215,13 @@ def run_backtest_simulation(
         result_summary={
             **output.summary,
             "config": {
+                **(output.summary.get("config") if isinstance(output.summary.get("config"), dict) else {}),
+                "strategies": strategies,
+                "fee_bps": payload.fee_bps,
+                "slippage_bps": payload.slippage_bps,
+                "initial_capital": payload.initial_capital,
+                "limit": payload.limit,
+                "walkforward_split_pct": payload.walkforward_split_pct,
                 "strategy_min_strengths": payload.strategy_min_strengths,
                 "min_consensus_strength": payload.min_consensus_strength
                 if payload.min_consensus_strength is not None

@@ -420,6 +420,32 @@ body {
   border-color: #ef4444;
 }
 
+.backtest-chart-overlay-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin: 0.65rem 0;
+  padding: 0.65rem 0.8rem;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.backtest-chart-overlay-banner p {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.84rem;
+}
+
+.backtest-detail-chart-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
 .backtest-compare-toggle {
   display: inline-flex;
   align-items: center;

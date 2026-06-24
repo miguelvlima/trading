@@ -2,8 +2,10 @@ import {
   CandlestickSeries,
   LineSeries,
   createChart,
+  createSeriesMarkers,
   type CandlestickData,
   type LineData,
+  type SeriesMarker,
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
@@ -425,6 +427,60 @@ const buildStrategyStrengthPctFromRun = (run: BacktestRun, config: Record<string
   );
 };
 
+const buildBacktestTradeMarkers = (trades: BacktestTrade[]): SeriesMarker<string>[] => {
+  const markers: SeriesMarker<string>[] = [];
+  for (const trade of trades) {
+    const isLong = trade.direction === "LONG";
+    markers.push({
+      time: toChartDate(trade.entry_timestamp),
+      position: isLong ? "belowBar" : "aboveBar",
+      color: isLong ? "#22c55e" : "#f87171",
+      shape: isLong ? "arrowUp" : "arrowDown",
+      text: isLong ? "Entrada L" : "Entrada S",
+    });
+    markers.push({
+      time: toChartDate(trade.exit_timestamp),
+      position: isLong ? "aboveBar" : "belowBar",
+      color: trade.net_pnl >= 0 ? "#22c55e" : "#ef4444",
+      shape: isLong ? "arrowDown" : "arrowUp",
+      text: trade.net_pnl >= 0 ? "Saída +" : "Saída −",
+    });
+  }
+  return markers.sort((left, right) => String(left.time).localeCompare(String(right.time)));
+};
+
+const syncChartFiltersToRun = (
+  run: BacktestRun,
+  setters: {
+    setSelectedSymbol: (symbol: string) => void;
+    setSelectedTimeframe: (timeframe: string) => void;
+    setFilterMode: (mode: FilterMode) => void;
+    setStartDate: (value: string) => void;
+    setEndDate: (value: string) => void;
+    setBarLimit: (value: number) => void;
+    setBarLimitInput: (value: string) => void;
+    setBacktestLimit: (value: number) => void;
+  },
+  instruments: Instrument[],
+) => {
+  const config = getRunConfigSnapshot(run);
+  const runLimit = typeof config.limit === "number" ? config.limit : run.bars_processed || 2000;
+  if (instruments.some((item) => item.symbol === run.symbol)) {
+    setters.setSelectedSymbol(run.symbol);
+  }
+  setters.setSelectedTimeframe(run.timeframe);
+  if (run.start_at && run.end_at) {
+    setters.setFilterMode("date");
+    setters.setStartDate(toInputDate(new Date(run.start_at)));
+    setters.setEndDate(toInputDate(new Date(run.end_at)));
+    setters.setBacktestLimit(runLimit);
+  } else {
+    setters.setFilterMode("count");
+    setters.setBarLimit(runLimit);
+    setters.setBarLimitInput(String(runLimit));
+  }
+};
+
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
     return strength;
@@ -546,6 +602,8 @@ function App() {
   const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
   const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
   const [demoDataLoading, setDemoDataLoading] = useState(false);
+  const [backtestTradesOnChartRunId, setBacktestTradesOnChartRunId] = useState<number | null>(null);
+  const [backtestTradesOnChart, setBacktestTradesOnChart] = useState<BacktestTrade[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
@@ -1079,6 +1137,11 @@ function App() {
       close: Number(bar.close),
     }));
   }, [bars]);
+
+  const backtestTradeMarkers = useMemo(
+    () => buildBacktestTradeMarkers(backtestTradesOnChart),
+    [backtestTradesOnChart],
+  );
 
   const sma20Data = useMemo(() => toLineData(indicatorRows, "sma_20"), [indicatorRows]);
   const ema20Data = useMemo(() => toLineData(indicatorRows, "ema_20"), [indicatorRows]);
@@ -1694,6 +1757,23 @@ function App() {
           </div>
         )}
 
+        {run.trades_count > 0 && (
+          <div className="backtest-detail-chart-action">
+            <button
+              type="button"
+              className="tab-button"
+              onClick={() => void handleShowBacktestTradesOnChart(run)}
+            >
+              {backtestTradesOnChartRunId === run.id ? "Trades visíveis no gráfico" : "Ver trades no gráfico"}
+            </button>
+            {backtestTradesOnChartRunId === run.id && (
+              <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
+                Ocultar do gráfico
+              </button>
+            )}
+          </div>
+        )}
+
         {run.trades && run.trades.length > 0 ? (
           <div className="signals-list">
             {run.trades.slice(0, 50).map((trade) => (
@@ -1886,6 +1966,57 @@ function App() {
     applyBacktestConfigFromRun(run);
   };
 
+  const handleClearBacktestTradesOnChart = () => {
+    setBacktestTradesOnChart([]);
+    setBacktestTradesOnChartRunId(null);
+  };
+
+  const handleShowBacktestTradesOnChart = async (run: BacktestRun) => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      let trades = run.trades ?? [];
+      let chartRun = run;
+      if (trades.length === 0) {
+        const response = await fetch(`${API_BASE_URL}/backtests/${run.id}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          const errorPayload = await response.json().catch(() => null);
+          throw new Error(parseApiError(errorPayload, "Falha ao carregar trades do run."));
+        }
+        chartRun = (await response.json()) as BacktestRun;
+        trades = chartRun.trades ?? [];
+      }
+      if (trades.length === 0) {
+        setBacktestError("Este run não tem trades para mostrar no gráfico.");
+        return;
+      }
+
+      syncChartFiltersToRun(
+        chartRun,
+        {
+          setSelectedSymbol,
+          setSelectedTimeframe,
+          setFilterMode,
+          setStartDate,
+          setEndDate,
+          setBarLimit,
+          setBarLimitInput,
+          setBacktestLimit,
+        },
+        instruments,
+      );
+      setBacktestTradesOnChart(trades);
+      setBacktestTradesOnChartRunId(chartRun.id);
+      setActiveTab("market");
+    } catch (showError) {
+      setBacktestError(toUserFetchError(showError, "Erro inesperado ao preparar gráfico."));
+    }
+  };
+
   const handleDeleteBacktestRun = async (runId: number) => {
     if (!authToken) {
       return;
@@ -1905,6 +2036,9 @@ function App() {
       }
       if (backtestSelectedRun?.id === runId) {
         setBacktestSelectedRun(null);
+      }
+      if (backtestTradesOnChartRunId === runId) {
+        handleClearBacktestTradesOnChart();
       }
       setBacktestCompareRunIds((previous) => previous.filter((id) => id !== runId));
       setBacktestRefreshToken((previous) => previous + 1);
@@ -1955,6 +2089,10 @@ function App() {
     });
     const candleSeries = chart.addSeries(CandlestickSeries);
     candleSeries.setData(chartData);
+
+    if (backtestTradeMarkers.length > 0) {
+      createSeriesMarkers(candleSeries, backtestTradeMarkers);
+    }
 
     if (overlayVisibility.sma20 && sma20Data.length > 0) {
       const series = chart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 2, title: "SMA 20" });
@@ -2059,6 +2197,7 @@ function App() {
     bollingerMiddleData,
     bollingerLowerData,
     overlayVisibility,
+    backtestTradeMarkers,
   ]);
 
   return (
@@ -2562,6 +2701,18 @@ function App() {
                   <span className="stats-label">Última data</span>
                   <strong>{lastBar ? new Date(lastBar.timestamp).toLocaleDateString("pt-PT") : "-"}</strong>
                 </div>
+              </div>
+            )}
+
+            {backtestTradesOnChartRunId !== null && backtestTradesOnChart.length > 0 && (
+              <div className="backtest-chart-overlay-banner">
+                <p>
+                  Trades da simulação <strong>#{backtestTradesOnChartRunId}</strong> no gráfico (
+                  {backtestTradesOnChart.length} trades · setas verdes/vermelhas = entrada/saída).
+                </p>
+                <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
+                  Ocultar trades
+                </button>
               </div>
             )}
 
@@ -3390,6 +3541,15 @@ function App() {
                               >
                                 Reutilizar config
                               </button>
+                              {run.trades_count > 0 && (
+                                <button
+                                  type="button"
+                                  className="config-button"
+                                  onClick={() => void handleShowBacktestTradesOnChart(run)}
+                                >
+                                  Ver no gráfico
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className="config-button backtest-delete-button"

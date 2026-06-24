@@ -2,7 +2,7 @@ name: Auto request review
 
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened]
+    types: [opened, ready_for_review, reopened, synchronize]
     branches:
       - develop
 
@@ -13,13 +13,21 @@ permissions:
 jobs:
   request-review:
     runs-on: ubuntu-latest
-    if: github.actor != 'ncraveiroai'
     steps:
-      - name: Request review from Nuno
+      - name: Request review from the other collaborator
         uses: actions/github-script@v7
         with:
           script: |
-            const reviewers = ['ncraveiroai'];
+            const author = context.payload.pull_request.user.login;
+            const reviewersByAuthor = {
+              miguelvlima: ["ncraveiroai"],
+              ncraveiroai: ["miguelvlima"],
+            };
+            const reviewers = reviewersByAuthor[author];
+            if (!reviewers) {
+              core.info(`No automatic reviewer mapping for author ${author}.`);
+              return;
+            }
             try {
               await github.rest.pulls.requestReviewers({
                 owner: context.repo.owner,

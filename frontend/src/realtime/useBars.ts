@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { type Quote, ApiError, fetchHistory } from "./api";
+import { type Bar, type Quote, ApiError, fetchBars, fetchHistory } from "./api";
+
+// Treat a persisted (DB) bar as a closed quote for the chart.
+function asQuotes(symbol: string, bars: Bar[]): Quote[] {
+  return bars.map((b) => ({ ...b, symbol, is_final: true }));
+}
 
 type UseBarsResult = {
   bars: Quote[];
@@ -43,7 +48,13 @@ export function useBars(
         setError(null);
       }
       try {
-        const data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
+        let data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
+        if (data.length === 0) {
+          // Provider returned nothing (e.g. Gateway pacing / cold start) — fall
+          // back to the bars already persisted in the DB so the chart still draws.
+          const persisted = await fetchBars(baseUrl, token, symbol, timeframe, limit);
+          data = asQuotes(symbol, persisted);
+        }
         if (!cancelled) {
           setBars(data);
           setError(null);

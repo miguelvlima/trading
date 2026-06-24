@@ -391,6 +391,10 @@ class IBKRStreamingProvider:
         self._ib = None
         self._tickers: dict[str, object] = {}  # key -> ib_insync Ticker
         self._index_keys: set[str] = set()
+        # Subscriptions requested before the IB loop exists are buffered here and
+        # applied once it connects (guarded because they cross threads).
+        self._pending: list[tuple[str, bool]] = []
+        self._lock = threading.Lock()
 
     # -- lifecycle (called from the WebSocket loop thread) ---------------------
 
@@ -399,61 +403,82 @@ class IBKRStreamingProvider:
             return
         self._on_tick = on_tick
         self._on_index = on_index
-        ready = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run_loop, args=(ready,), name="ibkr-stream", daemon=True
-        )
+        # Non-blocking: spawn the IB thread and return immediately. We must NEVER
+        # wait on the Gateway connect here — doing so blocks the WebSocket's event
+        # loop (uvicorn), which froze every other connection and timed out their
+        # handshakes. The connect happens on the thread; subscriptions queue.
+        self._thread = threading.Thread(target=self._run_loop, name="ibkr-stream", daemon=True)
         self._thread.start()
-        ready.wait(timeout=self._connect_timeout + 2.0)
 
     def stop(self) -> None:
         loop = self._loop
         if loop is None:
+            # Never connected (e.g. Gateway down): just unblock the thread.
             return
         loop.call_soon_threadsafe(self._shutdown)
         if self._thread is not None:
             self._thread.join(timeout=5.0)
 
     def subscribe(self, symbol: str) -> None:
-        self._dispatch(self._do_subscribe, symbol.upper(), False)
+        self._queue_subscribe(symbol.upper(), False)
 
     def subscribe_index(self, symbol: str) -> None:
         key = symbol.upper()
         self._index_keys.add(key)
-        self._dispatch(self._do_subscribe, key, True)
+        self._queue_subscribe(key, True)
 
     def unsubscribe(self, symbol: str) -> None:
-        self._dispatch(self._do_unsubscribe, symbol.upper())
-
-    def _dispatch(self, fn, *args: object) -> None:
+        key = symbol.upper()
         loop = self._loop
-        if loop is None:
-            logger.warning("ibkr_stream_not_started")
-            return
-        loop.call_soon_threadsafe(fn, *args)
+        if loop is not None:
+            loop.call_soon_threadsafe(self._do_unsubscribe, key)
+        else:
+            with self._lock:
+                self._pending = [(k, ix) for (k, ix) in self._pending if k != key]
+
+    def _queue_subscribe(self, key: str, is_index: bool) -> None:
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(self._do_subscribe, key, is_index)
+        else:
+            with self._lock:
+                self._pending.append((key, is_index))
 
     # -- IB loop thread --------------------------------------------------------
 
-    def _run_loop(self, ready: threading.Event) -> None:
+    def _run_loop(self) -> None:
         try:
             from ib_insync import IB
         except ImportError:
             logger.error("ibkr_library_missing", hint="pip install ib_insync")
-            ready.set()
             return
 
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         self._ib = IB()
         try:
-            self._loop.run_until_complete(self._connect())
+            loop.run_until_complete(self._connect())
         except Exception as exc:  # noqa: BLE001 - connection errors are opaque
             logger.error("ibkr_stream_connect_failed", error=str(exc))
-        finally:
-            ready.set()
-        self._loop.run_forever()
+        else:
+            # Publish the loop only after a successful connect, then apply any
+            # subscriptions queued while connecting.
+            self._loop = loop
+            self._drain_pending()
+        if self._loop is None:
+            # Connect failed: nothing will stream; close the loop and exit.
+            loop.close()
+            return
+        loop.run_forever()
         # run_forever returns once _shutdown stops the loop.
-        self._loop.close()
+        loop.close()
+
+    def _drain_pending(self) -> None:
+        with self._lock:
+            pending = list(self._pending)
+            self._pending.clear()
+        for key, is_index in pending:
+            self._do_subscribe(key, is_index)
 
     async def _connect(self) -> None:
         await self._ib.connectAsync(

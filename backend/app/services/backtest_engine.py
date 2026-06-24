@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.services.commission_models import compute_commission
 from app.services.indicator_engine import atr, relative_volume
 from app.services.strategy_engine import BarInput
 
@@ -47,6 +48,7 @@ class BacktestMetrics:
 class BacktestConfig:
     initial_capital: float
     fee_bps: float
+    fee_model: str  # "fixed_bps" | "ibkr_us_tiered"
     slippage_bps: float
     position_size_pct: float
     position_sizing_model: str  # "fixed_pct" | "atr_risk"
@@ -132,9 +134,20 @@ def run_backtest_with_walkforward(
     aggregated_signals: dict[datetime, AggregatedSignal],
     config: BacktestConfig,
     split_pct: float,
+    walkforward_mode: str = "holdout",
+    walkforward_folds: int = 3,
 ) -> BacktestOutput:
     if split_pct <= 0 or len(bars) < 10:
         return _simulate_window(bars=bars, aggregated_signals=aggregated_signals, config=config)
+
+    if walkforward_mode == "rolling":
+        return _run_rolling_walkforward(
+            bars=bars,
+            aggregated_signals=aggregated_signals,
+            config=config,
+            split_pct=split_pct,
+            folds=walkforward_folds,
+        )
 
     split_index = int(len(bars) * (1.0 - split_pct / 100.0))
     split_index = max(5, min(len(bars) - 5, split_index))
@@ -148,12 +161,118 @@ def run_backtest_with_walkforward(
     full_result = _simulate_window(bars=bars, aggregated_signals=aggregated_signals, config=config)
 
     full_result.summary["walkforward"] = {
+        "mode": "holdout",
         "split_pct": split_pct,
         "split_index": split_index,
         "in_sample": _metrics_as_dict(in_result.metrics),
         "out_sample": _metrics_as_dict(out_result.metrics),
     }
     return full_result
+
+
+def _run_rolling_walkforward(
+    bars: list[BarInput],
+    aggregated_signals: dict[datetime, AggregatedSignal],
+    config: BacktestConfig,
+    split_pct: float,
+    folds: int,
+) -> BacktestOutput:
+    oos_size = max(5, int(len(bars) * split_pct / 100.0))
+    max_folds = min(max(1, folds), max(1, (len(bars) - 15) // oos_size))
+    min_is_bars = max(10, len(bars) - oos_size * max_folds)
+
+    fold_summaries: list[dict[str, object]] = []
+    oos_start = min_is_bars
+    for fold_index in range(max_folds):
+        oos_end = min(len(bars), oos_start + oos_size)
+        if oos_end <= oos_start:
+            break
+        in_sample = bars[:oos_start]
+        out_sample = bars[oos_start:oos_end]
+        in_signals = {k: v for k, v in aggregated_signals.items() if k <= in_sample[-1].timestamp}
+        out_signals = {k: v for k, v in aggregated_signals.items() if k >= out_sample[0].timestamp}
+        in_result = _simulate_window(bars=in_sample, aggregated_signals=in_signals, config=config)
+        out_result = _simulate_window(bars=out_sample, aggregated_signals=out_signals, config=config)
+        fold_summaries.append(
+            {
+                "fold": fold_index + 1,
+                "in_sample_end": in_sample[-1].timestamp.isoformat(),
+                "out_sample_start": out_sample[0].timestamp.isoformat(),
+                "out_sample_end": out_sample[-1].timestamp.isoformat(),
+                "in_sample": _metrics_as_dict(in_result.metrics),
+                "out_sample": _metrics_as_dict(out_result.metrics),
+            }
+        )
+        oos_start = oos_end
+
+    full_result = _simulate_window(bars=bars, aggregated_signals=aggregated_signals, config=config)
+    oos_metrics = [
+        fold["out_sample"]
+        for fold in fold_summaries
+        if isinstance(fold.get("out_sample"), dict)
+    ]
+    full_result.summary["walkforward"] = {
+        "mode": "rolling",
+        "split_pct": split_pct,
+        "folds_count": len(fold_summaries),
+        "folds": fold_summaries,
+        "out_sample_aggregate": _aggregate_metrics_dicts(oos_metrics),
+    }
+    return full_result
+
+
+def _aggregate_metrics_dicts(metrics_list: list[dict[str, float | int]]) -> dict[str, float | int]:
+    if not metrics_list:
+        return {
+            "bars_processed": 0,
+            "trades_count": 0,
+            "net_pnl": 0.0,
+            "net_pnl_pct": 0.0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "max_drawdown_pct": 0.0,
+            "final_capital": 0.0,
+        }
+
+    total_trades = sum(int(item.get("trades_count", 0)) for item in metrics_list)
+    total_bars = sum(int(item.get("bars_processed", 0)) for item in metrics_list)
+    total_net_pnl = sum(float(item.get("net_pnl", 0.0)) for item in metrics_list)
+    weighted_win_rate = (
+        sum(float(item.get("win_rate", 0.0)) * int(item.get("trades_count", 0)) for item in metrics_list)
+        / total_trades
+        if total_trades > 0
+        else 0.0
+    )
+    gross_profit = sum(
+        max(float(item.get("net_pnl", 0.0)), 0.0) for item in metrics_list if float(item.get("net_pnl", 0.0)) > 0
+    )
+    gross_loss = abs(
+        sum(
+            min(float(item.get("net_pnl", 0.0)), 0.0)
+            for item in metrics_list
+            if float(item.get("net_pnl", 0.0)) < 0
+        )
+    )
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float(gross_profit > 0)
+    max_drawdown_pct = max(float(item.get("max_drawdown_pct", 0.0)) for item in metrics_list)
+    initial_capital = metrics_list[0].get("final_capital", 0.0)
+    if isinstance(initial_capital, (int, float)) and initial_capital > 0:
+        net_pnl_pct = total_net_pnl / float(initial_capital)
+        final_capital = float(initial_capital) + total_net_pnl
+    else:
+        net_pnl_pct = sum(float(item.get("net_pnl_pct", 0.0)) for item in metrics_list)
+        final_capital = sum(float(item.get("final_capital", 0.0)) for item in metrics_list)
+
+    return {
+        "bars_processed": total_bars,
+        "trades_count": total_trades,
+        "net_pnl": total_net_pnl,
+        "net_pnl_pct": net_pnl_pct,
+        "win_rate": weighted_win_rate,
+        "profit_factor": profit_factor,
+        "max_drawdown_pct": max_drawdown_pct,
+        "final_capital": final_capital,
+    }
 
 
 def _metrics_as_dict(metrics: BacktestMetrics) -> dict[str, float | int]:
@@ -294,7 +413,14 @@ def _simulate_window(
         )
         return BacktestOutput(metrics=metrics, trades=[], summary={"note": "No bars available."})
 
-    fee_rate = max(0.0, config.fee_bps / 10000.0)
+    def commission_for_order(shares: float, notional: float) -> float:
+        return compute_commission(
+            fee_model=config.fee_model,
+            shares=shares,
+            notional=notional,
+            fee_bps=config.fee_bps,
+        )
+
     base_slippage_bps = max(0.0, config.slippage_bps)
     position_size_rate = max(0.01, min(1.0, config.position_size_pct / 100.0))
     stop_loss_rate = (config.stop_loss_pct / 100.0) if config.stop_loss_pct else None
@@ -366,7 +492,7 @@ def _simulate_window(
         exit_idx = bar_index[current_bar.timestamp]
         exit_price = execution_price(raw_exit, exit_side, exit_idx)
         exit_notional = abs(exit_price * quantity)
-        exit_fee = exit_notional * fee_rate
+        exit_fee = commission_for_order(quantity, exit_notional)
 
         if position_direction == "LONG":
             gross_pnl = (exit_price - entry_price) * quantity
@@ -447,7 +573,7 @@ def _simulate_window(
             return
 
         notional = abs(exec_price * qty)
-        fee = notional * fee_rate
+        fee = commission_for_order(qty, notional)
         position_direction = direction
         entry_price = exec_price
         entry_timestamp = current_bar.timestamp
@@ -612,6 +738,7 @@ def _simulate_window(
             "max_bars_in_trade": config.max_bars_in_trade,
             "benchmark_enabled": config.benchmark_enabled,
             "slippage_model": config.slippage_model,
+            "fee_model": config.fee_model,
             "execution_model": "intrabar_ohlc_pessimistic",
             "signal_decision_point": "bar_close",
         },

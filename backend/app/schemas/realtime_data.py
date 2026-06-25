@@ -30,3 +30,11 @@ class RealtimeHealthResponse(BaseModel):
     lag_seconds: float | None = None
     tracked_symbols: list[str]
     recent_errors: list[str]
+
+
+class IndexSpecResponse(BaseModel):
+    """Static descriptor for one index in the bottom strip (live values arrive
+    over the WebSocket)."""
+
+    symbol: str
+    name: str

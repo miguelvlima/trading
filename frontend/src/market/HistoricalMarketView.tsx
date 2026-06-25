@@ -1,58 +1,98 @@
-import type { Ref } from "react";
+import { useMemo, useState } from "react";
 
+import { type HoverBar, CandleChart } from "../realtime/CandleChart";
 import { fmtCompact, fmtPrice } from "../realtime/format";
+import {
+  type IndicatorId,
+  type IndicatorRender,
+  INDICATOR_BY_ID,
+  computeIndicator,
+} from "../realtime/indicators";
 import "../realtime/realtime.css";
 
-type OhlcHead = {
-  dateLabel: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-};
-
-type IndicatorSnapshot = {
-  rsi_14: number | null;
-  macd: number | null;
-  macd_signal: number | null;
-  macd_histogram: number | null;
-  atr_14: number | null;
-  relative_volume_20: number | null;
-};
+import { buildBacktestTradeMarkers, type BacktestTradeForChart } from "./backtestMarkers";
+import { apiBarsToQuotes, quotesToIndicatorBars, type ApiBar } from "./chartBars";
+import { indicatorRailRows } from "./indicatorRail";
+import { type PeriodMode, type WindowCode, WINDOW_SECONDS } from "./windowCandle";
 
 type HistoricalMarketViewProps = {
-  chartContainerRef: Ref<HTMLDivElement>;
+  symbol: string;
+  bars: ApiBar[];
+  periodMode: PeriodMode;
+  chartWindow: WindowCode;
+  activeIndicators: ReadonlySet<IndicatorId>;
+  tradeMarkers: BacktestTradeForChart[];
   loading: boolean;
   error: string | null;
   hasDateFilterError: boolean;
-  barsCount: number;
-  barsSummaryLabel: string;
-  barsSummaryValue: string;
-  headBar: OhlcHead | null;
-  lastIndicatorRow: IndicatorSnapshot | null;
-  formatIndicatorValue: (value: number | null, barCount: number, minBars: number) => string;
+  barLimit: number;
   backtestTradesOnChartRunId: number | null;
   backtestTradesCount: number;
   onClearBacktestTrades: () => void;
 };
 
+function formatHoverDate(timeSec: number): string {
+  return new Date(timeSec * 1000).toLocaleString("pt-PT");
+}
+
 export function HistoricalMarketView({
-  chartContainerRef,
+  symbol,
+  bars,
+  periodMode,
+  chartWindow,
+  activeIndicators,
+  tradeMarkers,
   loading,
   error,
   hasDateFilterError,
-  barsCount,
-  barsSummaryLabel,
-  barsSummaryValue,
-  headBar,
-  lastIndicatorRow,
-  formatIndicatorValue,
+  barLimit,
   backtestTradesOnChartRunId,
   backtestTradesCount,
   onClearBacktestTrades,
 }: HistoricalMarketViewProps) {
+  const [hoverBar, setHoverBar] = useState<HoverBar | null>(null);
+
+  const quotes = useMemo(() => apiBarsToQuotes(symbol, bars), [symbol, bars]);
+  const indicatorBars = useMemo(() => quotesToIndicatorBars(quotes), [quotes]);
+
+  const indicatorRenders: IndicatorRender[] = useMemo(
+    () => Array.from(activeIndicators).map((id) => computeIndicator(INDICATOR_BY_ID[id], indicatorBars)),
+    [activeIndicators, indicatorBars],
+  );
+
+  const markers = useMemo(() => buildBacktestTradeMarkers(tradeMarkers), [tradeMarkers]);
+
+  const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
+  const fallbackHead = lastBar
+    ? {
+        open: Number(lastBar.open),
+        high: Number(lastBar.high),
+        low: Number(lastBar.low),
+        close: Number(lastBar.close),
+        volume: Number(lastBar.volume),
+        dateLabel: new Date(lastBar.timestamp).toLocaleDateString("pt-PT"),
+      }
+    : null;
+
+  const headBar = hoverBar
+    ? {
+        open: hoverBar.open,
+        high: hoverBar.high,
+        low: hoverBar.low,
+        close: hoverBar.close,
+        volume: hoverBar.volume,
+        dateLabel: formatHoverDate(hoverBar.time),
+      }
+    : fallbackHead;
+
   const headDir = headBar ? (headBar.close >= headBar.open ? "up" : "down") : "up";
+  const barsSummaryLabel = periodMode === "window" ? "Velas carregadas" : "Velas no período";
+  const barsSummaryValue = periodMode === "window" ? `${bars.length} / ${barLimit}` : String(bars.length);
+  const windowSeconds = periodMode === "window" ? WINDOW_SECONDS[chartWindow] : null;
+  const railRows = useMemo(
+    () => indicatorRailRows(activeIndicators, indicatorRenders, bars.length),
+    [activeIndicators, indicatorRenders, bars.length],
+  );
 
   return (
     <div className="rt-page">
@@ -74,23 +114,42 @@ export function HistoricalMarketView({
             <div className="rt-chart-head">
               <span className={`rt-head-px rt-${headDir}`}>{fmtPrice(headBar.close)}</span>
               <span className="rt-head-ohlc">
-                <span>O <b>{fmtPrice(headBar.open)}</b></span>
-                <span>H <b>{fmtPrice(headBar.high)}</b></span>
-                <span>L <b>{fmtPrice(headBar.low)}</b></span>
-                <span>C <b>{fmtPrice(headBar.close)}</b></span>
-                <span>Vol <b>{fmtCompact(headBar.volume)}</b></span>
+                <span>
+                  O <b>{fmtPrice(headBar.open)}</b>
+                </span>
+                <span>
+                  H <b>{fmtPrice(headBar.high)}</b>
+                </span>
+                <span>
+                  L <b>{fmtPrice(headBar.low)}</b>
+                </span>
+                <span>
+                  C <b>{fmtPrice(headBar.close)}</b>
+                </span>
+                <span>
+                  Vol <b>{fmtCompact(headBar.volume)}</b>
+                </span>
               </span>
             </div>
           )}
 
-          {loading && barsCount === 0 && <p className="hint rt-chart-empty">A carregar velas…</p>}
-          {!error && !loading && !hasDateFilterError && barsCount === 0 && (
+          {loading && bars.length === 0 && <p className="hint rt-chart-empty">A carregar velas…</p>}
+          {!error && !loading && !hasDateFilterError && bars.length === 0 && (
             <p className="hint rt-chart-empty">
               Sem velas para o símbolo/intervalo selecionado. Importe um CSV ou mude os filtros.
             </p>
           )}
 
-          <div ref={chartContainerRef} className="rt-chart" />
+          {bars.length > 0 && (
+            <CandleChart
+              bars={quotes}
+              forming={null}
+              indicators={indicatorRenders}
+              windowSeconds={windowSeconds}
+              markers={markers}
+              onHoverBar={setHoverBar}
+            />
+          )}
         </div>
 
         <div className="rt-rail">
@@ -119,48 +178,18 @@ export function HistoricalMarketView({
             </div>
           </div>
 
-          {lastIndicatorRow && (
+          {railRows.length > 0 && (
             <div className="rt-card">
               <div className="rt-card-h">
                 <span className="rt-card-t">Indicadores</span>
               </div>
               <div className="rt-rows">
-                <div className="rt-r">
-                  <span className="rt-k">RSI (14)</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.rsi_14, barsCount, 14)}
-                  </span>
-                </div>
-                <div className="rt-r">
-                  <span className="rt-k">MACD</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.macd, barsCount, 26)}
-                  </span>
-                </div>
-                <div className="rt-r">
-                  <span className="rt-k">MACD Signal</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.macd_signal, barsCount, 34)}
-                  </span>
-                </div>
-                <div className="rt-r">
-                  <span className="rt-k">MACD Hist.</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.macd_histogram, barsCount, 34)}
-                  </span>
-                </div>
-                <div className="rt-r">
-                  <span className="rt-k">ATR (14)</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.atr_14, barsCount, 14)}
-                  </span>
-                </div>
-                <div className="rt-r">
-                  <span className="rt-k">Vol. relativo (20)</span>
-                  <span className="rt-v">
-                    {formatIndicatorValue(lastIndicatorRow.relative_volume_20, barsCount, 20)}
-                  </span>
-                </div>
+                {railRows.map((row) => (
+                  <div key={row.id} className="rt-r">
+                    <span className="rt-k">{row.label}</span>
+                    <span className="rt-v">{row.value}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}

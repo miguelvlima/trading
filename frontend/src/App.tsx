@@ -1,14 +1,4 @@
-import {
-  CandlestickSeries,
-  ColorType,
-  LineSeries,
-  createChart,
-  createSeriesMarkers,
-  type CandlestickData,
-  type LineData,
-  type SeriesMarker,
-} from "lightweight-charts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
 import { GlobalMarketFilters } from "./market/GlobalMarketFilters";
 import { HistoricalMarketView } from "./market/HistoricalMarketView";
@@ -43,30 +33,6 @@ type ApiBar = {
   low: string;
   close: string;
   volume: string;
-};
-
-type OhlcDetails = {
-  dateLabel: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-};
-
-type IndicatorRow = {
-  timestamp: string;
-  sma_20: number | null;
-  ema_20: number | null;
-  rsi_14: number | null;
-  macd: number | null;
-  macd_signal: number | null;
-  macd_histogram: number | null;
-  bollinger_upper: number | null;
-  bollinger_middle: number | null;
-  bollinger_lower: number | null;
-  atr_14: number | null;
-  vwap: number | null;
-  relative_volume_20: number | null;
 };
 
 type ViewTab = "market" | "signals" | "backtests";
@@ -504,28 +470,6 @@ const buildStrategyStrengthPctFromRun = (run: BacktestRun, config: Record<string
   );
 };
 
-const buildBacktestTradeMarkers = (trades: BacktestTrade[]): SeriesMarker<string>[] => {
-  const markers: SeriesMarker<string>[] = [];
-  for (const trade of trades) {
-    const isLong = trade.direction === "LONG";
-    markers.push({
-      time: toChartDate(trade.entry_timestamp),
-      position: isLong ? "belowBar" : "aboveBar",
-      color: isLong ? "#22c55e" : "#f87171",
-      shape: isLong ? "arrowUp" : "arrowDown",
-      text: isLong ? "Entrada L" : "Entrada S",
-    });
-    markers.push({
-      time: toChartDate(trade.exit_timestamp),
-      position: isLong ? "aboveBar" : "belowBar",
-      color: trade.net_pnl >= 0 ? "#22c55e" : "#ef4444",
-      shape: isLong ? "arrowDown" : "arrowUp",
-      text: trade.net_pnl >= 0 ? "Saída +" : "Saída −",
-    });
-  }
-  return markers.sort((left, right) => String(left.time).localeCompare(String(right.time)));
-};
-
 const parseCandleCode = (timeframe: string): CandleCode => {
   const allowed: CandleCode[] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"];
   return allowed.includes(timeframe as CandleCode) ? (timeframe as CandleCode) : "1d";
@@ -574,32 +518,9 @@ const toSignedScore = (direction: string, strength: number): number => {
   return 0;
 };
 
-const toChartDate = (dateText: string): string =>
-  new Date(dateText).toISOString().slice(0, 10);
-
 const toInputDate = (date: Date): string => date.toISOString().slice(0, 10);
 
-const toLineData = (rows: IndicatorRow[], field: keyof IndicatorRow): LineData[] =>
-  rows.flatMap((row) =>
-    row[field] === null ? [] : [{ time: toChartDate(row.timestamp), value: Number(row[field]) }],
-  );
-
-const formatIndicatorValue = (
-  value: number | null,
-  loadedBars: number,
-  minimumBars: number,
-): string => {
-  if (value !== null) {
-    return formatPrice(value);
-  }
-  if (loadedBars < minimumBars) {
-    return "Poucos dados";
-  }
-  return "-";
-};
-
 function App() {
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ?? "");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authEmail, setAuthEmail] = useState("");
@@ -626,7 +547,6 @@ function App() {
   );
   const [endDate, setEndDate] = useState<string>(toInputDate(new Date()));
   const [bars, setBars] = useState<ApiBar[]>([]);
-  const [indicatorRows, setIndicatorRows] = useState<IndicatorRow[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<string[]>([]);
   const [activeStrategies, setActiveStrategies] = useState<string[]>([]);
   const [signals, setSignals] = useState<SignalItem[]>([]);
@@ -705,19 +625,8 @@ function App() {
   const [backtestTradesPage, setBacktestTradesPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
   const [activeIndicators, setActiveIndicators] = useState<ReadonlySet<IndicatorId>>(
     () => new Set(INDICATORS.filter((descriptor) => descriptor.defaultOn).map((descriptor) => descriptor.id)),
-  );
-
-  const overlayVisibility = useMemo(
-    () => ({
-      sma20: activeIndicators.has("SMA"),
-      ema20: activeIndicators.has("EMA"),
-      bollinger: activeIndicators.has("BB"),
-      vwap: activeIndicators.has("VWAP"),
-    }),
-    [activeIndicators],
   );
 
   const isDateFilterIncomplete = periodMode === "date" && (!startDate || !endDate);
@@ -1109,35 +1018,6 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!selectedSymbol) {
-      setIndicatorRows([]);
-      return;
-    }
-    if (hasDateFilterError) {
-      setIndicatorRows([]);
-      return;
-    }
-
-    const loadIndicators = async () => {
-      try {
-        const query = buildMarketQueryParams();
-        const response = await fetch(`${API_BASE_URL}/market-data/indicators?${query.toString()}`, {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-        if (!response.ok) {
-          throw new Error("Falha ao carregar indicadores.");
-        }
-        const payload = (await response.json()) as { rows: IndicatorRow[] };
-        setIndicatorRows(payload.rows);
-      } catch {
-        setIndicatorRows([]);
-      }
-    };
-
-    loadIndicators();
-  }, [selectedSymbol, selectedTimeframe, barLimit, periodMode, startDate, endDate, hasDateFilterError, authToken]);
-
-  useEffect(() => {
     if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setSignalsGenerating(false);
@@ -1331,53 +1211,6 @@ function App() {
     [signals, signalsPage],
   );
 
-  const chartData = useMemo<CandlestickData[]>(() => {
-    return bars.map((bar) => ({
-      time: toChartDate(bar.timestamp),
-      open: Number(bar.open),
-      high: Number(bar.high),
-      low: Number(bar.low),
-      close: Number(bar.close),
-    }));
-  }, [bars]);
-
-  const backtestTradeMarkers = useMemo(
-    () => buildBacktestTradeMarkers(backtestTradesOnChart),
-    [backtestTradesOnChart],
-  );
-
-  const sma20Data = useMemo(() => toLineData(indicatorRows, "sma_20"), [indicatorRows]);
-  const ema20Data = useMemo(() => toLineData(indicatorRows, "ema_20"), [indicatorRows]);
-  const vwapData = useMemo(() => toLineData(indicatorRows, "vwap"), [indicatorRows]);
-  const bollingerUpperData = useMemo(() => toLineData(indicatorRows, "bollinger_upper"), [indicatorRows]);
-  const bollingerMiddleData = useMemo(() => toLineData(indicatorRows, "bollinger_middle"), [indicatorRows]);
-  const bollingerLowerData = useMemo(() => toLineData(indicatorRows, "bollinger_lower"), [indicatorRows]);
-
-  const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
-  const lastIndicatorRow = indicatorRows.length > 0 ? indicatorRows[indicatorRows.length - 1] : null;
-  const fallbackOhlc = lastBar
-    ? {
-        dateLabel: formatDateLabel(lastBar.timestamp),
-        open: Number(lastBar.open),
-        high: Number(lastBar.high),
-        low: Number(lastBar.low),
-        close: Number(lastBar.close),
-      }
-    : null;
-
-  const visibleOhlc = hoveredOhlc ?? fallbackOhlc;
-  const historicalHeadBar = visibleOhlc
-    ? {
-        dateLabel: visibleOhlc.dateLabel,
-        open: visibleOhlc.open,
-        high: visibleOhlc.high,
-        low: visibleOhlc.low,
-        close: visibleOhlc.close,
-        volume: lastBar ? Number(lastBar.volume) : 0,
-      }
-    : null;
-  const barsSummaryLabel = periodMode === "window" ? "Velas carregadas" : "Velas no período";
-  const barsSummaryValue = periodMode === "window" ? `${bars.length} / ${barLimit}` : String(bars.length);
   const strategyContributions = useMemo<StrategyContribution[]>(() => {
     return activeStrategies.map((strategy) => {
       const latest = consensusSignals.find((item) => item.strategy === strategy);
@@ -2504,149 +2337,6 @@ function App() {
     }));
   };
 
-  useEffect(() => {
-    setHoveredOhlc(null);
-  }, [selectedSymbol]);
-
-  useEffect(() => {
-    if (activeTab !== "market" || chartMode !== "historico" || !chartContainerRef.current) {
-      return;
-    }
-
-    const container = chartContainerRef.current;
-    const chart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: "transparent" },
-        textColor: "#8492ad",
-        fontSize: 11,
-      },
-      grid: { vertLines: { color: "#161d2c" }, horzLines: { color: "#161d2c" } },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1e2738" },
-      rightPriceScale: { borderColor: "#1e2738" },
-      width: Math.max(container.clientWidth, 320),
-      height: 440,
-    });
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#22c55e",
-      downColor: "#ef4444",
-      borderVisible: false,
-      wickUpColor: "#22c55e",
-      wickDownColor: "#ef4444",
-    });
-    candleSeries.setData(chartData);
-
-    if (backtestTradeMarkers.length > 0) {
-      createSeriesMarkers(candleSeries, backtestTradeMarkers);
-    }
-
-    if (overlayVisibility.sma20 && sma20Data.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 2, title: "SMA 20" });
-      series.setData(sma20Data);
-    }
-
-    if (overlayVisibility.ema20 && ema20Data.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#8b5cf6", lineWidth: 2, title: "EMA 20" });
-      series.setData(ema20Data);
-    }
-
-    if (overlayVisibility.vwap && vwapData.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#22c55e", lineWidth: 2, title: "VWAP" });
-      series.setData(vwapData);
-    }
-
-    if (overlayVisibility.bollinger) {
-      if (bollingerUpperData.length > 0) {
-        const series = chart.addSeries(LineSeries, {
-          color: "#38bdf8",
-          lineWidth: 1,
-          lineStyle: 2,
-          title: "BB Upper",
-        });
-        series.setData(bollingerUpperData);
-      }
-      if (bollingerMiddleData.length > 0) {
-        const series = chart.addSeries(LineSeries, { color: "#0ea5e9", lineWidth: 1, title: "BB Mid" });
-        series.setData(bollingerMiddleData);
-      }
-      if (bollingerLowerData.length > 0) {
-        const series = chart.addSeries(LineSeries, {
-          color: "#38bdf8",
-          lineWidth: 1,
-          lineStyle: 2,
-          title: "BB Lower",
-        });
-        series.setData(bollingerLowerData);
-      }
-    }
-
-    chart.timeScale().fitContent();
-
-    chart.subscribeCrosshairMove((param) => {
-      if (param.time === undefined || !param.seriesData.size) {
-        setHoveredOhlc(null);
-        return;
-      }
-
-      const rawData = param.seriesData.get(candleSeries);
-      if (
-        !rawData ||
-        typeof rawData !== "object" ||
-        !("open" in rawData) ||
-        !("high" in rawData) ||
-        !("low" in rawData) ||
-        !("close" in rawData)
-      ) {
-        setHoveredOhlc(null);
-        return;
-      }
-
-      let dateLabel: string;
-      if (typeof param.time === "string") {
-        dateLabel = formatDateLabel(param.time);
-      } else if (typeof param.time === "number") {
-        dateLabel = new Date(param.time * 1000).toLocaleDateString("pt-PT");
-      } else {
-        dateLabel = `${param.time.day.toString().padStart(2, "0")}/${param.time.month
-          .toString()
-          .padStart(2, "0")}/${param.time.year}`;
-      }
-
-      setHoveredOhlc({
-        dateLabel,
-        open: Number(rawData.open),
-        high: Number(rawData.high),
-        low: Number(rawData.low),
-        close: Number(rawData.close),
-      });
-    });
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) {
-        return;
-      }
-      chart.applyOptions({ width: Math.max(entry.contentRect.width, 320) });
-    });
-    resizeObserver.observe(container);
-
-    return () => {
-      resizeObserver.disconnect();
-      chart.remove();
-    };
-  }, [
-    chartData,
-    sma20Data,
-    ema20Data,
-    vwapData,
-    bollingerUpperData,
-    bollingerMiddleData,
-    bollingerLowerData,
-    overlayVisibility,
-    backtestTradeMarkers,
-    activeTab,
-    chartMode,
-  ]);
-
   return (
     <main className="layout app-shell">
       <header className="app-topbar">
@@ -3065,16 +2755,16 @@ function App() {
               />
             ) : activeTab === "market" && chartMode === "historico" ? (
               <HistoricalMarketView
-                chartContainerRef={chartContainerRef}
+                symbol={selectedSymbol}
+                bars={bars}
+                periodMode={periodMode}
+                chartWindow={chartWindow}
+                activeIndicators={activeIndicators}
+                tradeMarkers={backtestTradesOnChart}
                 loading={loading}
                 error={error}
                 hasDateFilterError={hasDateFilterError}
-                barsCount={bars.length}
-                barsSummaryLabel={barsSummaryLabel}
-                barsSummaryValue={barsSummaryValue}
-                headBar={historicalHeadBar}
-                lastIndicatorRow={lastIndicatorRow}
-                formatIndicatorValue={formatIndicatorValue}
+                barLimit={barLimit}
                 backtestTradesOnChartRunId={backtestTradesOnChartRunId}
                 backtestTradesCount={backtestTradesOnChart.length}
                 onClearBacktestTrades={handleClearBacktestTradesOnChart}

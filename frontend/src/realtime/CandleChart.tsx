@@ -5,10 +5,12 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type SeriesMarker,
   type UTCTimestamp,
   CandlestickSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
   HistogramSeries,
   LineSeries,
   LineStyle,
@@ -41,6 +43,7 @@ type CandleChartProps = {
   indicators: IndicatorRender[];
   // Visible time span in seconds (the selected window); null => fit all data.
   windowSeconds: number | null;
+  markers?: SeriesMarker<UTCTimestamp>[];
   onHoverBar?: (bar: HoverBar | null) => void;
 };
 
@@ -62,6 +65,7 @@ export function CandleChart({
   forming,
   indicators,
   windowSeconds,
+  markers = [],
   onHoverBar,
 }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -174,6 +178,7 @@ export function CandleChart({
         else deduped.push(c);
       }
       candle.setData(deduped);
+      createSeriesMarkers(candle, markers);
 
       const vols: HistogramData[] = bars
         .map((b) => ({
@@ -209,7 +214,7 @@ export function CandleChart({
     } catch (err) {
       console.error("[Realtime] chart setData failed", err);
     }
-  }, [bars, windowSeconds]);
+  }, [bars, windowSeconds, markers]);
 
   // Rebuild indicator series whenever the indicator set (or its data) changes.
   // Parent memoizes `indicators`, so this does not run on every live tick.

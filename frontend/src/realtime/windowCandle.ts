@@ -54,16 +54,16 @@ export const IBKR_DURATION: Record<WindowCode, string> = {
   all: "30 Y",
 };
 
-// How many bars to request for the limit-based fallback (non-IBKR providers).
-// Generous enough to fill the window without overwhelming the chart.
-export const WINDOW_BARS_LIMIT: Record<WindowCode, number> = {
-  "1h": 120,
-  "4h": 240,
-  "1d": 300,
-  "1w": 400,
-  "1mo": 500,
-  "1y": 400,
-  all: 2000,
+// The visible time span (seconds) the window represents. "all" is open-ended
+// (null) -> fit all loaded data instead of a fixed span.
+export const WINDOW_SECONDS: Record<WindowCode, number | null> = {
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+  "1w": 604800,
+  "1mo": 2592000, // 30d
+  "1y": 31536000, // 365d
+  all: null,
 };
 
 // Bar interval in seconds — used to derive a candle's close time for display.
@@ -77,6 +77,15 @@ export const CANDLE_SECONDS: Record<CandleCode, number> = {
   "1d": 86400,
   "1w": 604800,
 };
+
+// Bars to request so the chosen window is fully covered at the chosen candle
+// (plus a small margin), bounded to keep the payload/chart sane.
+export function fetchLimitFor(window: WindowCode, candle: CandleCode): number {
+  const span = WINDOW_SECONDS[window];
+  if (span === null) return 5000;
+  const bars = Math.ceil((span / CANDLE_SECONDS[candle]) * 1.1) + 5;
+  return Math.min(5000, Math.max(40, bars));
+}
 
 export function suggestedCandle(window: WindowCode): CandleCode {
   return SUGGESTED_CANDLE[window];

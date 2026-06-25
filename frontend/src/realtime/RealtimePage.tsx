@@ -24,7 +24,8 @@ import {
   type WindowCode,
   CANDLE_SECONDS,
   SUGGESTED_CANDLE,
-  WINDOW_BARS_LIMIT,
+  WINDOW_SECONDS,
+  fetchLimitFor,
 } from "./windowCandle";
 import "./realtime.css";
 
@@ -73,7 +74,7 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
     symbol,
     candle,
     window,
-    WINDOW_BARS_LIMIT[window],
+    fetchLimitFor(window, candle),
   );
   const { tick, indices, status, error: streamError } = useTickStream(
     apiBaseUrl,
@@ -264,6 +265,7 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
               bars={bars}
               forming={forming}
               indicators={indicatorRenders}
+              windowSeconds={WINDOW_SECONDS[window]}
               onHoverBar={setHoverBar}
             />
           )}

@@ -39,6 +39,8 @@ type CandleChartProps = {
   bars: Quote[];
   forming: FormingBar | null;
   indicators: IndicatorRender[];
+  // Visible time span in seconds (the selected window); null => fit all data.
+  windowSeconds: number | null;
   onHoverBar?: (bar: HoverBar | null) => void;
 };
 
@@ -55,7 +57,13 @@ function toLineData(points: LinePoint[]): LineData[] {
     .map((p) => ({ time: p.time as UTCTimestamp, value: p.value }));
 }
 
-export function CandleChart({ bars, forming, indicators, onHoverBar }: CandleChartProps) {
+export function CandleChart({
+  bars,
+  forming,
+  indicators,
+  windowSeconds,
+  onHoverBar,
+}: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -182,11 +190,26 @@ export function CandleChart({ bars, forming, indicators, onHoverBar }: CandleCha
         else dedupVol.push(v);
       }
       volume.setData(dedupVol);
-      chartRef.current?.timeScale().fitContent();
+
+      // Window = a fixed visible time span ending at the latest bar (e.g. "1H"
+      // shows exactly the last hour of data), not just "fit whatever loaded".
+      // "all" (null) falls back to fitting everything.
+      const timeScale = chartRef.current?.timeScale();
+      if (timeScale) {
+        if (windowSeconds && deduped.length > 0) {
+          const end = Number(deduped[deduped.length - 1].time);
+          timeScale.setVisibleRange({
+            from: (end - windowSeconds) as UTCTimestamp,
+            to: end as UTCTimestamp,
+          });
+        } else {
+          timeScale.fitContent();
+        }
+      }
     } catch (err) {
       console.error("[Realtime] chart setData failed", err);
     }
-  }, [bars]);
+  }, [bars, windowSeconds]);
 
   // Rebuild indicator series whenever the indicator set (or its data) changes.
   // Parent memoizes `indicators`, so this does not run on every live tick.

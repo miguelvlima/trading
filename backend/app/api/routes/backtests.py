@@ -1,16 +1,19 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.dependencies.auth import get_current_user
 from app.db.dependencies import get_db_session
-from app.db.models import BacktestRun, BacktestTrade, Instrument, MarketBar, User
+from app.db.models import BacktestRun, BacktestRunInsight, BacktestTrade, Instrument, MarketBar, User
 from app.schemas.backtests import (
+    BacktestLessonResponse,
     BacktestRunDetailResponse,
+    BacktestRunInsightResponse,
     BacktestRunRequest,
     BacktestRunSummaryResponse,
     BacktestTradeResponse,
@@ -21,6 +24,7 @@ from app.services.backtest_engine import (
     run_backtest_with_walkforward,
 )
 from app.services.backtest_export import render_equity_csv, render_trades_csv
+from app.services.backtest_insight_engine import PriorRunSnapshot, build_backtest_insight
 from app.services.strategy_engine import BarInput, get_available_strategies, run_strategy
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
@@ -43,6 +47,109 @@ def _to_trade_response(item: BacktestTrade) -> BacktestTradeResponse:
         entry_reason=item.entry_reason,
         exit_reason=item.exit_reason,
     )
+
+
+def _to_insight_response(item: BacktestRunInsight) -> BacktestRunInsightResponse:
+    return BacktestRunInsightResponse(
+        id=item.id,
+        run_id=item.run_id,
+        narrative_summary=item.narrative_summary,
+        timeline=item.timeline,
+        failure_modes=item.failure_modes,
+        lessons=item.lessons,
+        recommendations=item.recommendations,
+        prior_runs_context=item.prior_runs_context,
+        created_at=item.created_at,
+    )
+
+
+def _to_run_detail(
+    run: BacktestRun,
+    trades: list[BacktestTrade],
+    insight: BacktestRunInsight | None = None,
+) -> BacktestRunDetailResponse:
+    return BacktestRunDetailResponse(
+        **_to_run_summary(run).model_dump(),
+        trades=[_to_trade_response(item) for item in trades],
+        insight=_to_insight_response(insight) if insight is not None else None,
+    )
+
+
+def _fetch_prior_run_snapshots(
+    db: Session,
+    *,
+    owner_user_id: int,
+    symbol: str,
+    exclude_run_id: int,
+    limit: int = 5,
+) -> list[PriorRunSnapshot]:
+    rows = db.execute(
+        select(BacktestRun)
+        .where(
+            BacktestRun.owner_user_id == owner_user_id,
+            BacktestRun.symbol == symbol,
+            BacktestRun.id != exclude_run_id,
+        )
+        .order_by(BacktestRun.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    return [
+        PriorRunSnapshot(
+            run_id=item.id,
+            created_at=item.created_at,
+            net_pnl_pct=float(item.net_pnl_pct),
+            win_rate=float(item.win_rate),
+            profit_factor=float(item.profit_factor),
+            trades_count=item.trades_count,
+        )
+        for item in rows
+    ]
+
+
+def _persist_run_insight(
+    db: Session,
+    *,
+    run_model: BacktestRun,
+    strategies: list[str],
+    output_metrics: object,
+    trade_models: list[BacktestTrade],
+    result_summary: dict[str, object],
+    owner_user_id: int,
+) -> BacktestRunInsight:
+    config_block = result_summary.get("config")
+    config = config_block if isinstance(config_block, dict) else {}
+    prior_runs = _fetch_prior_run_snapshots(
+        db,
+        owner_user_id=owner_user_id,
+        symbol=run_model.symbol,
+        exclude_run_id=run_model.id,
+    )
+    insight_payload = build_backtest_insight(
+        symbol=run_model.symbol,
+        timeframe=run_model.timeframe,
+        strategy_names=strategies,
+        metrics=output_metrics,
+        trades=trade_models,
+        result_summary=result_summary,
+        config=config,
+        prior_runs=prior_runs,
+    )
+    insight_model = BacktestRunInsight(
+        run_id=run_model.id,
+        owner_user_id=owner_user_id,
+        symbol=run_model.symbol,
+        timeframe=run_model.timeframe,
+        strategy_names=strategies,
+        narrative_summary=insight_payload.narrative_summary,
+        timeline=insight_payload.timeline,
+        failure_modes=insight_payload.failure_modes,
+        lessons=insight_payload.lessons,
+        recommendations=insight_payload.recommendations,
+        prior_runs_context=insight_payload.prior_runs_context,
+        created_at=datetime.now(UTC),
+    )
+    db.add(insight_model)
+    return insight_model
 
 
 def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
@@ -85,6 +192,49 @@ def list_backtests(
         query = query.where(BacktestRun.timeframe == timeframe)
     rows = db.execute(query.order_by(BacktestRun.created_at.desc()).limit(limit)).scalars().all()
     return [_to_run_summary(item) for item in rows]
+
+
+@router.get("/lessons", response_model=list[BacktestLessonResponse])
+def list_backtest_lessons(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> list[BacktestLessonResponse]:
+    query = (
+        select(BacktestRunInsight)
+        .where(BacktestRunInsight.owner_user_id == current_user.id)
+        .order_by(BacktestRunInsight.created_at.desc())
+        .limit(limit * 3)
+    )
+    if symbol:
+        query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+
+    insights = db.execute(query).scalars().all()
+    lessons: list[BacktestLessonResponse] = []
+    for insight in insights:
+        for lesson in insight.lessons:
+            if not isinstance(lesson, dict):
+                continue
+            title = lesson.get("title")
+            detail = lesson.get("detail")
+            priority = lesson.get("priority")
+            if not isinstance(title, str) or not isinstance(detail, str):
+                continue
+            lessons.append(
+                BacktestLessonResponse(
+                    title=title,
+                    detail=detail,
+                    priority=str(priority) if priority is not None else "medium",
+                    symbol=insight.symbol,
+                    strategy_names=insight.strategy_names,
+                    run_id=insight.run_id,
+                    created_at=insight.created_at,
+                )
+            )
+            if len(lessons) >= limit:
+                return lessons
+    return lessons
 
 
 @router.get("/{run_id}/export")
@@ -154,7 +304,9 @@ def get_backtest_run(
     current_user: User = Depends(get_current_user),
 ) -> BacktestRunDetailResponse:
     run = db.execute(
-        select(BacktestRun).where(
+        select(BacktestRun)
+        .options(joinedload(BacktestRun.insight))
+        .where(
             BacktestRun.id == run_id,
             BacktestRun.owner_user_id == current_user.id,
         )
@@ -166,10 +318,7 @@ def get_backtest_run(
         .where(BacktestTrade.run_id == run.id)
         .order_by(BacktestTrade.entry_timestamp.asc())
     ).scalars().all()
-    return BacktestRunDetailResponse(
-        **_to_run_summary(run).model_dump(),
-        trades=[_to_trade_response(item) for item in trades],
-    )
+    return _to_run_detail(run, trades, run.insight)
 
 
 @router.post("/run", response_model=BacktestRunDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -337,15 +486,25 @@ def run_backtest_simulation(
         db.add(model)
         trade_models.append(model)
 
+    result_summary = run_model.result_summary if isinstance(run_model.result_summary, dict) else {}
+
+    insight_model = _persist_run_insight(
+        db,
+        run_model=run_model,
+        strategies=strategies,
+        output_metrics=output.metrics,
+        trade_models=trade_models,
+        result_summary=result_summary,
+        owner_user_id=current_user.id,
+    )
+
     db.commit()
     db.refresh(run_model)
     for model in trade_models:
         db.refresh(model)
+    db.refresh(insight_model)
 
-    return BacktestRunDetailResponse(
-        **_to_run_summary(run_model).model_dump(),
-        trades=[_to_trade_response(item) for item in trade_models],
-    )
+    return _to_run_detail(run_model, trade_models, insight_model)
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

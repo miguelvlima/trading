@@ -376,6 +376,52 @@
   color: #bdd4ff;
 }
 
+.rt-page .rt-banner-signals {
+  background: rgba(52, 211, 153, 0.08);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.rt-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chart-signal-detail {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius);
+  font-size: 12px;
+}
+
+.chart-signal-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chart-signal-detail p {
+  margin: 0;
+  color: var(--rt-muted);
+  line-height: 1.45;
+}
+
+.chart-signal-detail-alternates {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-signal-alt-btn {
+  font-size: 11px;
+}
+
 @media (max-width: 920px) {
   .rt-main { grid-template-columns: 1fr; }
 }

@@ -12,7 +12,7 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://trading:trading@localhost:5432/trading"
     )
     log_level: str = "INFO"
-    cors_allow_origins: str = "http://localhost:5173"
+    cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     jwt_secret_key: str = "change-me-in-prod"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60 * 8

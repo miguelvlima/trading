@@ -83,3 +83,26 @@ class BacktestRunSummaryResponse(BaseModel):
 
 class BacktestRunDetailResponse(BacktestRunSummaryResponse):
     trades: list[BacktestTradeResponse]
+    insight: "BacktestRunInsightResponse | None" = None
+
+
+class BacktestRunInsightResponse(BaseModel):
+    id: int
+    run_id: int
+    narrative_summary: str
+    timeline: list[dict[str, object]]
+    failure_modes: list[dict[str, object]]
+    lessons: list[dict[str, object]]
+    recommendations: list[dict[str, object]]
+    prior_runs_context: dict[str, object]
+    created_at: datetime
+
+
+class BacktestLessonResponse(BaseModel):
+    title: str
+    detail: str
+    priority: str
+    symbol: str
+    strategy_names: list[str]
+    run_id: int
+    created_at: datetime

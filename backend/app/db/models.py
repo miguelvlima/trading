@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import expression
 
@@ -80,6 +80,7 @@ class Signal(Base):
     rationale: Mapped[str] = mapped_column(String(512), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     indicator_snapshot: Mapped[dict[str, float | None]] = mapped_column(JSON, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="historical", index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -220,6 +221,36 @@ class BacktestRun(Base):
     trades: Mapped[list["BacktestTrade"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    insight: Mapped["BacktestRunInsight | None"] = relationship(
+        back_populates="run", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class BacktestRunInsight(Base):
+    __tablename__ = "backtest_run_insights"
+    __table_args__ = (UniqueConstraint("run_id", name="uq_backtest_run_insights_run_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    strategy_names: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    narrative_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    timeline: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    failure_modes: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    lessons: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    recommendations: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False)
+    prior_runs_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    run: Mapped["BacktestRun"] = relationship(back_populates="insight")
 
 
 class BacktestTrade(Base):

@@ -368,6 +368,119 @@
   min-width: 72px;
 }
 
+.signal-source-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--rt-faint);
+  border: 1px solid var(--rt-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.backtest-insight-expand {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius);
+}
+
+.backtest-insight-expand summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--rt-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.backtest-insight-expand summary::-webkit-details-marker {
+  display: none;
+}
+
+.backtest-insight-expand summary::after {
+  content: "▾";
+  color: var(--rt-faint);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.backtest-insight-expand[open] summary::after {
+  content: "▴";
+}
+
+.backtest-insight-expand-meta {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--rt-faint);
+  font-size: 11px;
+}
+
+.backtest-insight-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+}
+
+.backtest-insight-summary {
+  margin: 8px 0 12px;
+  line-height: 1.45;
+}
+
+.backtest-insight-section {
+  margin-top: 14px;
+}
+
+.backtest-insight-section-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--rt-faint);
+}
+
+.backtest-insight-timeline,
+.backtest-insight-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.backtest-insight-timeline-item,
+.backtest-insight-list-item {
+  margin-bottom: 10px;
+}
+
+.backtest-insight-timeline-item p,
+.backtest-insight-list-item p {
+  margin: 4px 0 0;
+  color: var(--rt-muted);
+}
+
+.backtest-insight-priority {
+  font-weight: 500;
+  color: var(--rt-faint);
+  text-transform: lowercase;
+}
+
+.backtest-insight-severity-critical strong {
+  color: var(--rt-down);
+}
+
+.backtest-insight-severity-warn strong {
+  color: #d4a017;
+}
+
 @media (max-width: 640px) {
   .app-tabs-hanging {
     padding-left: 6px;

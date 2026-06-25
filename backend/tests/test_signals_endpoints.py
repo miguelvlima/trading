@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.dependencies.auth import get_current_user
 from app.db.base import Base
 from app.db.dependencies import get_db_session
-from app.db.models import Instrument, MarketBar, User
+from app.db.models import Instrument, MarketBar, Signal, User
 from app.main import app
 
 
@@ -85,6 +85,87 @@ def test_generate_and_list_signals_endpoints(tmp_path: Path) -> None:
     assert len(listed_signals) == generate_payload["generated_count"]
     assert listed_signals[0]["strategy"] == "macd_crossover"
     assert listed_signals[0]["symbol"] == "AAPL"
+    assert listed_signals[0]["source"] == "historical"
+
+    historical_only = client.get(
+        "/signals",
+        params={"symbol": "AAPL", "strategy": "macd_crossover", "source": "historical"},
+    )
+    assert historical_only.status_code == 200
+    assert len(historical_only.json()) == generate_payload["generated_count"]
+
+    live_response = client.post(
+        "/signals/evaluate-live",
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1d",
+            "strategies": ["macd_crossover"],
+            "limit": 500,
+            "persist": True,
+        },
+    )
+    assert live_response.status_code == 200
+    live_payload = live_response.json()
+    assert live_payload["symbol"] == "AAPL"
+    assert isinstance(live_payload["signals"], list)
+
+    with test_session_factory() as session:
+        historical_count = session.query(Signal).filter(Signal.source == "historical").count()
+        live_count = session.query(Signal).filter(Signal.source == "live").count()
+        assert historical_count == generate_payload["generated_count"]
+        assert live_count == len(live_payload["signals"])
+
+    regenerate = client.post(
+        "/signals/generate",
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1d",
+            "strategy": "macd_crossover",
+            "limit": 500,
+        },
+    )
+    assert regenerate.status_code == 201
+    with test_session_factory() as session:
+        live_count_after = session.query(Signal).filter(Signal.source == "live").count()
+        assert live_count_after == len(live_payload["signals"])
+
+    last_bar_ts = start_date + timedelta(days=len(closes) - 1)
+    forming_response = client.post(
+        "/signals/evaluate-live",
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1d",
+            "strategies": ["macd_crossover"],
+            "limit": 500,
+            "forming_bar": {
+                "timestamp": last_bar_ts.isoformat().replace("+00:00", "Z"),
+                "open": 120.0,
+                "high": 150.0,
+                "low": 118.0,
+                "close": 145.0,
+                "volume": 2000.0,
+                "is_forming": True,
+            },
+            "persist": False,
+        },
+    )
+    assert forming_response.status_code == 200
+    forming_payload = forming_response.json()
+    assert forming_payload["is_forming_bar"] is True
+
+    ranged_response = client.post(
+        "/signals/evaluate-live",
+        json={
+            "symbol": "AAPL",
+            "timeframe": "1d",
+            "strategies": ["macd_crossover"],
+            "start": (start_date + timedelta(days=10)).isoformat().replace("+00:00", "Z"),
+            "end": (start_date + timedelta(days=20)).isoformat().replace("+00:00", "Z"),
+            "limit": 500,
+            "persist": False,
+        },
+    )
+    assert ranged_response.status_code == 200
 
     strategies_response = client.get("/signals/strategies")
     assert strategies_response.status_code == 200

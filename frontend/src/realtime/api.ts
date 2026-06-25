@@ -236,7 +236,12 @@ export function fetchAvailable(baseUrl: string, token: string): Promise<OnlineSy
 // Build the ws(s):// URL for the tick stream from the http(s) API base, carrying
 // the JWT in the query string (the WS handshake cannot send an auth header).
 export function realtimeWsUrl(baseUrl: string, token: string): string {
-  let origin = baseUrl;
+  const resolvedBase =
+    baseUrl ||
+    (typeof globalThis !== "undefined" && "location" in globalThis
+      ? globalThis.location.origin
+      : "http://localhost:8000");
+  let origin = resolvedBase;
   if (origin.startsWith("https")) origin = "wss" + origin.slice(5);
   else if (origin.startsWith("http")) origin = "ws" + origin.slice(4);
   return `${origin}/realtime/ws?token=${encodeURIComponent(token)}`;

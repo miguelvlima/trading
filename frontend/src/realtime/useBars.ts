@@ -1,26 +1,33 @@
 import { useEffect, useState } from "react";
 
-import { type Bar, ApiError, fetchBars } from "./api";
+import { type Bar, type Quote, ApiError, fetchBars } from "./api";
+
+// Treat a persisted (DB) bar as a closed quote for the chart.
+function asQuotes(symbol: string, bars: Bar[]): Quote[] {
+  return bars.map((b) => ({ ...b, symbol, is_final: true }));
+}
 
 type UseBarsResult = {
-  bars: Bar[];
+  bars: Quote[];
   loading: boolean;
   error: string | null;
 };
 
-// Loads the historical candles for a symbol/timeframe from /market-data/bars.
+// Loads the chart history for a symbol/candle/window from /realtime/history
+// (provider-backed, window-aware, paginated + throttled on the server).
 // Re-fetches on selection change AND on an interval (default 20s) so newly
-// closed bars the worker persists show up without a manual reload. The periodic
-// refresh is silent (no loading flicker) and pauses while the tab is hidden.
+// closed bars show up without a manual reload. The periodic refresh is silent
+// (no loading flicker) and pauses while the tab is hidden.
 export function useBars(
   baseUrl: string,
   token: string,
   symbol: string,
   timeframe: string,
+  window: string,
   limit: number,
   refreshMs = 20000,
 ): UseBarsResult {
-  const [bars, setBars] = useState<Bar[]>([]);
+  const [bars, setBars] = useState<Quote[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +48,11 @@ export function useBars(
         setError(null);
       }
       try {
-        const data = await fetchBars(baseUrl, token, symbol, timeframe, limit);
+        // Chart history comes from the DB (the worker persists closed bars):
+        // reliable, no live-Gateway dependency, no client-id contention. Live
+        // updates arrive separately over the WebSocket (forming bar).
+        const persisted = await fetchBars(baseUrl, token, symbol, timeframe, limit);
+        const data = asQuotes(symbol, persisted);
         if (!cancelled) {
           setBars(data);
           setError(null);
@@ -59,13 +70,13 @@ export function useBars(
     };
 
     void load(true);
-    const timer = window.setInterval(() => void load(false), refreshMs);
+    const timer = globalThis.setInterval(() => void load(false), refreshMs);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      globalThis.clearInterval(timer);
     };
-  }, [baseUrl, token, symbol, timeframe, limit, refreshMs]);
+  }, [baseUrl, token, symbol, timeframe, window, limit, refreshMs]);
 
   return { bars, loading, error };
 }

@@ -10,7 +10,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.services.data_feed.types import BarQuote, SymbolMatch
+from app.services.data_feed.types import (
+    BarQuote,
+    IndexCallback,
+    IndexQuote,
+    SymbolMatch,
+    Tick,
+    TickCallback,
+)
 
 
 def build_bar_quotes(
@@ -85,3 +92,82 @@ class FakeProvider:
 
 # Backwards-compatible alias (earlier revision name).
 FakeMarketDataProvider = FakeProvider
+
+
+# Fixed timestamp so streaming tests are deterministic (no wall clock).
+FAKE_TICK_TS = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
+
+
+class FakeStreamingProvider:
+    """In-memory StreamingProvider that emits one synthetic update per subscribe.
+
+    Each ``subscribe``/``subscribe_index`` call immediately invokes the
+    registered sink with a deterministic Tick/IndexQuote, which lets the
+    WebSocket session be tested end-to-end without a Gateway or timers. The call
+    logs (``subscribe_calls`` / ``unsubscribe_calls``) let tests assert the
+    cancel-on-switch behaviour.
+    """
+
+    name = "fake-stream"
+
+    def __init__(self, *, last: Decimal = Decimal("300.42")) -> None:
+        self._last = last
+        self._on_tick: TickCallback | None = None
+        self._on_index: IndexCallback | None = None
+        self.started = False
+        self.stopped = False
+        self.subscribed: set[str] = set()
+        self.indices: set[str] = set()
+        self.subscribe_calls: list[str] = []
+        self.unsubscribe_calls: list[str] = []
+
+    def start(self, on_tick: TickCallback, on_index: IndexCallback) -> None:
+        self._on_tick = on_tick
+        self._on_index = on_index
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.subscribed.clear()
+        self.indices.clear()
+
+    def subscribe(self, symbol: str) -> None:
+        key = symbol.upper()
+        self.subscribed.add(key)
+        self.subscribe_calls.append(key)
+        if self._on_tick is not None:
+            self._on_tick(
+                Tick(
+                    symbol=key,
+                    timestamp=FAKE_TICK_TS,
+                    last=self._last,
+                    bid=self._last - Decimal("0.02"),
+                    ask=self._last + Decimal("0.02"),
+                    bid_size=Decimal("4"),
+                    ask_size=Decimal("2"),
+                    last_size=Decimal("100"),
+                    volume=Decimal("1240000"),
+                    day_high=self._last + Decimal("1.5"),
+                    day_low=self._last - Decimal("2.0"),
+                )
+            )
+
+    def unsubscribe(self, symbol: str) -> None:
+        key = symbol.upper()
+        self.subscribed.discard(key)
+        self.unsubscribe_calls.append(key)
+
+    def subscribe_index(self, symbol: str) -> None:
+        key = symbol.upper()
+        self.indices.add(key)
+        self.subscribe_calls.append(key)
+        if self._on_index is not None:
+            self._on_index(
+                IndexQuote(
+                    symbol=key,
+                    name=key,
+                    timestamp=FAKE_TICK_TS,
+                    last=Decimal("100.00"),
+                    change_pct=Decimal("0.50"),
+                )
+            )

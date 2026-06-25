@@ -13,6 +13,7 @@ class BacktestRunRequest(BaseModel):
     limit: int = Field(default=2000, ge=200, le=10000)
     initial_capital: float = Field(default=10_000.0, gt=0.0, le=10_000_000.0)
     fee_bps: float = Field(default=5.0, ge=0.0, le=500.0)
+    fee_model: Literal["fixed_bps", "ibkr_us_tiered"] = "fixed_bps"
     slippage_bps: float = Field(default=2.0, ge=0.0, le=500.0)
     slippage_model: Literal["fixed", "atr_volume"] = "atr_volume"
     min_signal_strength: float = Field(default=0.1, ge=0.0, le=1.0)
@@ -28,6 +29,8 @@ class BacktestRunRequest(BaseModel):
     take_profit_pct: float | None = Field(default=4.0, gt=0.0, le=100.0)
     max_bars_in_trade: int | None = Field(default=None, ge=1, le=500)
     walkforward_split_pct: float = Field(default=0.0, ge=0.0, le=80.0)
+    walkforward_mode: Literal["holdout", "rolling"] = "holdout"
+    walkforward_folds: int = Field(default=3, ge=1, le=8)
     benchmark_enabled: bool = True
 
     @model_validator(mode="before")

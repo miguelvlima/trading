@@ -34,6 +34,7 @@ def _risk_config(**overrides: object) -> BacktestConfig:
     base = {
         "initial_capital": 10_000.0,
         "fee_bps": 0.0,
+        "fee_model": "fixed_bps",
         "slippage_bps": 0.0,
         "slippage_model": "fixed",
         "position_size_pct": 100.0,

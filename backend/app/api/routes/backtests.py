@@ -1,6 +1,8 @@
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,7 @@ from app.services.backtest_engine import (
     aggregate_signals,
     run_backtest_with_walkforward,
 )
+from app.services.backtest_export import render_equity_csv, render_trades_csv
 from app.services.strategy_engine import BarInput, get_available_strategies, run_strategy
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
@@ -82,6 +85,66 @@ def list_backtests(
         query = query.where(BacktestRun.timeframe == timeframe)
     rows = db.execute(query.order_by(BacktestRun.created_at.desc()).limit(limit)).scalars().all()
     return [_to_run_summary(item) for item in rows]
+
+
+@router.get("/{run_id}/export")
+def export_backtest_run(
+    run_id: int,
+    export_type: Literal["trades", "equity"] = Query(alias="type"),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    run = db.execute(
+        select(BacktestRun).where(
+            BacktestRun.id == run_id,
+            BacktestRun.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backtest run not found.")
+
+    if export_type == "trades":
+        trades = db.execute(
+            select(BacktestTrade)
+            .where(BacktestTrade.run_id == run.id)
+            .order_by(BacktestTrade.entry_timestamp.asc())
+        ).scalars().all()
+        trade_rows = [
+            {
+                "direction": item.direction,
+                "entry_timestamp": item.entry_timestamp,
+                "exit_timestamp": item.exit_timestamp,
+                "entry_price": float(item.entry_price),
+                "exit_price": float(item.exit_price),
+                "quantity": float(item.quantity),
+                "gross_pnl": float(item.gross_pnl),
+                "fee_paid": float(item.fee_paid),
+                "net_pnl": float(item.net_pnl),
+                "return_pct": float(item.return_pct),
+                "bars_held": item.bars_held,
+                "entry_reason": item.entry_reason,
+                "exit_reason": item.exit_reason,
+            }
+            for item in trades
+        ]
+        csv_content = render_trades_csv(trade_rows)
+        filename = f"backtest_{run_id}_trades.csv"
+    else:
+        summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+        equity_curve = summary.get("equity_curve")
+        if not isinstance(equity_curve, list):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Equity curve not available for this run.",
+            )
+        csv_content = render_equity_csv(equity_curve)
+        filename = f"backtest_{run_id}_equity.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{run_id}", response_model=BacktestRunDetailResponse)
@@ -177,6 +240,7 @@ def run_backtest_simulation(
     config = BacktestConfig(
         initial_capital=payload.initial_capital,
         fee_bps=payload.fee_bps,
+        fee_model=payload.fee_model,
         slippage_bps=payload.slippage_bps,
         position_size_pct=payload.position_size_pct,
         position_sizing_model=payload.position_sizing_model,
@@ -195,6 +259,8 @@ def run_backtest_simulation(
         aggregated_signals=aggregated,
         config=config,
         split_pct=payload.walkforward_split_pct,
+        walkforward_mode=payload.walkforward_mode,
+        walkforward_folds=payload.walkforward_folds,
     )
 
     run_model = BacktestRun(
@@ -222,11 +288,14 @@ def run_backtest_simulation(
                 **(output.summary.get("config") if isinstance(output.summary.get("config"), dict) else {}),
                 "strategies": strategies,
                 "fee_bps": payload.fee_bps,
+                "fee_model": payload.fee_model,
                 "slippage_bps": payload.slippage_bps,
                 "slippage_model": payload.slippage_model,
                 "initial_capital": payload.initial_capital,
                 "limit": payload.limit,
                 "walkforward_split_pct": payload.walkforward_split_pct,
+                "walkforward_mode": payload.walkforward_mode,
+                "walkforward_folds": payload.walkforward_folds,
                 "strategy_min_strengths": payload.strategy_min_strengths,
                 "min_consensus_strength": payload.min_consensus_strength
                 if payload.min_consensus_strength is not None

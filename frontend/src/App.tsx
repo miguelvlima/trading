@@ -159,6 +159,7 @@ type BacktestPreset = {
   strategies: string[];
   initialCapital: number;
   feeBps: number;
+  feeModel: "fixed_bps" | "ibkr_us_tiered";
   slippageBps: number;
   slippageModel: "fixed" | "atr_volume";
   strategyMinStrengthPct: Record<string, number>;
@@ -178,6 +179,8 @@ type BacktestPreset = {
   takeProfitPct: number | null;
   maxBarsInTrade: number | null;
   walkforwardSplitPct: number;
+  walkforwardMode: "holdout" | "rolling";
+  walkforwardFolds: number;
   benchmarkEnabled: boolean;
 };
 
@@ -238,9 +241,12 @@ const normalizeBacktestPreset = (item: BacktestPreset): BacktestPreset => {
     consensusStrengthPct,
     strategyMinStrengthPct,
     slippageModel: item.slippageModel ?? "atr_volume",
+    feeModel: item.feeModel ?? "fixed_bps",
     executionTiming: item.executionTiming ?? item.entryTiming ?? "next_open",
     positionSizingModel: item.positionSizingModel ?? "fixed_pct",
     riskPerTradePct: item.riskPerTradePct ?? 1,
+    walkforwardMode: item.walkforwardMode ?? "holdout",
+    walkforwardFolds: item.walkforwardFolds ?? 3,
   };
 };
 
@@ -438,6 +444,26 @@ const formatSlippageModelLabel = (model: string): string => {
   return model;
 };
 
+const formatFeeModelLabel = (model: string): string => {
+  if (model === "ibkr_us_tiered") {
+    return "IBKR US tiered";
+  }
+  if (model === "fixed_bps") {
+    return "Bps fixos";
+  }
+  return model;
+};
+
+const formatWalkforwardModeLabel = (mode: string): string => {
+  if (mode === "rolling") {
+    return "Rolling (vários blocos OOS)";
+  }
+  if (mode === "holdout") {
+    return "Holdout único";
+  }
+  return mode;
+};
+
 const formatStrengthPct = (value: unknown): string =>
   typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
 
@@ -616,6 +642,7 @@ function App() {
   const [backtestStrategies, setBacktestStrategies] = useState<string[]>([]);
   const [backtestInitialCapital, setBacktestInitialCapital] = useState<number>(10000);
   const [backtestFeeBps, setBacktestFeeBps] = useState<number>(5);
+  const [backtestFeeModel, setBacktestFeeModel] = useState<"fixed_bps" | "ibkr_us_tiered">("fixed_bps");
   const [backtestSlippageBps, setBacktestSlippageBps] = useState<number>(2);
   const [backtestSlippageModel, setBacktestSlippageModel] = useState<"fixed" | "atr_volume">("atr_volume");
   const [backtestStrategyMinStrengthPct, setBacktestStrategyMinStrengthPct] = useState<
@@ -641,6 +668,8 @@ function App() {
   const [backtestTakeProfitPct, setBacktestTakeProfitPct] = useState<number>(4);
   const [backtestMaxBarsInTrade, setBacktestMaxBarsInTrade] = useState<number>(40);
   const [backtestWalkforwardSplitPct, setBacktestWalkforwardSplitPct] = useState<number>(0);
+  const [backtestWalkforwardMode, setBacktestWalkforwardMode] = useState<"holdout" | "rolling">("holdout");
+  const [backtestWalkforwardFolds, setBacktestWalkforwardFolds] = useState<number>(3);
   const [backtestBenchmarkEnabled, setBacktestBenchmarkEnabled] = useState(true);
   const [backtestPresets, setBacktestPresets] = useState<BacktestPreset[]>(() => readStoredBacktestPresets());
   const [backtestPresetName, setBacktestPresetName] = useState("");
@@ -1597,6 +1626,7 @@ function App() {
         strategies: backtestStrategies,
         initial_capital: backtestInitialCapital,
         fee_bps: backtestFeeBps,
+        fee_model: backtestFeeModel,
         slippage_bps: backtestSlippageBps,
         slippage_model: backtestSlippageModel,
         min_signal_strength: fallbackMinStrength,
@@ -1613,6 +1643,8 @@ function App() {
         take_profit_pct: backtestExitMode === "opposite_signal" ? null : backtestTakeProfitPct,
         max_bars_in_trade: backtestMaxBarsInTrade > 0 ? backtestMaxBarsInTrade : null,
         walkforward_split_pct: backtestWalkforwardSplitPct,
+        walkforward_mode: backtestWalkforwardMode,
+        walkforward_folds: backtestWalkforwardFolds,
         benchmark_enabled: backtestBenchmarkEnabled,
       };
 
@@ -1643,6 +1675,32 @@ function App() {
     }
   };
 
+  const handleExportBacktestCsv = async (runId: number, exportType: "trades" | "equity") => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/backtests/${runId}/export?type=${exportType}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao exportar CSV."));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `backtest_${runId}_${exportType}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (exportError) {
+      setBacktestError(toUserFetchError(exportError, "Erro inesperado ao exportar CSV."));
+    }
+  };
+
   const handleToggleBacktestRunDetail = async (runId: number) => {
     if (backtestSelectedRun?.id === runId) {
       setBacktestSelectedRun(null);
@@ -1659,6 +1717,13 @@ function App() {
         : null;
     const walkforwardInSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.in_sample) : null;
     const walkforwardOutSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.out_sample) : null;
+    const walkforwardAggregate = walkforwardBlock
+      ? getWalkforwardMetrics(walkforwardBlock.out_sample_aggregate)
+      : null;
+    const walkforwardMode =
+      typeof walkforwardBlock?.mode === "string" ? walkforwardBlock.mode : "holdout";
+    const walkforwardFolds =
+      Array.isArray(walkforwardBlock?.folds) ? (walkforwardBlock.folds as Record<string, unknown>[]) : [];
     const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
     const runConfig = getRunConfigSnapshot(run);
     const benchmarkEnabled = runConfig.benchmark_enabled !== false;
@@ -1721,8 +1786,14 @@ function App() {
             <div>
               <span className="stats-label">Fees / slippage</span>
               <strong>
-                {Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps /{" "}
-                {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps
+                {typeof runConfig.fee_model === "string"
+                  ? formatFeeModelLabel(runConfig.fee_model)
+                  : `${Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps`}
+                {typeof runConfig.fee_model === "string" && runConfig.fee_model === "fixed_bps"
+                  ? ` (${Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps)`
+                  : ""}
+                {" · "}
+                {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps slippage
                 {typeof runConfig.slippage_model === "string"
                   ? ` · ${formatSlippageModelLabel(runConfig.slippage_model)}`
                   : ""}
@@ -1791,8 +1862,17 @@ function App() {
             )}
             {typeof runConfig.walkforward_split_pct === "number" && runConfig.walkforward_split_pct > 0 && (
               <div>
-                <span className="stats-label">Walk-forward holdout</span>
-                <strong>{Number(runConfig.walkforward_split_pct).toFixed(0)}%</strong>
+                <span className="stats-label">Walk-forward</span>
+                <strong>
+                  {formatWalkforwardModeLabel(
+                    typeof runConfig.walkforward_mode === "string" ? runConfig.walkforward_mode : "holdout",
+                  )}{" "}
+                  · {Number(runConfig.walkforward_split_pct).toFixed(0)}% OOS
+                  {typeof runConfig.walkforward_folds === "number" &&
+                  runConfig.walkforward_mode === "rolling"
+                    ? ` · ${runConfig.walkforward_folds} folds`
+                    : ""}
+                </strong>
               </div>
             )}
             {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length > 1 && (
@@ -1827,7 +1907,7 @@ function App() {
           </p>
         </div>
 
-        {walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
+        {walkforwardMode === "holdout" && walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
           <div className="backtest-walkforward-panel">
             <span className="stats-label">
               Walk-forward · holdout {getSummaryNumber(walkforwardBlock, "split_pct", 0).toFixed(0)}%
@@ -1836,6 +1916,38 @@ function App() {
               {renderWalkforwardColumn("In-sample", walkforwardInSample)}
               {renderWalkforwardColumn("Out-of-sample", walkforwardOutSample)}
             </div>
+          </div>
+        )}
+
+        {walkforwardMode === "rolling" && walkforwardBlock && (
+          <div className="backtest-walkforward-panel">
+            <span className="stats-label">
+              Walk-forward rolling · {getSummaryNumber(walkforwardBlock, "split_pct", 0).toFixed(0)}% por bloco
+              {typeof walkforwardBlock.folds_count === "number"
+                ? ` · ${walkforwardBlock.folds_count} folds`
+                : ""}
+            </span>
+            {walkforwardAggregate && (
+              <div className="backtest-wf-grid">
+                {renderWalkforwardColumn("OOS agregado", walkforwardAggregate)}
+              </div>
+            )}
+            {walkforwardFolds.length > 0 && (
+              <div className="backtest-wf-grid">
+                {walkforwardFolds.map((fold, index) => {
+                  const foldMetrics = getWalkforwardMetrics(fold.out_sample);
+                  if (!foldMetrics) {
+                    return null;
+                  }
+                  const foldNumber = typeof fold.fold === "number" ? fold.fold : index + 1;
+                  return (
+                    <div key={`wf-fold-${foldNumber}`}>
+                      {renderWalkforwardColumn(`Fold ${foldNumber} OOS`, foldMetrics)}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -1851,18 +1963,40 @@ function App() {
           </div>
         )}
 
-        {run.trades_count > 0 && (
+        {(run.trades_count > 0 || equityCurve.length > 0) && (
           <div className="backtest-detail-chart-action">
+            {run.trades_count > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="tab-button"
+                  onClick={() => void handleShowBacktestTradesOnChart(run)}
+                >
+                  {backtestTradesOnChartRunId === run.id
+                    ? "Trades visíveis no gráfico"
+                    : "Ver trades no gráfico"}
+                </button>
+                {backtestTradesOnChartRunId === run.id && (
+                  <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
+                    Ocultar do gráfico
+                  </button>
+                )}
+              </>
+            )}
             <button
               type="button"
-              className="tab-button"
-              onClick={() => void handleShowBacktestTradesOnChart(run)}
+              className="config-button"
+              onClick={() => void handleExportBacktestCsv(run.id, "trades")}
             >
-              {backtestTradesOnChartRunId === run.id ? "Trades visíveis no gráfico" : "Ver trades no gráfico"}
+              Exportar trades CSV
             </button>
-            {backtestTradesOnChartRunId === run.id && (
-              <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
-                Ocultar do gráfico
+            {equityCurve.length > 0 && (
+              <button
+                type="button"
+                className="config-button"
+                onClick={() => void handleExportBacktestCsv(run.id, "equity")}
+              >
+                Exportar equity CSV
               </button>
             )}
           </div>
@@ -1979,6 +2113,7 @@ function App() {
       strategies: backtestStrategies,
       initialCapital: backtestInitialCapital,
       feeBps: backtestFeeBps,
+      feeModel: backtestFeeModel,
       slippageBps: backtestSlippageBps,
       slippageModel: backtestSlippageModel,
       strategyMinStrengthPct: Object.fromEntries(
@@ -1999,6 +2134,8 @@ function App() {
       takeProfitPct: backtestTakeProfitPct,
       maxBarsInTrade: backtestMaxBarsInTrade,
       walkforwardSplitPct: backtestWalkforwardSplitPct,
+      walkforwardMode: backtestWalkforwardMode,
+      walkforwardFolds: backtestWalkforwardFolds,
       benchmarkEnabled: backtestBenchmarkEnabled,
     });
     setBacktestPresets((previous) => [preset, ...previous].slice(0, 20));
@@ -2015,6 +2152,7 @@ function App() {
     setBacktestStrategies(normalized.strategies);
     setBacktestInitialCapital(normalized.initialCapital);
     setBacktestFeeBps(normalized.feeBps);
+    setBacktestFeeModel(normalized.feeModel);
     setBacktestSlippageBps(normalized.slippageBps);
     setBacktestSlippageModel(normalized.slippageModel);
     setBacktestStrategyMinStrengthPct(normalized.strategyMinStrengthPct);
@@ -2035,6 +2173,8 @@ function App() {
     setBacktestTakeProfitPct(normalized.takeProfitPct ?? 4);
     setBacktestMaxBarsInTrade(normalized.maxBarsInTrade ?? 40);
     setBacktestWalkforwardSplitPct(normalized.walkforwardSplitPct);
+    setBacktestWalkforwardMode(normalized.walkforwardMode);
+    setBacktestWalkforwardFolds(normalized.walkforwardFolds);
     setBacktestBenchmarkEnabled(normalized.benchmarkEnabled);
     setBacktestError(null);
   };
@@ -2055,6 +2195,9 @@ function App() {
     setBacktestStrategies([...run.strategy_names]);
     setBacktestInitialCapital(Number(config.initial_capital ?? run.initial_capital));
     setBacktestFeeBps(Number(config.fee_bps ?? run.fee_bps));
+    if (config.fee_model === "fixed_bps" || config.fee_model === "ibkr_us_tiered") {
+      setBacktestFeeModel(config.fee_model);
+    }
     setBacktestSlippageBps(Number(config.slippage_bps ?? run.slippage_bps));
     if (config.slippage_model === "fixed" || config.slippage_model === "atr_volume") {
       setBacktestSlippageModel(config.slippage_model);
@@ -2104,6 +2247,12 @@ function App() {
     }
     if (typeof config.walkforward_split_pct === "number") {
       setBacktestWalkforwardSplitPct(config.walkforward_split_pct);
+    }
+    if (config.walkforward_mode === "holdout" || config.walkforward_mode === "rolling") {
+      setBacktestWalkforwardMode(config.walkforward_mode);
+    }
+    if (typeof config.walkforward_folds === "number") {
+      setBacktestWalkforwardFolds(config.walkforward_folds);
     }
     if (typeof config.benchmark_enabled === "boolean") {
       setBacktestBenchmarkEnabled(config.benchmark_enabled);
@@ -3567,6 +3716,18 @@ function App() {
                     </>
                   )}
                   <label className="field">
+                    <span>Modelo de fees</span>
+                    <select
+                      value={backtestFeeModel}
+                      onChange={(event) =>
+                        setBacktestFeeModel(event.target.value as "fixed_bps" | "ibkr_us_tiered")
+                      }
+                    >
+                      <option value="fixed_bps">Bps fixos</option>
+                      <option value="ibkr_us_tiered">IBKR US tiered</option>
+                    </select>
+                  </label>
+                  <label className="field">
                     <span>Fee (bps)</span>
                     <input
                       type="number"
@@ -3575,6 +3736,7 @@ function App() {
                       step={0.5}
                       value={backtestFeeBps}
                       onChange={(event) => setBacktestFeeBps(Number(event.target.value))}
+                      disabled={backtestFeeModel === "ibkr_us_tiered"}
                     />
                   </label>
                   <label className="field">
@@ -3649,7 +3811,7 @@ function App() {
                     </label>
                   )}
                   <label className="field">
-                    <span>Walk-forward holdout (%)</span>
+                    <span>Walk-forward OOS (%)</span>
                     <input
                       type="number"
                       min={0}
@@ -3659,6 +3821,32 @@ function App() {
                       onChange={(event) => setBacktestWalkforwardSplitPct(Number(event.target.value))}
                     />
                   </label>
+                  <label className="field">
+                    <span>Modo walk-forward</span>
+                    <select
+                      value={backtestWalkforwardMode}
+                      onChange={(event) =>
+                        setBacktestWalkforwardMode(event.target.value as "holdout" | "rolling")
+                      }
+                      disabled={backtestWalkforwardSplitPct <= 0}
+                    >
+                      <option value="holdout">Holdout único</option>
+                      <option value="rolling">Rolling (vários blocos)</option>
+                    </select>
+                  </label>
+                  {backtestWalkforwardMode === "rolling" && backtestWalkforwardSplitPct > 0 && (
+                    <label className="field">
+                      <span>Folds rolling</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={backtestWalkforwardFolds}
+                        onChange={(event) => setBacktestWalkforwardFolds(Number(event.target.value))}
+                      />
+                    </label>
+                  )}
                   <label className="field">
                     <span>Benchmark buy & hold</span>
                     <select

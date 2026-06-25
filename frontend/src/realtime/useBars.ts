@@ -13,11 +13,10 @@ type UseBarsResult = {
   error: string | null;
 };
 
-// Loads the chart history for a symbol/candle/window from /realtime/history
-// (provider-backed, window-aware, paginated + throttled on the server).
-// Re-fetches on selection change AND on an interval (default 20s) so newly
-// closed bars show up without a manual reload. The periodic refresh is silent
-// (no loading flicker) and pauses while the tab is hidden.
+// Loads chart history for a symbol/candle/window from /market-data/bars (DB).
+// When the DB has no rows (e.g. a just-picked symbol), falls back to
+// /realtime/history (provider-backed). Live forming bars come from the WS tick
+// layer when snapshots are final-only.
 export function useBars(
   baseUrl: string,
   token: string,
@@ -48,16 +47,14 @@ export function useBars(
         setError(null);
       }
       try {
-        // Chart history comes from the DB first (the worker persists closed
-        // bars): reliable, no live-Gateway dependency, no client-id contention.
-        // Live updates arrive separately over the WebSocket (forming bar).
         const persisted = await fetchBars(baseUrl, token, symbol, timeframe, limit);
         let data = asQuotes(symbol, persisted);
-        // Fallback for symbols the worker is not persisting (e.g. a just-picked
-        // instrument like GOOGL): pull history straight from the provider so the
-        // chart is never blank. /realtime/history is provider-backed + throttled.
         if (data.length === 0) {
-          data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
+          try {
+            data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
+          } catch {
+            // Provider unavailable — keep empty; chart shows the hint.
+          }
         }
         if (!cancelled) {
           setBars(data);

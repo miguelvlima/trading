@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { isoSec, quotesToIndicatorBars } from "../market/chartBars";
+import { resolveFormingBar } from "../market/formingBar";
 import { type IndexSpec, type Instrument, fetchIndices, fetchInstruments } from "./api";
-import { type FormingBar, type HoverBar, CandleChart } from "./CandleChart";
+import { type HoverBar, CandleChart } from "./CandleChart";
 import { ChartControls } from "./ChartControls";
 import { RealtimeErrorBoundary } from "./ErrorBoundary";
 import { IndexStrip } from "./IndexStrip";
@@ -10,7 +12,6 @@ import { LiveDataPanel } from "./LiveDataPanel";
 import { SymbolBar } from "./SymbolBar";
 import { fmtCompact, fmtPrice } from "./format";
 import {
-  type IndicatorBar,
   type IndicatorId,
   type IndicatorRender,
   INDICATORS,
@@ -55,11 +56,6 @@ type RealtimePageProps = {
 
 const DEFAULT_SYMBOL = "AAPL";
 const DEFAULT_WINDOW: WindowCode = "4h";
-
-function isoSec(iso: string): number {
-  const hasTz = /[zZ]$|[+-]\d\d:?\d\d$/.test(iso);
-  return Math.floor(Date.parse(hasTz ? iso : `${iso}Z`) / 1000);
-}
 
 export function RealtimePage(props: RealtimePageProps) {
   return (
@@ -186,65 +182,47 @@ function RealtimePageContent({
   );
 
   // Indicator bars (numeric, ascending, deduped) memoized off the loaded bars.
-  const indicatorBars: IndicatorBar[] = useMemo(() => {
-    const mapped = bars
-      .map((b) => ({
-        time: isoSec(b.timestamp),
-        open: Number(b.open),
-        high: Number(b.high),
-        low: Number(b.low),
-        close: Number(b.close),
-        volume: Number(b.volume),
-      }))
-      .filter((b) => Number.isFinite(b.close))
-      .sort((a, b) => a.time - b.time);
-    const out: IndicatorBar[] = [];
-    for (const b of mapped) {
-      const last = out[out.length - 1];
-      if (last && last.time === b.time) out[out.length - 1] = b;
-      else out.push(b);
-    }
-    return out;
-  }, [bars]);
+  const indicatorBars = useMemo(() => quotesToIndicatorBars(bars), [bars]);
 
   const indicatorRenders: IndicatorRender[] = useMemo(
     () => Array.from(active).map((id) => computeIndicator(INDICATOR_BY_ID[id], indicatorBars)),
     [active, indicatorBars],
   );
 
-  // Live forming bar: only mutate a genuinely non-final last bar with the tick,
-  // never a closed one (the closed-bars-only persistence contract, mirrored in
-  // the UI). Closed bars stay a SNAPSHOT.
+  // Live forming bar: provider non-final bar, or tick-synthesized when only DB snapshots exist.
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
-  const isForming = lastBar !== null && lastBar.is_final === false;
-
-  const forming: FormingBar | null = useMemo(() => {
-    if (!lastBar || !isForming || tick?.last == null) return null;
-    return {
-      time: isoSec(lastBar.timestamp),
-      open: Number(lastBar.open),
-      high: Math.max(Number(lastBar.high), tick.last),
-      low: Math.min(Number(lastBar.low), tick.last),
-      close: tick.last,
-      volume: Number(lastBar.volume),
-    };
-  }, [lastBar, isForming, tick]);
+  const { forming, isLiveForming } = useMemo(
+    () => resolveFormingBar(lastBar, candle, tick, nowMs),
+    [lastBar, candle, tick, nowMs],
+  );
 
   const lastSnapshot: LastBarSnapshot | null = useMemo(() => {
+    if (forming && isLiveForming) {
+      return {
+        open: forming.open,
+        high: forming.high,
+        low: forming.low,
+        close: forming.close,
+        volume: forming.volume,
+        wap: null,
+        trades: null,
+        closeTimeMs: (forming.time + CANDLE_SECONDS[candle]) * 1000,
+        forming: true,
+      };
+    }
     if (!lastBar) return null;
-    const live = isForming && tick?.last != null;
     return {
       open: Number(lastBar.open),
-      high: live ? Math.max(Number(lastBar.high), tick.last as number) : Number(lastBar.high),
-      low: live ? Math.min(Number(lastBar.low), tick.last as number) : Number(lastBar.low),
-      close: live ? (tick.last as number) : Number(lastBar.close),
+      high: Number(lastBar.high),
+      low: Number(lastBar.low),
+      close: Number(lastBar.close),
       volume: Number(lastBar.volume),
-      wap: null, // WAP/trades only arrive on keepUpToDate bars
+      wap: null,
       trades: null,
       closeTimeMs: (isoSec(lastBar.timestamp) + CANDLE_SECONDS[candle]) * 1000,
-      forming: isForming,
+      forming: false,
     };
-  }, [lastBar, isForming, tick, candle]);
+  }, [forming, isLiveForming, lastBar, candle]);
 
   const lastBarMs = lastBar ? isoSec(lastBar.timestamp) * 1000 : null;
 

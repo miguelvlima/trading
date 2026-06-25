@@ -66,10 +66,12 @@ class FakeProvider:
         bars: dict[str, list[BarQuote]] | None = None,
         latest: dict[str, BarQuote] | None = None,
         search_results: list[SymbolMatch] | None = None,
+        scan_results: list[SymbolMatch] | None = None,
     ) -> None:
         self._bars = {key.upper(): value for key, value in (bars or {}).items()}
         self._latest = {key.upper(): value for key, value in (latest or {}).items()}
         self._search_results = search_results
+        self._scan_results = scan_results
         self.calls: list[tuple[str, str, int]] = []
 
     def fetch_recent_bars(self, symbol: str, timeframe: str, limit: int) -> list[BarQuote]:
@@ -88,6 +90,10 @@ class FakeProvider:
     def search_symbols(self, query: str, limit: int = 25) -> list[SymbolMatch]:
         results = self._search_results or []
         return results[:limit]
+
+    def scan_active(self, count: int = 25) -> list[SymbolMatch]:
+        results = self._scan_results or []
+        return results[:count]
 
 
 # Backwards-compatible alias (earlier revision name).

@@ -9,6 +9,7 @@ from app.core.config import Settings, get_settings
 from app.db.dependencies import get_db_session
 from app.db.models import User
 from app.schemas.realtime_data import (
+    AvailableSymbolResponse,
     IndexSpecResponse,
     RealtimeHealthResponse,
     RealtimeQuoteResponse,
@@ -18,6 +19,7 @@ from app.services.data_feed.indices import index_specs
 from app.services.data_feed.providers import build_provider
 from app.services.data_feed.service import DataFeedService, normalize_symbol
 from app.services.data_feed.types import BarQuote, MarketDataProvider, timeframe_seconds
+from app.services.data_feed.universe import major_symbols
 
 logger = structlog.get_logger(__name__)
 
@@ -191,3 +193,51 @@ def get_indices(
 ) -> list[IndexSpecResponse]:
     """The index strip's static descriptors; live values arrive via the WS."""
     return [IndexSpecResponse(symbol=spec.symbol, name=spec.name) for spec in index_specs()]
+
+
+@router.get("/available", response_model=list[AvailableSymbolResponse])
+def get_available_symbols(
+    _: User = Depends(get_current_user),
+    provider: MarketDataProvider = Depends(get_provider),
+) -> list[AvailableSymbolResponse]:
+    """The symbol picker's "available now" list: curated majors, the live IBKR
+    market scanner (most active), then the index strip. Deduplicated by symbol.
+
+    The scanner is best-effort — if it errors or the provider does not implement
+    it, the majors and indices are still returned, so the picker is never empty.
+    """
+    out: list[AvailableSymbolResponse] = []
+    seen: set[str] = set()
+
+    for major in major_symbols():
+        out.append(AvailableSymbolResponse(symbol=major.symbol, name=major.name, group="major"))
+        seen.add(major.symbol.upper())
+
+    scan = getattr(provider, "scan_active", None)
+    if callable(scan):
+        try:
+            matches = scan()
+        except Exception as exc:  # noqa: BLE001 - scanner is optional, never fatal
+            logger.warning("realtime_available_scan_error", error=str(exc))
+            matches = []
+        for match in matches:
+            key = match.symbol.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                AvailableSymbolResponse(
+                    symbol=match.symbol,
+                    name=match.name,
+                    group="active",
+                    exchange=match.exchange,
+                )
+            )
+
+    for spec in index_specs():
+        if spec.symbol.upper() in seen:
+            continue
+        seen.add(spec.symbol.upper())
+        out.append(AvailableSymbolResponse(symbol=spec.symbol, name=spec.name, group="index"))
+
+    return out

@@ -322,6 +322,46 @@ def test_symbol_search_requires_auth() -> None:
     assert response.status_code == 401
 
 
+def test_available_endpoint_merges_majors_scanner_and_indices(tmp_path: Path) -> None:
+    from app.services.data_feed.types import SymbolMatch
+
+    session_factory = _build_session_factory(tmp_path)
+    provider = FakeProvider(
+        scan_results=[
+            # AAPL also a major -> must be deduped (kept as the major).
+            SymbolMatch(symbol="AAPL", name=None, sec_type="STK", exchange="SMART", currency="USD"),
+            SymbolMatch(symbol="GDC", name=None, sec_type="STK", exchange="SMART", currency="USD"),
+        ]
+    )
+
+    app.dependency_overrides[get_db_session] = _override_db(session_factory)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+    app.dependency_overrides[get_provider] = lambda: provider
+
+    client = TestClient(app)
+    response = client.get("/realtime/available")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    rows = response.json()
+    groups = {row["symbol"]: row["group"] for row in rows}
+    # Curated majors present, scanner-only symbol present, index strip present.
+    assert groups["AAPL"] == "major"
+    assert groups["GDC"] == "active"
+    assert groups["SPX"] == "index"
+    # AAPL appears exactly once despite being in both majors and the scanner.
+    assert sum(1 for row in rows if row["symbol"] == "AAPL") == 1
+
+
+def test_available_endpoint_requires_auth() -> None:
+    client = TestClient(app)
+    response = client.get("/realtime/available")
+    assert response.status_code == 401
+
+
 def test_quote_endpoint_requires_auth() -> None:
     # No get_current_user override -> oauth2 scheme rejects the missing token.
     client = TestClient(app)

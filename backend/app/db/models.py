@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import expression
 
 from app.db.base import Base
 
@@ -16,6 +17,11 @@ class Instrument(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     exchange: Mapped[str | None] = mapped_column(String(64), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    # Soft follow flag for the quick-access list. Unfollowing flips this to False
+    # rather than deleting the row, so bars/backtests/signals are preserved.
+    followed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=expression.true()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

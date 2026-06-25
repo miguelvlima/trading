@@ -10,6 +10,14 @@ class InstrumentResponse(BaseModel):
     name: str | None = None
     exchange: str | None = None
     currency: str
+    followed: bool = True
+
+
+class InstrumentFollowRequest(BaseModel):
+    """Optional body for the follow endpoint: a display name to store when the
+    instrument is created for the first time."""
+
+    name: str | None = Field(default=None, max_length=255)
 
 
 class MarketBarResponse(BaseModel):

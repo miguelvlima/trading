@@ -38,6 +38,17 @@ export function fmtTimeUtc(ms: number | null): string {
   });
 }
 
+// Wall-clock HH:MM:SS in a given IANA timezone (e.g. "Europe/Lisbon",
+// "America/New_York"). Used for the market session clocks in the top bar.
+export function fmtClock(ms: number, timeZone: string): string {
+  return new Date(ms).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone,
+  });
+}
+
 export function fmtSecondsAgo(fromMs: number | null, nowMs: number): string {
   if (fromMs === null) return "—";
   const seconds = Math.max(0, Math.round((nowMs - fromMs) / 1000));

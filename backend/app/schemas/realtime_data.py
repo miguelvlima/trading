@@ -38,3 +38,14 @@ class IndexSpecResponse(BaseModel):
 
     symbol: str
     name: str
+
+
+class AvailableSymbolResponse(BaseModel):
+    """One pickable symbol for the search box's "available" list. ``group`` tells
+    the UI which section to show it under: ``major`` (curated large caps),
+    ``active`` (live IBKR market scanner) or ``index`` (the bottom strip)."""
+
+    symbol: str
+    name: str | None = None
+    group: str
+    exchange: str | None = None

@@ -34,6 +34,8 @@ type GlobalMarketFiltersProps = {
   instruments: InstrumentOption[];
   symbol: string;
   followed: string[];
+  isFollowing: boolean;
+  onFollowChange?: () => void;
   candle: CandleCode;
   window: WindowCode;
   manualCandle: boolean;
@@ -65,6 +67,8 @@ export function GlobalMarketFilters({
   instruments,
   symbol,
   followed,
+  isFollowing,
+  onFollowChange,
   candle,
   window,
   manualCandle,
@@ -105,6 +109,8 @@ export function GlobalMarketFilters({
         symbol={symbol}
         name={symbolName}
         followed={followed}
+        isFollowing={isFollowing}
+        onFollowChange={onFollowChange}
         onSelect={onSymbol}
         status={streamStatus}
         lastBarMs={lastBarMs}

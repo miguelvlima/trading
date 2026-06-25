@@ -68,12 +68,76 @@ def test_list_instruments_and_bars(tmp_path: Path) -> None:
             "name": "Apple",
             "exchange": "NASDAQ",
             "currency": "USD",
+            "followed": True,
         }
     ]
 
     assert bars_response.status_code == 200
     assert len(bars_response.json()) == 1
     assert bars_response.json()[0]["close"] == "105.00000000"
+
+
+def test_follow_creates_instrument_then_unfollow_preserves_bars(tmp_path: Path) -> None:
+    test_session_factory = _build_test_session_factory(tmp_path)
+
+    def override_get_db_session():
+        session = test_session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    client = TestClient(app)
+
+    # Follow a brand-new symbol -> instrument created, followed=True.
+    follow = client.post("/market-data/instruments/googl/follow", json={"name": "Alphabet"})
+    assert follow.status_code == 201
+    body = follow.json()
+    assert body["symbol"] == "GOOGL"
+    assert body["name"] == "Alphabet"
+    assert body["followed"] is True
+
+    # Seed a bar so we can prove unfollow does not delete data.
+    with test_session_factory() as session:
+        instrument = session.query(Instrument).filter_by(symbol="GOOGL").one()
+        session.add(
+            MarketBar(
+                instrument_id=instrument.id,
+                timeframe="1d",
+                timestamp=datetime(2026, 6, 20, tzinfo=UTC),
+                open=Decimal("100"),
+                high=Decimal("110"),
+                low=Decimal("95"),
+                close=Decimal("105"),
+                volume=Decimal("1000"),
+            )
+        )
+        session.commit()
+
+    # Unfollow -> soft flag flip, row + bar preserved.
+    unfollow = client.delete("/market-data/instruments/GOOGL/follow")
+    assert unfollow.status_code == 204
+
+    with test_session_factory() as session:
+        instrument = session.query(Instrument).filter_by(symbol="GOOGL").one()
+        assert instrument.followed is False
+        assert session.query(MarketBar).filter_by(instrument_id=instrument.id).count() == 1
+
+    bars = client.get("/market-data/bars", params={"symbol": "GOOGL", "timeframe": "1d"})
+    app.dependency_overrides.clear()
+    assert bars.status_code == 200
+    assert len(bars.json()) == 1
+
+
+def test_follow_requires_auth() -> None:
+    client = TestClient(app)
+    assert client.post("/market-data/instruments/AAPL/follow").status_code == 401
+    assert client.delete("/market-data/instruments/AAPL/follow").status_code == 401
 
 
 def test_import_csv_endpoint_uses_import_service(monkeypatch: pytest.MonkeyPatch) -> None:

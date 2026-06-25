@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     realtime_feed_provider: str = "ibkr"
     realtime_feed_symbols: str = "AAPL,MSFT,NVDA"
     realtime_feed_timeframe: str = "1d"
-    realtime_feed_timeframes: str = "1m,5m,15m,30m,1h,4h,1d"
+    realtime_feed_timeframes: str = "1m,5m,15m,30m,1h,4h,1d,1w"
     realtime_feed_poll_seconds: int = 60
     realtime_feed_stale_after_seconds: int = 180
     realtime_feed_min_request_interval_seconds: float = 1.0

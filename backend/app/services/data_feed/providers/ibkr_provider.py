@@ -57,6 +57,7 @@ _TIMEFRAME_TO_BAR_SIZE: dict[str, str] = {
     "2h": "2 hours",
     "4h": "4 hours",
     "1d": "1 day",
+    "1w": "1 week",
     "1wk": "1 week",
     "1mo": "1 month",
 }
@@ -171,9 +172,15 @@ class IBKRProvider:
         key = timeframe.strip().lower()
         if key in _INTRADAY_DURATION:
             return _INTRADAY_DURATION[key]
-        if key in {"1wk", "1mo"}:
-            return f"{max(limit * 7, 30)} D"
-        return f"{max(limit, 1)} D"
+        # IBKR rejects day-durations longer than 365 days ("must be made in
+        # years", error 321). Weekly/monthly windows span years, so size them in
+        # whole years (ceil) covering `limit` bars.
+        if key in {"1w", "1wk"}:
+            return f"{max(1, -(-limit // 52))} Y"
+        if key == "1mo":
+            return f"{max(1, -(-limit // 12))} Y"
+        # Daily and anything else: days, but never exceed IBKR's 365-day cap.
+        return f"{min(max(limit, 1), 365)} D"
 
     @staticmethod
     def _coerce_utc(value: object) -> datetime:

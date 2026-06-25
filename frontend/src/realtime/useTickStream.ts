@@ -44,6 +44,7 @@ export function useTickStream(
   baseUrl: string,
   token: string,
   symbol: string,
+  enabled = true,
 ): UseTickStreamResult {
   const [tick, setTick] = useState<LiveTick | null>(null);
   const [indices, setIndices] = useState<Record<string, LiveIndex>>({});
@@ -68,6 +69,18 @@ export function useTickStream(
   }, [symbol]);
 
   useEffect(() => {
+    if (!enabled) {
+      closedRef.current = true;
+      if (reconnectRef.current) {
+        globalThis.clearTimeout(reconnectRef.current);
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
+      setTick(null);
+      setStatus("closed");
+      setError(null);
+      return;
+    }
     if (!token || !baseUrl) {
       return;
     }
@@ -157,7 +170,7 @@ export function useTickStream(
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [baseUrl, token]);
+  }, [baseUrl, token, enabled]);
 
   return { tick, indices, status, lastMessageMs, activeLines, error };
 }

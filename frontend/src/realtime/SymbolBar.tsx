@@ -15,6 +15,7 @@ type SymbolBarProps = {
   lastBarMs: number | null;
   staleAfterMs?: number;
   nowMs: number;
+  showConnection?: boolean;
 };
 
 function connState(
@@ -44,6 +45,7 @@ export function SymbolBar({
   lastBarMs,
   staleAfterMs = 60000,
   nowMs,
+  showConnection = true,
 }: SymbolBarProps) {
   const [query, setQuery] = useState<string>("");
   const [open, setOpen] = useState<boolean>(false);
@@ -121,13 +123,15 @@ export function SymbolBar({
         ))}
       </div>
 
-      <div className={`rt-conn rt-conn-${conn.tone}`}>
-        <span className="rt-dot" />
-        <span>IB Gateway</span>
-        <span className="rt-conn-meta">
-          · {conn.label} · última barra {fmtTimeUtc(lastBarMs)}
-        </span>
-      </div>
+      {showConnection && (
+        <div className={`rt-conn rt-conn-${conn.tone}`}>
+          <span className="rt-dot" />
+          <span>IB Gateway</span>
+          <span className="rt-conn-meta">
+            · {conn.label} · última barra {fmtTimeUtc(lastBarMs)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

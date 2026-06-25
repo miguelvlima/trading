@@ -41,11 +41,25 @@ export type Instrument = {
   name: string | null;
   exchange: string | null;
   currency: string;
+  followed?: boolean;
 };
 
 export type IndexSpec = {
   symbol: string;
   name: string;
+};
+
+// The "available" universe shown in the symbol search before the user types:
+// curated majors, the live IBKR market scanner (most active), and the index
+// strip. `group` selects the section; the user can browse/pick from it while
+// still searching the full IBKR universe by typing.
+export type OnlineGroup = "major" | "active" | "index";
+
+export type OnlineSymbol = {
+  symbol: string;
+  name: string | null;
+  group: OnlineGroup;
+  exchange?: string | null;
 };
 
 // --- WebSocket message shapes (server -> client) ---------------------------
@@ -144,6 +158,52 @@ export function fetchInstruments(baseUrl: string, token: string): Promise<Instru
   return getJson<Instrument[]>(baseUrl, token, "/market-data/instruments");
 }
 
+async function sendJson(
+  baseUrl: string,
+  token: string,
+  method: "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, "Não foi possível contactar o servidor.");
+  }
+  if (response.status === 401) throw new ApiError(401, "Sessão expirada. Faça login novamente.");
+  if (!response.ok) throw new ApiError(response.status, `Pedido falhou (HTTP ${response.status}).`);
+  return response;
+}
+
+// Start following a symbol (creates the instrument if it does not exist yet).
+export function followInstrument(
+  baseUrl: string,
+  token: string,
+  symbol: string,
+  name?: string | null,
+): Promise<Response> {
+  return sendJson(baseUrl, token, "POST", `/market-data/instruments/${encodeURIComponent(symbol)}/follow`, {
+    name: name ?? null,
+  });
+}
+
+// Stop following a symbol (soft flag flip; bars are preserved).
+export function unfollowInstrument(
+  baseUrl: string,
+  token: string,
+  symbol: string,
+): Promise<Response> {
+  return sendJson(baseUrl, token, "DELETE", `/market-data/instruments/${encodeURIComponent(symbol)}/follow`);
+}
+
 // Provider-backed history for the chart. `window` (1H..All) selects the IBKR
 // duration + throttled pagination on the backend; `limit` is the fallback for
 // providers without pagination.
@@ -166,6 +226,11 @@ export function fetchHistory(
 
 export function fetchIndices(baseUrl: string, token: string): Promise<IndexSpec[]> {
   return getJson<IndexSpec[]>(baseUrl, token, "/realtime/indices");
+}
+
+// The "available now" picker list: curated majors + live IBKR scanner + indices.
+export function fetchAvailable(baseUrl: string, token: string): Promise<OnlineSymbol[]> {
+  return getJson<OnlineSymbol[]>(baseUrl, token, "/realtime/available");
 }
 
 // Build the ws(s):// URL for the tick stream from the http(s) API base, carrying

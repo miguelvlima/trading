@@ -22,11 +22,10 @@ import {
   isSuggestedCandle,
 } from "./market/windowCandle";
 
+import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
 import { RealtimePage } from "./realtime/RealtimePage";
 import { INDICATORS, type IndicatorId } from "./realtime/indicators";
 import { useTickStream } from "./realtime/useTickStream";
-
-const DEFAULT_FOLLOWED_SYMBOLS = ["AAPL", "MSFT", "NVDA"];
 
 type Instrument = {
   id: number;
@@ -34,6 +33,7 @@ type Instrument = {
   name: string | null;
   exchange: string | null;
   currency: string;
+  followed?: boolean;
 };
 
 type ApiBar = {
@@ -797,15 +797,20 @@ function App() {
   }, []);
 
   const followedSymbols = useMemo(() => {
-    const set = new Set<string>(DEFAULT_FOLLOWED_SYMBOLS);
+    const set = new Set<string>();
     for (const instrument of instruments) {
-      set.add(instrument.symbol);
+      if (instrument.followed !== false) set.add(instrument.symbol);
     }
     if (selectedSymbol) {
       set.add(selectedSymbol);
     }
     return Array.from(set).sort();
   }, [instruments, selectedSymbol]);
+
+  const isFollowingSelected = useMemo(
+    () => instruments.some((i) => i.symbol === selectedSymbol && i.followed !== false),
+    [instruments, selectedSymbol],
+  );
 
   const lastBarMs = useMemo(() => {
     const last = bars[bars.length - 1];
@@ -3001,6 +3006,8 @@ function App() {
           instruments={instruments}
           symbol={selectedSymbol}
           followed={followedSymbols}
+          isFollowing={isFollowingSelected}
+          onFollowChange={() => setMarketDataRefreshToken((previous) => previous + 1)}
           candle={candle}
           window={chartWindow}
           manualCandle={manualCandle}
@@ -3073,6 +3080,15 @@ function App() {
                 onClearBacktestTrades={handleClearBacktestTradesOnChart}
               />
             ) : null}
+
+            {activeTab === "market" && (
+              <HotMoversGrid
+                apiBaseUrl={API_BASE_URL}
+                authToken={authToken}
+                symbol={selectedSymbol}
+                onSelect={setSelectedSymbol}
+              />
+            )}
           </div>
 
           <div

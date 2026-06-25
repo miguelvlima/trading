@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -83,6 +85,29 @@ def _to_decimal(value: object) -> Decimal:
     return Decimal(str(value))
 
 
+# All Gateway calls run on this single dedicated thread (see _on_ib_loop).
+_IB_WORKER_PREFIX = "ibkr-hist"
+
+
+def _on_ib_loop(method):
+    """Marshal an IBKR call onto the provider's dedicated event-loop thread.
+
+    ib_insync requires an asyncio event loop in the *calling* thread, but
+    FastAPI's synchronous routes execute in loop-less worker threads — so a
+    direct call there fails instantly with "There is no current event loop in
+    thread" and returns no data. We funnel every Gateway call onto one dedicated
+    thread that owns the loop *and* the IB connection. The re-entrancy guard in
+    :meth:`IBKRProvider._run_on_loop` lets decorated methods call one another
+    without dead-locking the single worker.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        return self._run_on_loop(method, self, *args, **kwargs)
+
+    return wrapper
+
+
 class IBKRProvider:
     """IBKR market data via the IB Gateway / TWS socket API (paper, read-only).
 
@@ -110,6 +135,21 @@ class IBKRProvider:
         self._connect_timeout = connect_timeout_seconds
         self._throttle = PacingThrottle(min_request_interval_seconds)
         self._ib = None  # lazily created ib_insync.IB instance
+        # One dedicated thread owns the loop + the IB connection. Its initializer
+        # installs an event loop so ib_insync works; every @_on_ib_loop method
+        # runs here, which also serialises requests (good for IBKR pacing).
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=_IB_WORKER_PREFIX,
+            initializer=lambda: asyncio.set_event_loop(asyncio.new_event_loop()),
+        )
+
+    def _run_on_loop(self, fn, *args, **kwargs):
+        # Re-entrancy guard: a decorated method calling another must run inline
+        # (we are already on the worker thread), not re-submit and dead-lock.
+        if threading.current_thread().name.startswith(_IB_WORKER_PREFIX):
+            return fn(*args, **kwargs)
+        return self._executor.submit(fn, *args, **kwargs).result()
 
     # -- connection management -------------------------------------------------
 
@@ -153,6 +193,7 @@ class IBKRProvider:
             )
             return False
 
+    @_on_ib_loop
     def disconnect(self) -> None:
         if self._ib is not None and self._ib.isConnected():
             try:
@@ -215,6 +256,7 @@ class IBKRProvider:
 
     # -- MarketDataProvider ----------------------------------------------------
 
+    @_on_ib_loop
     def fetch_recent_bars(self, symbol: str, timeframe: str, limit: int) -> list[BarQuote]:
         normalized = symbol.strip().upper()
         try:
@@ -254,6 +296,7 @@ class IBKRProvider:
         quotes = self._bars_to_quotes(normalized, timeframe, raw_bars)
         return quotes[-limit:] if limit > 0 else quotes
 
+    @_on_ib_loop
     def fetch_history_paginated(
         self,
         symbol: str,
@@ -320,10 +363,75 @@ class IBKRProvider:
 
         return [by_timestamp[ts] for ts in sorted(by_timestamp)]
 
+    @_on_ib_loop
+    def fetch_recent_bars_batch(
+        self,
+        symbols: list[str],
+        timeframe: str,
+        limit: int,
+        *,
+        duration: str | None = None,
+    ) -> dict[str, list[BarQuote]]:
+        """Fetch recent bars for many symbols **concurrently** in one round-trip.
+
+        The per-symbol sync path serialises one ``reqHistoricalData`` at a time
+        (seconds each); the hot-movers grid needs ~10 at once, so we issue them
+        in parallel via ``reqHistoricalDataAsync`` + ``gather`` on the IB loop.
+        Best-effort per symbol: a failed/empty one is simply omitted.
+        """
+        if not symbols or not self._ensure_connected():
+            return {}
+        try:
+            from ib_insync import Stock
+
+            bar_size = self._bar_size_for(timeframe)
+        except (ImportError, ValueError) as exc:
+            logger.error("ibkr_batch_unsupported", timeframe=timeframe, error=str(exc))
+            return {}
+
+        duration_str = duration or self._duration_for(timeframe, limit)
+        contracts = {sym.strip().upper(): Stock(sym.strip().upper(), "SMART", "USD") for sym in symbols}
+
+        async def _gather() -> dict[str, object]:
+            tasks = {
+                sym: self._ib.reqHistoricalDataAsync(
+                    contract,
+                    endDateTime="",
+                    durationStr=duration_str,
+                    barSizeSetting=bar_size,
+                    whatToShow="TRADES",
+                    useRTH=False,
+                    formatDate=2,
+                    keepUpToDate=False,
+                )
+                for sym, contract in contracts.items()
+            }
+            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            return dict(zip(tasks.keys(), results, strict=True))
+
+        self._throttle.wait()
+        try:
+            raw = asyncio.get_event_loop().run_until_complete(_gather())
+            self._throttle.record_success()
+        except Exception as exc:  # noqa: BLE001 - never raise to the caller
+            self._throttle.record_failure()
+            logger.error("ibkr_batch_history_failed", error=str(exc))
+            return {}
+
+        out: dict[str, list[BarQuote]] = {}
+        for sym, bars in raw.items():
+            if isinstance(bars, BaseException) or not bars:
+                continue
+            quotes = self._bars_to_quotes(sym, timeframe, bars)
+            out[sym] = quotes[-limit:] if limit > 0 else quotes
+        return out
+
+    @_on_ib_loop
     def fetch_latest_quote(self, symbol: str) -> BarQuote | None:
         bars = self.fetch_recent_bars(symbol, "1d", limit=1)
         return bars[-1] if bars else None
 
+    @_on_ib_loop
     def search_symbols(self, query: str, limit: int = 25) -> list[SymbolMatch]:
         """Look up matching contracts via IBKR (the full IBKR universe)."""
         cleaned = query.strip()
@@ -356,6 +464,58 @@ class IBKRProvider:
                 )
             )
         return matches[:limit]
+
+    @_on_ib_loop
+    def scan_active(self, count: int = 25) -> list[SymbolMatch]:
+        """Most-active US stocks via the IBKR market scanner (discovery list).
+
+        Powers the "what is available right now" section of the symbol picker.
+        """
+        return self.scan_movers("MOST_ACTIVE", count)
+
+    @_on_ib_loop
+    def scan_movers(self, scan_code: str = "MOST_ACTIVE", count: int = 25) -> list[SymbolMatch]:
+        """Ranked US stocks for a given IBKR scan code (e.g. ``MOST_ACTIVE``,
+        ``TOP_PERC_GAIN``, ``TOP_PERC_LOSE``, ``HOT_BY_VOLUME``).
+
+        Best-effort: on any failure it returns ``[]`` so callers degrade
+        gracefully instead of erroring.
+        """
+        if not self._ensure_connected():
+            return []
+        try:
+            from ib_insync import ScannerSubscription
+        except ImportError:
+            return []
+
+        self._throttle.wait()
+        subscription = ScannerSubscription(
+            instrument="STK", locationCode="STK.US.MAJOR", scanCode=scan_code
+        )
+        try:
+            rows = self._ib.reqScannerData(subscription)
+            self._throttle.record_success()
+        except Exception as exc:  # noqa: BLE001 - never raise to the caller
+            self._throttle.record_failure()
+            logger.error("ibkr_scan_failed", scan_code=scan_code, error=str(exc))
+            return []
+
+        matches: list[SymbolMatch] = []
+        for row in rows or []:
+            details = getattr(row, "contractDetails", None)
+            contract = getattr(details, "contract", None)
+            if contract is None:
+                continue
+            matches.append(
+                SymbolMatch(
+                    symbol=contract.symbol,
+                    name=None,
+                    sec_type=contract.secType or None,
+                    exchange=(contract.primaryExchange or contract.exchange or None),
+                    currency=contract.currency or None,
+                )
+            )
+        return matches[:count]
 
 
 class IBKRStreamingProvider:

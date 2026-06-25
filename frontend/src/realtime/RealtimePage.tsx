@@ -55,7 +55,6 @@ type RealtimePageProps = {
 
 const DEFAULT_SYMBOL = "AAPL";
 const DEFAULT_WINDOW: WindowCode = "4h";
-const DEFAULT_FOLLOWED = ["AAPL", "MSFT", "NVDA"];
 
 function isoSec(iso: string): number {
   const hasTz = /[zZ]$|[+-]\d\d:?\d\d$/.test(iso);
@@ -152,6 +151,7 @@ function RealtimePageContent({
   // Followed chips: default set merged with persisted instruments.
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [indexSpecs, setIndexSpecs] = useState<IndexSpec[]>([]);
+  const [followNonce, setFollowNonce] = useState<number>(0);
   useEffect(() => {
     if (!authToken) return;
     let cancelled = false;
@@ -164,14 +164,21 @@ function RealtimePageContent({
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, authToken]);
+  }, [apiBaseUrl, authToken, followNonce]);
 
+  // Followed chips: persisted instruments flagged followed, plus the current
+  // symbol so it is always visible. (Older rows lack the flag -> treat as true.)
   const followed = useMemo(() => {
-    const set = new Set<string>(DEFAULT_FOLLOWED);
-    for (const inst of instruments) set.add(inst.symbol);
+    const set = new Set<string>();
+    for (const inst of instruments) if (inst.followed !== false) set.add(inst.symbol);
     set.add(symbol);
     return Array.from(set).sort();
   }, [instruments, symbol]);
+
+  const isFollowing = useMemo(
+    () => instruments.some((i) => i.symbol === symbol && i.followed !== false),
+    [instruments, symbol],
+  );
 
   const symbolName = useMemo(
     () => instruments.find((i) => i.symbol === symbol)?.name ?? null,
@@ -289,6 +296,8 @@ function RealtimePageContent({
           symbol={symbol}
           name={symbolName}
           followed={followed}
+          isFollowing={isFollowing}
+          onFollowChange={() => setFollowNonce((n) => n + 1)}
           onSelect={setSymbol}
           status={status}
           lastBarMs={lastBarMs}

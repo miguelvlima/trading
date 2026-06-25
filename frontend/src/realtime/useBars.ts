@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { type Bar, type Quote, ApiError, fetchBars } from "./api";
+import { type Bar, type Quote, ApiError, fetchBars, fetchHistory } from "./api";
 
 // Treat a persisted (DB) bar as a closed quote for the chart.
 function asQuotes(symbol: string, bars: Bar[]): Quote[] {
@@ -48,11 +48,17 @@ export function useBars(
         setError(null);
       }
       try {
-        // Chart history comes from the DB (the worker persists closed bars):
-        // reliable, no live-Gateway dependency, no client-id contention. Live
-        // updates arrive separately over the WebSocket (forming bar).
+        // Chart history comes from the DB first (the worker persists closed
+        // bars): reliable, no live-Gateway dependency, no client-id contention.
+        // Live updates arrive separately over the WebSocket (forming bar).
         const persisted = await fetchBars(baseUrl, token, symbol, timeframe, limit);
-        const data = asQuotes(symbol, persisted);
+        let data = asQuotes(symbol, persisted);
+        // Fallback for symbols the worker is not persisting (e.g. a just-picked
+        // instrument like GOOGL): pull history straight from the provider so the
+        // chart is never blank. /realtime/history is provider-backed + throttled.
+        if (data.length === 0) {
+          data = await fetchHistory(baseUrl, token, symbol, timeframe, window, limit);
+        }
         if (!cancelled) {
           setBars(data);
           setError(null);

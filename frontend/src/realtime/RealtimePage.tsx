@@ -18,7 +18,7 @@ import {
   computeIndicator,
 } from "./indicators";
 import { useBars } from "./useBars";
-import { useTickStream } from "./useTickStream";
+import { useTickStream, type LiveTick, type LiveIndex, type StreamStatus } from "./useTickStream";
 import {
   type CandleCode,
   type WindowCode,
@@ -32,6 +32,25 @@ import "./realtime.css";
 type RealtimePageProps = {
   apiBaseUrl: string;
   authToken: string;
+  /** When set, symbol/candle/window come from the global market filters. */
+  symbol?: string;
+  onSymbolChange?: (symbol: string) => void;
+  candle?: CandleCode;
+  window?: WindowCode;
+  manualCandle?: boolean;
+  onCandleChange?: (candle: CandleCode) => void;
+  onWindowChange?: (window: WindowCode) => void;
+  hideTimeframeControls?: boolean;
+  hideIndicatorControls?: boolean;
+  hideSymbolBar?: boolean;
+  activeIndicators?: ReadonlySet<IndicatorId>;
+  onToggleIndicator?: (id: IndicatorId) => void;
+  /** Parent-owned WS stream (avoids duplicate connection). */
+  useParentStream?: boolean;
+  tick?: LiveTick | null;
+  indices?: Record<string, LiveIndex>;
+  streamStatus?: StreamStatus;
+  streamError?: string | null;
 };
 
 const DEFAULT_SYMBOL = "AAPL";
@@ -51,14 +70,61 @@ export function RealtimePage(props: RealtimePageProps) {
   );
 }
 
-function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
-  const [symbol, setSymbol] = useState<string>(DEFAULT_SYMBOL);
-  const [window, setWindow] = useState<WindowCode>(DEFAULT_WINDOW);
-  const [candle, setCandle] = useState<CandleCode>(SUGGESTED_CANDLE[DEFAULT_WINDOW]);
-  const [manualCandle, setManualCandle] = useState<boolean>(false);
-  const [active, setActive] = useState<ReadonlySet<IndicatorId>>(
+function RealtimePageContent({
+  apiBaseUrl,
+  authToken,
+  symbol: symbolProp,
+  onSymbolChange,
+  candle: candleProp,
+  window: windowProp,
+  manualCandle: manualCandleProp,
+  onCandleChange,
+  onWindowChange,
+  hideTimeframeControls = false,
+  hideIndicatorControls = false,
+  hideSymbolBar = false,
+  activeIndicators: activeIndicatorsProp,
+  onToggleIndicator: onToggleIndicatorProp,
+  useParentStream = false,
+  tick: tickProp,
+  indices: indicesProp,
+  streamStatus: streamStatusProp,
+  streamError: streamErrorProp,
+}: RealtimePageProps) {
+  const [localSymbol, setLocalSymbol] = useState<string>(DEFAULT_SYMBOL);
+  const [localWindow, setLocalWindow] = useState<WindowCode>(DEFAULT_WINDOW);
+  const [localCandle, setLocalCandle] = useState<CandleCode>(SUGGESTED_CANDLE[DEFAULT_WINDOW]);
+  const [localManualCandle, setLocalManualCandle] = useState<boolean>(false);
+
+  const symbol = symbolProp ?? localSymbol;
+  const window = windowProp ?? localWindow;
+  const candle = candleProp ?? localCandle;
+  const manualCandle = manualCandleProp ?? localManualCandle;
+
+  const setSymbol = (next: string) => {
+    onSymbolChange?.(next);
+    if (symbolProp === undefined) {
+      setLocalSymbol(next);
+    }
+  };
+  const [localActiveIndicators, setLocalActiveIndicators] = useState<ReadonlySet<IndicatorId>>(
     () => new Set(INDICATORS.filter((d) => d.defaultOn).map((d) => d.id)),
   );
+  const active = activeIndicatorsProp ?? localActiveIndicators;
+  const onToggleIndicator = (id: IndicatorId) => {
+    onToggleIndicatorProp?.(id);
+    if (activeIndicatorsProp === undefined) {
+      setLocalActiveIndicators((previous) => {
+        const next = new Set(previous);
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+        return next;
+      });
+    }
+  };
   const [hoverBar, setHoverBar] = useState<HoverBar | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
@@ -76,11 +142,12 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
     window,
     fetchLimitFor(window, candle),
   );
-  const { tick, indices, status, error: streamError } = useTickStream(
-    apiBaseUrl,
-    authToken,
-    symbol,
-  );
+  const { tick: ownedTick, indices: ownedIndices, status: ownedStatus, error: ownedStreamError } =
+    useTickStream(apiBaseUrl, useParentStream ? "" : authToken, symbol);
+  const tick = useParentStream ? (tickProp ?? null) : ownedTick;
+  const indices = useParentStream ? (indicesProp ?? {}) : ownedIndices;
+  const status = useParentStream ? (streamStatusProp ?? "closed") : ownedStatus;
+  const streamError = useParentStream ? streamErrorProp : ownedStreamError;
 
   // Followed chips: default set merged with persisted instruments.
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -189,20 +256,20 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
   const headDir = headBar ? (headBar.close >= headBar.open ? "up" : "down") : "up";
 
   const onWindow = (w: WindowCode) => {
-    setWindow(w);
-    if (!manualCandle) setCandle(SUGGESTED_CANDLE[w]);
+    onWindowChange?.(w);
+    if (windowProp === undefined) {
+      setLocalWindow(w);
+      if (!manualCandle) {
+        setLocalCandle(SUGGESTED_CANDLE[w]);
+      }
+    }
   };
   const onCandle = (c: CandleCode) => {
-    setCandle(c);
-    setManualCandle(c !== SUGGESTED_CANDLE[window]);
-  };
-  const onToggleIndicator = (id: IndicatorId) => {
-    setActive((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    onCandleChange?.(c);
+    if (candleProp === undefined) {
+      setLocalCandle(c);
+      setLocalManualCandle(c !== SUGGESTED_CANDLE[window]);
+    }
   };
 
   if (!authToken) {
@@ -215,17 +282,19 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
 
   return (
     <div className="rt-page">
-      <SymbolBar
-        apiBaseUrl={apiBaseUrl}
-        authToken={authToken}
-        symbol={symbol}
-        name={symbolName}
-        followed={followed}
-        onSelect={setSymbol}
-        status={status}
-        lastBarMs={lastBarMs}
-        nowMs={nowMs}
-      />
+      {!hideSymbolBar && (
+        <SymbolBar
+          apiBaseUrl={apiBaseUrl}
+          authToken={authToken}
+          symbol={symbol}
+          name={symbolName}
+          followed={followed}
+          onSelect={setSymbol}
+          status={status}
+          lastBarMs={lastBarMs}
+          nowMs={nowMs}
+        />
+      )}
 
       <ChartControls
         window={window}
@@ -235,6 +304,8 @@ function RealtimePageContent({ apiBaseUrl, authToken }: RealtimePageProps) {
         onWindow={onWindow}
         onCandle={onCandle}
         onToggleIndicator={onToggleIndicator}
+        hideTimeframeRows={hideTimeframeControls}
+        hideIndicatorRows={hideIndicatorControls}
       />
 
       {streamError && <p className="hint">{streamError}</p>}

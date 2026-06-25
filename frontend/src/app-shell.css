@@ -1,0 +1,390 @@
+/* App chrome: topbar, navigation, modals — matches Realtime (rt-*) look. */
+
+.app-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius);
+}
+
+.app-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.app-topbar h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--rt-text);
+  letter-spacing: 0.02em;
+}
+
+.app-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.app-user-label {
+  font-family: var(--rt-mono);
+  font-size: 11px;
+  color: var(--rt-dim);
+  padding: 5px 10px;
+  background: var(--rt-panel-2);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius-sm);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-env-badge {
+  font-family: var(--rt-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: rgba(250, 204, 21, 0.12);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  color: #fcd34d;
+}
+
+/* Workspace: folder tabs fused into the main card */
+.app-workspace {
+  display: flex;
+  flex-direction: column;
+  margin-top: 1.25rem;
+}
+
+.app-tabs-hanging {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 0 0 10px;
+  margin: 0;
+  min-height: 37px;
+  position: relative;
+  z-index: 2;
+}
+
+.app-tab-btn {
+  font-family: var(--rt-mono);
+  font-size: 11px;
+  line-height: 1;
+  height: 30px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rt-border);
+  border-bottom: 1px solid var(--rt-border);
+  border-radius: 10px 10px 0 0;
+  background: var(--rt-bg);
+  color: var(--rt-faint);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s,
+    height 0.12s,
+    font-size 0.12s;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+.app-tab-btn:hover {
+  color: var(--rt-dim);
+  border-color: var(--rt-border-bright);
+}
+
+.app-tab-btn-active {
+  height: 37px;
+  font-size: 12px;
+  background: var(--rt-panel);
+  color: var(--rt-text);
+  border-color: var(--rt-border);
+  border-bottom-color: var(--rt-panel);
+  font-weight: 600;
+  position: relative;
+  z-index: 3;
+}
+
+/* Hide the card top border line under the active tab */
+.app-tab-btn-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 3px;
+  background: var(--rt-panel);
+}
+
+.app-panel-card {
+  margin-top: -1px;
+  position: relative;
+  z-index: 1;
+  padding-top: 14px;
+  border-top-left-radius: var(--rt-radius);
+}
+
+/* Square top-left corner only when the first tab is active (folder tab flush left) */
+.app-workspace:has(.app-tab-btn:first-child.app-tab-btn-active) .app-panel-card {
+  border-top-left-radius: 0;
+}
+
+.app-tabs {
+  margin: 10px 0 12px;
+}
+
+.app-tabs .rt-seg {
+  display: inline-flex;
+}
+
+.app-tabs .rt-seg button {
+  min-width: 88px;
+  padding: 8px 16px;
+  font-size: 12px;
+}
+
+/* Primary / secondary buttons (shell + reused in panels) */
+.config-button,
+.tab-button,
+.config-close-button,
+.config-tab-button,
+.backtest-detail-button {
+  font-family: var(--rt-mono);
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: var(--rt-radius-xs);
+  background: var(--rt-panel-2);
+  border: 1px solid var(--rt-border);
+  color: var(--rt-dim);
+  cursor: pointer;
+  transition: 0.1s;
+}
+
+.config-button:hover,
+.tab-button:hover,
+.config-close-button:hover,
+.config-tab-button:hover,
+.backtest-detail-button:hover {
+  border-color: var(--rt-border-bright);
+  color: var(--rt-text);
+}
+
+.tab-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.config-button-active,
+.config-tab-button-active,
+.backtest-detail-button-active {
+  background: var(--rt-accent-dim) !important;
+  border-color: var(--rt-accent) !important;
+  color: #bdd4ff !important;
+}
+
+.tab-button.tab-button-active {
+  /* legacy class when not inside rt-seg */
+  background: var(--rt-accent) !important;
+  border-color: var(--rt-accent) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+
+.app-tabs .rt-seg-active {
+  font-weight: 600;
+}
+
+.backtest-delete-button {
+  color: #f1a8b4 !important;
+  border-color: rgba(239, 68, 68, 0.45) !important;
+}
+
+.backtest-delete-button:hover {
+  border-color: var(--rt-down) !important;
+  color: #fecaca !important;
+}
+
+/* Modals */
+.auth-overlay-backdrop,
+.config-overlay-backdrop {
+  background: rgba(10, 14, 23, 0.82) !important;
+  backdrop-filter: blur(4px);
+}
+
+.auth-modal,
+.global-config-panel {
+  background: var(--rt-panel) !important;
+  border: 1px solid var(--rt-border-bright) !important;
+  border-radius: var(--rt-radius) !important;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55) !important;
+  color: var(--rt-text);
+}
+
+.config-kicker {
+  color: var(--rt-accent) !important;
+  font-family: var(--rt-mono);
+  font-size: 10px !important;
+  letter-spacing: 0.7px !important;
+}
+
+.config-title-block h2 {
+  color: var(--rt-text) !important;
+  font-size: 1.25rem !important;
+}
+
+/* rt-page sections used in Sinais / Simulação */
+.rt-page .signals-header h3,
+.rt-page .backtests-panel > h3,
+.rt-page h3.section-title {
+  margin: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--rt-dim);
+  font-weight: 600;
+}
+
+.rt-page .strategy-consensus-card,
+.rt-page .strategy-library,
+.rt-page .strategy-library-expand,
+.rt-page .strategy-summary,
+.rt-page .signal-row,
+.rt-page .combination-row,
+.rt-page .contribution-row,
+.rt-page .backtest-run-card,
+.rt-page .backtest-detail-panel,
+.rt-page .backtest-compare-panel,
+.rt-page .backtest-compare-card,
+.rt-page .backtest-walkforward-panel,
+.rt-page .backtest-data-section,
+.rt-page .backtest-run-config-panel,
+.rt-page .backtest-strength-row,
+.rt-page .backtest-wf-col,
+.rt-page .broker-connection-row,
+.rt-page .config-section {
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius);
+}
+
+.rt-page .strategy-library-expand {
+  background: var(--rt-panel-2);
+  padding: 8px 12px;
+}
+
+.rt-page .strategy-library-expand summary {
+  color: var(--rt-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rt-page .strategy-library-expand summary::after {
+  color: var(--rt-faint);
+}
+
+.rt-page .stats > div {
+  background: var(--rt-panel-2);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius-sm);
+}
+
+.rt-page .stats-label {
+  color: var(--rt-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rt-page .stats strong {
+  color: var(--rt-text);
+  font-family: var(--rt-mono);
+  font-size: 13px;
+}
+
+.rt-page .field span {
+  color: var(--rt-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rt-page .field select,
+.rt-page .field input,
+.rt-page .field textarea {
+  background: var(--rt-panel-2);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius-sm);
+  color: var(--rt-text);
+  font-family: var(--rt-mono);
+  font-size: 12px;
+  padding: 7px 10px;
+}
+
+.rt-page .field select:focus,
+.rt-page .field input:focus,
+.rt-page .field textarea:focus {
+  outline: none;
+  border-color: var(--rt-accent);
+}
+
+.rt-page .backtests-results-zone {
+  border-top-color: var(--rt-border);
+}
+
+.rt-page .backtests-results-header h3 {
+  color: var(--rt-faint);
+}
+
+.signal-buy,
+.consensus-buy {
+  color: var(--rt-up) !important;
+}
+
+.signal-sell,
+.consensus-sell {
+  color: var(--rt-down) !important;
+}
+
+.config-tabs-nav {
+  margin-bottom: 12px;
+}
+
+.config-tabs-nav .rt-seg button {
+  min-width: 72px;
+}
+
+@media (max-width: 640px) {
+  .app-tabs-hanging {
+    padding-left: 6px;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+
+  .app-tab-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 10px;
+    padding-right: 10px;
+    text-align: center;
+    font-size: 11px;
+  }
+
+  .app-workspace:has(.app-tab-btn:first-child.app-tab-btn-active) .app-panel-card {
+    border-top-left-radius: var(--rt-radius);
+  }
+}

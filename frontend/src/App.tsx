@@ -1,5 +1,6 @@
 import {
   CandlestickSeries,
+  ColorType,
   LineSeries,
   createChart,
   createSeriesMarkers,
@@ -9,8 +10,23 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
+import { GlobalMarketFilters } from "./market/GlobalMarketFilters";
+import { HistoricalMarketView } from "./market/HistoricalMarketView";
+import { MarketChartModeToggle, type ChartMode } from "./market/MarketChartModeToggle";
+import {
+  type CandleCode,
+  type PeriodMode,
+  type WindowCode,
+  SUGGESTED_CANDLE,
+  fetchLimitFor,
+  isSuggestedCandle,
+} from "./market/windowCandle";
 
 import { RealtimePage } from "./realtime/RealtimePage";
+import { INDICATORS, type IndicatorId } from "./realtime/indicators";
+import { useTickStream } from "./realtime/useTickStream";
+
+const DEFAULT_FOLLOWED_SYMBOLS = ["AAPL", "MSFT", "NVDA"];
 
 type Instrument = {
   id: number;
@@ -53,8 +69,7 @@ type IndicatorRow = {
   relative_volume_20: number | null;
 };
 
-type FilterMode = "count" | "date";
-type ViewTab = "market" | "signals" | "backtests" | "realtime";
+type ViewTab = "market" | "signals" | "backtests";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
 
@@ -187,6 +202,8 @@ type BacktestPreset = {
 const DEFAULT_BACKTEST_STRENGTH_PCT = 10;
 const BACKTEST_MIN_BARS = 200;
 const BACKTEST_TRADES_PAGE_SIZE = 20;
+const SIGNALS_PAGE_SIZE = 10;
+const BACKTEST_RUNS_PAGE_SIZE = 10;
 
 const strengthLevelLabel = (pct: number): string => {
   if (pct <= 20) {
@@ -212,19 +229,6 @@ const strengthLevelClass = (pct: number): string => {
     return "strength-level-high";
   }
   return "strength-level-max";
-};
-
-const getControlsContextLabel = (tab: ViewTab, windowMode: FilterMode): string => {
-  if (tab === "market") {
-    return "Filtros do gráfico.";
-  }
-  if (tab === "signals") {
-    return "Período de geração dos sinais.";
-  }
-  if (windowMode === "date") {
-    return "Período da simulação: datas definidas acima.";
-  }
-  return "Período da simulação: Nº velas definido acima.";
 };
 
 const normalizeBacktestPreset = (item: BacktestPreset): BacktestPreset => {
@@ -314,6 +318,10 @@ const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
     summary: "Deteta breakouts quando o fecho ultrapassa as bandas superior/inferior.",
   },
 };
+
+const STRATEGY_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(STRATEGY_SUMMARY).map(([key, { title }]) => [key, title]),
+);
 
 const formatPrice = (value: number): string =>
   value.toLocaleString("pt-PT", {
@@ -518,16 +526,21 @@ const buildBacktestTradeMarkers = (trades: BacktestTrade[]): SeriesMarker<string
   return markers.sort((left, right) => String(left.time).localeCompare(String(right.time)));
 };
 
+const parseCandleCode = (timeframe: string): CandleCode => {
+  const allowed: CandleCode[] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"];
+  return allowed.includes(timeframe as CandleCode) ? (timeframe as CandleCode) : "1d";
+};
+
 const syncChartFiltersToRun = (
   run: BacktestRun,
   setters: {
     setSelectedSymbol: (symbol: string) => void;
-    setSelectedTimeframe: (timeframe: string) => void;
-    setFilterMode: (mode: FilterMode) => void;
+    setCandle: (candle: CandleCode) => void;
+    setChartWindow: (chartWindow: WindowCode) => void;
+    setManualCandle: (manual: boolean) => void;
+    setPeriodMode: (mode: PeriodMode) => void;
     setStartDate: (value: string) => void;
     setEndDate: (value: string) => void;
-    setBarLimit: (value: number) => void;
-    setBarLimitInput: (value: string) => void;
     setBacktestLimit: (value: number) => void;
   },
   instruments: Instrument[],
@@ -537,16 +550,17 @@ const syncChartFiltersToRun = (
   if (instruments.some((item) => item.symbol === run.symbol)) {
     setters.setSelectedSymbol(run.symbol);
   }
-  setters.setSelectedTimeframe(run.timeframe);
+  setters.setCandle(parseCandleCode(run.timeframe));
+  setters.setManualCandle(true);
   if (run.start_at && run.end_at) {
-    setters.setFilterMode("date");
+    setters.setPeriodMode("date");
     setters.setStartDate(toInputDate(new Date(run.start_at)));
     setters.setEndDate(toInputDate(new Date(run.end_at)));
     setters.setBacktestLimit(runLimit);
   } else {
-    setters.setFilterMode("count");
-    setters.setBarLimit(runLimit);
-    setters.setBarLimitInput(String(runLimit));
+    setters.setPeriodMode("window");
+    setters.setChartWindow("all");
+    setters.setBacktestLimit(runLimit);
   }
 };
 
@@ -597,13 +611,16 @@ function App() {
 
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>("1d");
+  const [candle, setCandle] = useState<CandleCode>("1d");
+  const [chartWindow, setChartWindow] = useState<WindowCode>("1y");
+  const [manualCandle, setManualCandle] = useState(false);
+  const [periodMode, setPeriodMode] = useState<PeriodMode>("window");
+  const selectedTimeframe = candle;
+  const barLimit = useMemo(() => fetchLimitFor(chartWindow, candle), [chartWindow, candle]);
   const [activeTab, setActiveTab] = useState<ViewTab>("market");
+  const [chartMode, setChartMode] = useState<ChartMode>("historico");
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("signals");
-  const [filterMode, setFilterMode] = useState<FilterMode>("count");
-  const [barLimit, setBarLimit] = useState<number>(500);
-  const [barLimitInput, setBarLimitInput] = useState<string>("500");
   const [startDate, setStartDate] = useState<string>(
     toInputDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)),
   );
@@ -611,7 +628,7 @@ function App() {
   const [bars, setBars] = useState<ApiBar[]>([]);
   const [indicatorRows, setIndicatorRows] = useState<IndicatorRow[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<string[]>([]);
-  const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
+  const [activeStrategies, setActiveStrategies] = useState<string[]>([]);
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [consensusSignals, setConsensusSignals] = useState<SignalItem[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
@@ -626,6 +643,7 @@ function App() {
     readStoredNumber(SIGNALS_FETCH_LIMIT_STORAGE_KEY, 500, 50, 2000),
   );
   const [signalsRefreshToken, setSignalsRefreshToken] = useState(0);
+  const [signalsPage, setSignalsPage] = useState(1);
   const [savedCombinations, setSavedCombinations] = useState<StrategyCombination[]>([]);
   const [newCombinationName, setNewCombinationName] = useState("");
   const [newCombinationDescription, setNewCombinationDescription] = useState("");
@@ -639,7 +657,6 @@ function App() {
   const [newBrokerEnvironment, setNewBrokerEnvironment] = useState("paper");
   const [newBrokerMetadataJson, setNewBrokerMetadataJson] = useState("{}");
   const [brokerFormError, setBrokerFormError] = useState<string | null>(null);
-  const [backtestStrategies, setBacktestStrategies] = useState<string[]>([]);
   const [backtestInitialCapital, setBacktestInitialCapital] = useState<number>(10000);
   const [backtestFeeBps, setBacktestFeeBps] = useState<number>(5);
   const [backtestFeeModel, setBacktestFeeModel] = useState<"fixed_bps" | "ibkr_us_tiered">("fixed_bps");
@@ -680,6 +697,7 @@ function App() {
   const [backtestRunning, setBacktestRunning] = useState(false);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
+  const [backtestRunsPage, setBacktestRunsPage] = useState(1);
   const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
   const [demoDataLoading, setDemoDataLoading] = useState(false);
   const [backtestTradesOnChartRunId, setBacktestTradesOnChartRunId] = useState<number | null>(null);
@@ -688,15 +706,22 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
-  const [overlayVisibility, setOverlayVisibility] = useState({
-    sma20: true,
-    ema20: true,
-    bollinger: true,
-    vwap: true,
-  });
+  const [activeIndicators, setActiveIndicators] = useState<ReadonlySet<IndicatorId>>(
+    () => new Set(INDICATORS.filter((descriptor) => descriptor.defaultOn).map((descriptor) => descriptor.id)),
+  );
 
-  const isDateFilterIncomplete = filterMode === "date" && (!startDate || !endDate);
-  const isDateRangeInvalid = filterMode === "date" && !isDateFilterIncomplete && startDate > endDate;
+  const overlayVisibility = useMemo(
+    () => ({
+      sma20: activeIndicators.has("SMA"),
+      ema20: activeIndicators.has("EMA"),
+      bollinger: activeIndicators.has("BB"),
+      vwap: activeIndicators.has("VWAP"),
+    }),
+    [activeIndicators],
+  );
+
+  const isDateFilterIncomplete = periodMode === "date" && (!startDate || !endDate);
+  const isDateRangeInvalid = periodMode === "date" && !isDateFilterIncomplete && startDate > endDate;
   const hasDateFilterError = isDateFilterIncomplete || isDateRangeInvalid;
 
   const buildMarketQueryParams = (): URLSearchParams => {
@@ -705,7 +730,7 @@ function App() {
       timeframe: selectedTimeframe,
     });
 
-    if (filterMode === "count") {
+    if (periodMode === "window") {
       query.set("limit", String(barLimit));
     } else {
       query.set("start", `${startDate}T00:00:00Z`);
@@ -714,9 +739,17 @@ function App() {
     return query;
   };
 
-  useEffect(() => {
-    setBarLimitInput(String(barLimit));
-  }, [barLimit]);
+  const handleMarketWindow = (next: WindowCode) => {
+    setChartWindow(next);
+    if (!manualCandle) {
+      setCandle(SUGGESTED_CANDLE[next]);
+    }
+  };
+
+  const handleMarketCandle = (next: CandleCode) => {
+    setCandle(next);
+    setManualCandle(!isSuggestedCandle(chartWindow, next));
+  };
 
   useEffect(() => {
     localStorage.setItem(CONSENSUS_THRESHOLD_STORAGE_KEY, String(consensusThresholdPct));
@@ -736,7 +769,7 @@ function App() {
       timeframe: selectedTimeframe,
       strategy,
     };
-    if (filterMode === "count") {
+    if (periodMode === "window") {
       payload.limit = barLimit;
     } else {
       payload.start = `${startDate}T00:00:00Z`;
@@ -747,6 +780,42 @@ function App() {
   };
 
   const isAuthenticated = Boolean(authToken && currentUser);
+
+  const isLiveChart = activeTab === "market" && chartMode === "aovivo";
+
+  const { tick, indices, status: streamStatus, error: streamError } = useTickStream(
+    API_BASE_URL,
+    isAuthenticated ? authToken : "",
+    selectedSymbol,
+    isLiveChart,
+  );
+
+  const [marketNowMs, setMarketNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = globalThis.setInterval(() => setMarketNowMs(Date.now()), 1000);
+    return () => globalThis.clearInterval(timer);
+  }, []);
+
+  const followedSymbols = useMemo(() => {
+    const set = new Set<string>(DEFAULT_FOLLOWED_SYMBOLS);
+    for (const instrument of instruments) {
+      set.add(instrument.symbol);
+    }
+    if (selectedSymbol) {
+      set.add(selectedSymbol);
+    }
+    return Array.from(set).sort();
+  }, [instruments, selectedSymbol]);
+
+  const lastBarMs = useMemo(() => {
+    const last = bars[bars.length - 1];
+    if (!last?.timestamp) {
+      return null;
+    }
+    const iso = /[zZ]$|[+-]\d\d:?\d\d$/.test(last.timestamp) ? last.timestamp : `${last.timestamp}Z`;
+    const parsed = Date.parse(iso);
+    return Number.isNaN(parsed) ? null : parsed;
+  }, [bars]);
 
   const logout = () => {
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
@@ -818,7 +887,7 @@ function App() {
   useEffect(() => {
     if (!isAuthenticated) {
       setAvailableStrategies([]);
-      setSelectedStrategies([]);
+      setActiveStrategies([]);
       return;
     }
 
@@ -833,13 +902,11 @@ function App() {
         const payload = (await response.json()) as string[];
         setAvailableStrategies(payload);
         if (payload.length > 0) {
-          setSelectedStrategies([payload[0]]);
-          setBacktestStrategies([payload[0]]);
+          setActiveStrategies([payload[0]]);
         }
       } catch {
         setAvailableStrategies([]);
-        setSelectedStrategies([]);
-        setBacktestStrategies([]);
+        setActiveStrategies([]);
       }
     };
 
@@ -968,6 +1035,27 @@ function App() {
     loadBacktests();
   }, [authToken, isAuthenticated, backtestRefreshToken, selectedSymbol, selectedTimeframe]);
 
+  const backtestRunsTotalPages = Math.max(1, Math.ceil(backtestRuns.length / BACKTEST_RUNS_PAGE_SIZE));
+
+  useEffect(() => {
+    setBacktestRunsPage(1);
+  }, [backtestRuns]);
+
+  useEffect(() => {
+    if (backtestRunsPage > backtestRunsTotalPages) {
+      setBacktestRunsPage(backtestRunsTotalPages);
+    }
+  }, [backtestRunsPage, backtestRunsTotalPages]);
+
+  const paginatedBacktestRuns = useMemo(
+    () =>
+      backtestRuns.slice(
+        (backtestRunsPage - 1) * BACKTEST_RUNS_PAGE_SIZE,
+        backtestRunsPage * BACKTEST_RUNS_PAGE_SIZE,
+      ),
+    [backtestRuns, backtestRunsPage],
+  );
+
   useEffect(() => {
     setBacktestTradesPage(1);
   }, [backtestSelectedRun?.id]);
@@ -1007,7 +1095,7 @@ function App() {
     selectedSymbol,
     selectedTimeframe,
     barLimit,
-    filterMode,
+    periodMode,
     startDate,
     endDate,
     hasDateFilterError,
@@ -1042,10 +1130,10 @@ function App() {
     };
 
     loadIndicators();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
+  }, [selectedSymbol, selectedTimeframe, barLimit, periodMode, startDate, endDate, hasDateFilterError, authToken]);
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setSignalsGenerating(false);
       return;
@@ -1061,7 +1149,7 @@ function App() {
       setSignalsError(null);
       try {
         const responses = await Promise.all(
-          selectedStrategies.map((strategy) =>
+          activeStrategies.map((strategy) =>
             fetch(`${API_BASE_URL}/signals/generate`, {
               method: "POST",
               headers: {
@@ -1096,8 +1184,8 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
-    filterMode,
+    activeStrategies,
+    periodMode,
     barLimit,
     startDate,
     endDate,
@@ -1105,7 +1193,7 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setConsensusSignals([]);
       return;
@@ -1117,7 +1205,7 @@ function App() {
     const loadConsensusSignals = async () => {
       try {
         const responses = await Promise.all(
-          selectedStrategies.map(async (strategy) => {
+          activeStrategies.map(async (strategy) => {
             const query = new URLSearchParams({
               symbol: selectedSymbol,
               timeframe: selectedTimeframe,
@@ -1151,13 +1239,13 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
+    activeStrategies,
     signalsRefreshToken,
     signalsGenerating,
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       return;
     }
@@ -1169,7 +1257,7 @@ function App() {
       setSignalsLoading(true);
       try {
         const responses = await Promise.all(
-          selectedStrategies.map(async (strategy) => {
+          activeStrategies.map(async (strategy) => {
             const query = new URLSearchParams({
               symbol: selectedSymbol,
               timeframe: selectedTimeframe,
@@ -1209,13 +1297,34 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
+    activeStrategies,
     signalDirectionFilter,
     signalMinStrengthPct,
     signalsFetchLimit,
     signalsRefreshToken,
     signalsGenerating,
   ]);
+
+  const signalsTotalPages = Math.max(1, Math.ceil(signals.length / SIGNALS_PAGE_SIZE));
+
+  useEffect(() => {
+    setSignalsPage(1);
+  }, [signals]);
+
+  useEffect(() => {
+    if (signalsPage > signalsTotalPages) {
+      setSignalsPage(signalsTotalPages);
+    }
+  }, [signalsPage, signalsTotalPages]);
+
+  const paginatedSignals = useMemo(
+    () =>
+      signals.slice(
+        (signalsPage - 1) * SIGNALS_PAGE_SIZE,
+        signalsPage * SIGNALS_PAGE_SIZE,
+      ),
+    [signals, signalsPage],
+  );
 
   const chartData = useMemo<CandlestickData[]>(() => {
     return bars.map((bar) => ({
@@ -1252,10 +1361,20 @@ function App() {
     : null;
 
   const visibleOhlc = hoveredOhlc ?? fallbackOhlc;
-  const barsSummaryLabel = filterMode === "count" ? "Velas carregadas" : "Velas no período";
-  const barsSummaryValue = filterMode === "count" ? `${bars.length} / ${barLimit}` : String(bars.length);
+  const historicalHeadBar = visibleOhlc
+    ? {
+        dateLabel: visibleOhlc.dateLabel,
+        open: visibleOhlc.open,
+        high: visibleOhlc.high,
+        low: visibleOhlc.low,
+        close: visibleOhlc.close,
+        volume: lastBar ? Number(lastBar.volume) : 0,
+      }
+    : null;
+  const barsSummaryLabel = periodMode === "window" ? "Velas carregadas" : "Velas no período";
+  const barsSummaryValue = periodMode === "window" ? `${bars.length} / ${barLimit}` : String(bars.length);
   const strategyContributions = useMemo<StrategyContribution[]>(() => {
-    return selectedStrategies.map((strategy) => {
+    return activeStrategies.map((strategy) => {
       const latest = consensusSignals.find((item) => item.strategy === strategy);
       if (!latest) {
         return {
@@ -1276,7 +1395,7 @@ function App() {
         timestamp: latest.timestamp,
       };
     });
-  }, [selectedStrategies, consensusSignals]);
+  }, [activeStrategies, consensusSignals]);
 
   const consensus = useMemo(() => {
     if (strategyContributions.length === 0) {
@@ -1305,7 +1424,7 @@ function App() {
     [backtestRuns, backtestCompareRunIds],
   );
 
-  const simulationBarLimit = filterMode === "count" ? barLimit : backtestLimit;
+  const simulationBarLimit = periodMode === "window" ? barLimit : backtestLimit;
 
   const backtestDataAvailability = useMemo(() => {
     if (!selectedSymbol) {
@@ -1357,7 +1476,7 @@ function App() {
   ]);
 
   const canRunBacktest =
-    backtestStrategies.length > 0 &&
+    activeStrategies.length > 0 &&
     !backtestRunning &&
     (backtestDataAvailability.status === "ready" || backtestDataAvailability.status === "partial_window");
 
@@ -1389,7 +1508,7 @@ function App() {
   };
 
   const handleCreateCombination = async () => {
-    if (!authToken || selectedStrategies.length === 0 || !newCombinationName.trim()) {
+    if (!authToken || activeStrategies.length === 0 || !newCombinationName.trim()) {
       return;
     }
     setCombinationError(null);
@@ -1403,7 +1522,7 @@ function App() {
         body: JSON.stringify({
           name: newCombinationName.trim(),
           description: newCombinationDescription.trim() || null,
-          strategies: selectedStrategies,
+          strategies: activeStrategies,
           is_shared: true,
         }),
       });
@@ -1535,6 +1654,7 @@ function App() {
   const handleResetSignalListFilters = () => {
     setSignalDirectionFilter("BOTH");
     setSignalMinStrengthPct(0);
+    setSignalsPage(1);
   };
 
   const handleLoadDemoMarketData = async () => {
@@ -1585,7 +1705,7 @@ function App() {
   };
 
   const handleRunBacktest = async () => {
-    if (!authToken || !selectedSymbol || backtestStrategies.length === 0) {
+    if (!authToken || !selectedSymbol || activeStrategies.length === 0) {
       return;
     }
     if (hasDateFilterError) {
@@ -1610,20 +1730,20 @@ function App() {
     setBacktestSelectedRun(null);
     try {
       const strategyMinStrengths = Object.fromEntries(
-        backtestStrategies.map((strategy) => [
+        activeStrategies.map((strategy) => [
           strategy,
           (backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT) / 100,
         ]),
       );
-      const singleStrategyOnly = backtestStrategies.length === 1;
+      const singleStrategyOnly = activeStrategies.length === 1;
       const fallbackMinStrength = singleStrategyOnly
-        ? strategyMinStrengths[backtestStrategies[0]]
+        ? strategyMinStrengths[activeStrategies[0]]
         : backtestConsensusStrengthPct / 100;
 
       const payload: Record<string, string | number | boolean | string[] | Record<string, number> | null> = {
         symbol: selectedSymbol,
         timeframe: selectedTimeframe,
-        strategies: backtestStrategies,
+        strategies: activeStrategies,
         initial_capital: backtestInitialCapital,
         fee_bps: backtestFeeBps,
         fee_model: backtestFeeModel,
@@ -1648,7 +1768,7 @@ function App() {
         benchmark_enabled: backtestBenchmarkEnabled,
       };
 
-      if (filterMode === "date") {
+      if (periodMode === "date") {
         payload.start = `${startDate}T00:00:00Z`;
         payload.end = `${endDate}T23:59:59Z`;
       }
@@ -2110,20 +2230,20 @@ function App() {
     const preset: BacktestPreset = normalizeBacktestPreset({
       id: `${Date.now()}`,
       name,
-      strategies: backtestStrategies,
+      strategies: activeStrategies,
       initialCapital: backtestInitialCapital,
       feeBps: backtestFeeBps,
       feeModel: backtestFeeModel,
       slippageBps: backtestSlippageBps,
       slippageModel: backtestSlippageModel,
       strategyMinStrengthPct: Object.fromEntries(
-        backtestStrategies.map((strategy) => [
+        activeStrategies.map((strategy) => [
           strategy,
           backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT,
         ]),
       ),
       consensusStrengthPct: backtestConsensusStrengthPct,
-      limit: filterMode === "count" ? barLimit : backtestLimit,
+      limit: periodMode === "window" ? barLimit : backtestLimit,
       positionSizePct: backtestPositionSizePct,
       positionSizingModel: backtestPositionSizingModel,
       riskPerTradePct: backtestRiskPerTradePct,
@@ -2149,7 +2269,7 @@ function App() {
       return;
     }
     const normalized = normalizeBacktestPreset(preset);
-    setBacktestStrategies(normalized.strategies);
+    setActiveStrategies(normalized.strategies);
     setBacktestInitialCapital(normalized.initialCapital);
     setBacktestFeeBps(normalized.feeBps);
     setBacktestFeeModel(normalized.feeModel);
@@ -2157,9 +2277,8 @@ function App() {
     setBacktestSlippageModel(normalized.slippageModel);
     setBacktestStrategyMinStrengthPct(normalized.strategyMinStrengthPct);
     setBacktestConsensusStrengthPct(normalized.consensusStrengthPct);
-    if (filterMode === "count") {
-      setBarLimit(normalized.limit);
-      setBarLimitInput(String(normalized.limit));
+    if (periodMode === "window") {
+      setChartWindow("all");
     } else {
       setBacktestLimit(normalized.limit);
     }
@@ -2191,8 +2310,9 @@ function App() {
     if (instruments.some((item) => item.symbol === run.symbol)) {
       setSelectedSymbol(run.symbol);
     }
-    setSelectedTimeframe(run.timeframe);
-    setBacktestStrategies([...run.strategy_names]);
+    setCandle(parseCandleCode(run.timeframe));
+    setManualCandle(true);
+    setActiveStrategies([...run.strategy_names]);
     setBacktestInitialCapital(Number(config.initial_capital ?? run.initial_capital));
     setBacktestFeeBps(Number(config.fee_bps ?? run.fee_bps));
     if (config.fee_model === "fixed_bps" || config.fee_model === "ibkr_us_tiered") {
@@ -2206,14 +2326,13 @@ function App() {
     setBacktestConsensusStrengthPct(consensusPct);
 
     if (run.start_at && run.end_at) {
-      setFilterMode("date");
+      setPeriodMode("date");
       setStartDate(toInputDate(new Date(run.start_at)));
       setEndDate(toInputDate(new Date(run.end_at)));
       setBacktestLimit(runLimit);
     } else {
-      setFilterMode("count");
-      setBarLimit(runLimit);
-      setBarLimitInput(String(runLimit));
+      setPeriodMode("window");
+      setChartWindow("all");
     }
 
     if (typeof config.position_size_pct === "number") {
@@ -2298,12 +2417,12 @@ function App() {
         chartRun,
         {
           setSelectedSymbol,
-          setSelectedTimeframe,
-          setFilterMode,
+          setCandle,
+          setChartWindow,
+          setManualCandle,
+          setPeriodMode,
           setStartDate,
           setEndDate,
-          setBarLimit,
-          setBarLimitInput,
           setBacktestLimit,
         },
         instruments,
@@ -2311,6 +2430,7 @@ function App() {
       setBacktestTradesOnChart(trades);
       setBacktestTradesOnChartRunId(chartRun.id);
       setActiveTab("market");
+      setChartMode("historico");
     } catch (showError) {
       setBacktestError(toUserFetchError(showError, "Erro inesperado ao preparar gráfico."));
     }
@@ -2346,19 +2466,28 @@ function App() {
     }
   };
 
-  const handleToggleBacktestStrategy = (strategy: string, checked: boolean) => {
-    setBacktestStrategies((previous) => {
-      if (checked) {
-        if (previous.includes(strategy)) {
-          return previous;
-        }
-        setBacktestStrategyMinStrengthPct((strengths) => ({
-          ...strengths,
-          [strategy]: strengths[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT,
-        }));
-        return [...previous, strategy];
+  const toggleActiveStrategy = (strategy: string) => {
+    setActiveStrategies((previous) => {
+      if (previous.includes(strategy)) {
+        return previous.filter((value) => value !== strategy);
       }
-      return previous.filter((value) => value !== strategy);
+      setBacktestStrategyMinStrengthPct((strengths) => ({
+        ...strengths,
+        [strategy]: strengths[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT,
+      }));
+      return [...previous, strategy];
+    });
+  };
+
+  const toggleActiveIndicator = (id: IndicatorId) => {
+    setActiveIndicators((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
     });
   };
 
@@ -2375,18 +2504,30 @@ function App() {
   }, [selectedSymbol]);
 
   useEffect(() => {
-    if (!chartContainerRef.current) {
+    if (activeTab !== "market" || chartMode !== "historico" || !chartContainerRef.current) {
       return;
     }
 
     const container = chartContainerRef.current;
     const chart = createChart(chartContainerRef.current, {
-      layout: { background: { color: "#0f172a" }, textColor: "#d1d5db" },
-      grid: { vertLines: { color: "#334155" }, horzLines: { color: "#334155" } },
+      layout: {
+        background: { type: ColorType.Solid, color: "transparent" },
+        textColor: "#8492ad",
+        fontSize: 11,
+      },
+      grid: { vertLines: { color: "#161d2c" }, horzLines: { color: "#161d2c" } },
+      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1e2738" },
+      rightPriceScale: { borderColor: "#1e2738" },
       width: Math.max(container.clientWidth, 320),
-      height: 420,
+      height: 440,
     });
-    const candleSeries = chart.addSeries(CandlestickSeries);
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      borderVisible: false,
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
+    });
     candleSeries.setData(chartData);
 
     if (backtestTradeMarkers.length > 0) {
@@ -2497,16 +2638,23 @@ function App() {
     bollingerLowerData,
     overlayVisibility,
     backtestTradeMarkers,
+    activeTab,
+    chartMode,
   ]);
 
   return (
-    <main className="layout">
-      <header className="topbar">
-        <h1>Painel de Mercado</h1>
-        <div className="topbar-actions">
+    <main className="layout app-shell">
+      <header className="app-topbar">
+        <div className="app-topbar-left">
+          <h1>Painel de Mercado</h1>
+          <span className="app-env-badge">PAPER</span>
+        </div>
+        <div className="app-topbar-actions">
           {currentUser ? (
             <>
-              <span className="hint">Utilizador: {currentUser.display_name ?? currentUser.email}</span>
+              <span className="app-user-label" title={currentUser.email}>
+                {currentUser.display_name ?? currentUser.email}
+              </span>
               <button type="button" className="config-button" onClick={() => setShowAuthPanel(true)}>
                 Conta
               </button>
@@ -2531,7 +2679,6 @@ function App() {
           >
             Configuração
           </button>
-          <span className="badge">PAPER</span>
         </div>
       </header>
 
@@ -2609,50 +2756,38 @@ function App() {
             <p className="hint config-description">
               Parâmetros estáticos da aplicação. Esta área está preparada para crescer por secções.
             </p>
-            <div className="config-tabs">
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "data" ? "config-tab-button config-tab-button-active" : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("data")}
-              >
-                Dados
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "signals"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("signals")}
-              >
-                Sinais
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "execution"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("execution")}
-              >
-                Execução
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "alerts"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("alerts")}
-              >
-                Alertas
-              </button>
-            </div>
+            <nav className="app-tabs config-tabs-nav" aria-label="Configuração">
+              <div className="rt-seg">
+                <button
+                  type="button"
+                  className={activeConfigTab === "data" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("data")}
+                >
+                  Dados
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "signals" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("signals")}
+                >
+                  Sinais
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "execution" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("execution")}
+                >
+                  Execução
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "alerts" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("alerts")}
+                >
+                  Alertas
+                </button>
+              </div>
+            </nav>
             <div className="config-sections">
               {activeConfigTab === "data" && (
                 <section className="config-section">
@@ -2828,315 +2963,124 @@ function App() {
           </button>
         </section>
       ) : (
-      <section className="panel">
-        <div className="panel-header">
-          <p className="controls-context-label">{getControlsContextLabel(activeTab, filterMode)}</p>
-          <div
-            className={`controls-grid ${
-              filterMode === "date" ? "controls-grid-date" : "controls-grid-count"
-            }`}
-          >
-            <label className="field">
-              <span>Símbolo</span>
-              <select
-                value={selectedSymbol}
-                onChange={(event) => setSelectedSymbol(event.target.value)}
-                disabled={instruments.length === 0 || loading}
-              >
-                {instruments.map((instrument) => (
-                  <option key={instrument.id} value={instrument.symbol}>
-                    {instrument.symbol}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field">
-              <span>Intervalo</span>
-              <select
-                value={selectedTimeframe}
-                onChange={(event) => setSelectedTimeframe(event.target.value)}
-                disabled={loading}
-              >
-                <option value="1m">1m</option>
-                <option value="5m">5m</option>
-                <option value="15m">15m</option>
-                <option value="1h">1h</option>
-                <option value="4h">4h</option>
-                <option value="1d">1d</option>
-                <option value="1w">1w</option>
-              </select>
-            </label>
-
-            <label className="field">
-              <span>Janela</span>
-              <select
-                value={filterMode}
-                onChange={(event) => setFilterMode(event.target.value as FilterMode)}
-                disabled={loading}
-              >
-                <option value="count">Últimas N velas</option>
-                <option value="date">Intervalo de datas</option>
-              </select>
-            </label>
-
-            {filterMode === "count" ? (
-              <label className="field">
-                <span>Nº velas</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="\d*"
-                  value={barLimitInput}
-                  onChange={(event) => {
-                    const { value } = event.target;
-                    if (!/^\d*$/.test(value)) {
-                      return;
-                    }
-                    setBarLimitInput(value);
-                  }}
-                  onBlur={() => {
-                    const parsed = Number(barLimitInput);
-                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
-                      setBarLimitInput(String(barLimit));
-                      return;
-                    }
-                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
-                    setBarLimit(normalized);
-                    setBarLimitInput(String(normalized));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    const parsed = Number(barLimitInput);
-                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
-                      setBarLimitInput(String(barLimit));
-                      return;
-                    }
-                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
-                    setBarLimit(normalized);
-                    setBarLimitInput(String(normalized));
-                    (event.target as HTMLInputElement).blur();
-                  }}
-                />
-              </label>
-            ) : (
-              <>
-                <label className="field">
-                  <span>Data início</span>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-                <label className="field">
-                  <span>Data fim</span>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-              </>
-            )}
-          </div>
-        </div>
-
-        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
-        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
-        {!error && loading && <p className="hint">A carregar dados...</p>}
-
-        <div className="tabs">
+      <div className="app-workspace">
+        <nav className="app-tabs-hanging" aria-label="Secções">
           <button
             type="button"
-            className={activeTab === "market" ? "tab-button tab-button-active" : "tab-button"}
+            className={activeTab === "market" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
             onClick={() => setActiveTab("market")}
           >
             Mercado
           </button>
           <button
             type="button"
-            className={activeTab === "signals" ? "tab-button tab-button-active" : "tab-button"}
+            className={activeTab === "signals" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
             onClick={() => setActiveTab("signals")}
           >
             Sinais
           </button>
           <button
             type="button"
-            className={activeTab === "backtests" ? "tab-button tab-button-active" : "tab-button"}
+            className={activeTab === "backtests" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
             onClick={() => setActiveTab("backtests")}
           >
             Simulação
           </button>
-          <button
-            type="button"
-            className={activeTab === "realtime" ? "tab-button tab-button-active" : "tab-button"}
-            onClick={() => setActiveTab("realtime")}
-          >
-            Realtime
-          </button>
-        </div>
+        </nav>
+
+      <section className="panel app-panel-card">
+        {activeTab === "market" && (
+          <MarketChartModeToggle mode={chartMode} onChange={setChartMode} />
+        )}
+
+        <GlobalMarketFilters
+          activeTab={activeTab}
+          chartMode={chartMode}
+          apiBaseUrl={API_BASE_URL}
+          authToken={authToken}
+          instruments={instruments}
+          symbol={selectedSymbol}
+          followed={followedSymbols}
+          candle={candle}
+          window={chartWindow}
+          manualCandle={manualCandle}
+          periodMode={periodMode}
+          startDate={startDate}
+          endDate={endDate}
+          streamStatus={streamStatus}
+          lastBarMs={lastBarMs}
+          nowMs={marketNowMs}
+          onSymbol={setSelectedSymbol}
+          onCandle={handleMarketCandle}
+          onWindow={handleMarketWindow}
+          onPeriodMode={setPeriodMode}
+          onStartDate={setStartDate}
+          onEndDate={setEndDate}
+          availableStrategies={availableStrategies}
+          strategyLabels={STRATEGY_LABELS}
+          activeStrategies={activeStrategies}
+          onToggleStrategy={toggleActiveStrategy}
+          activeIndicators={activeIndicators}
+          onToggleIndicator={toggleActiveIndicator}
+        />
+
+        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
+        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
+        {!error && loading && <p className="hint">A carregar dados...</p>}
 
         {error && <p className="error">{error}</p>}
 
         <div className="tab-content">
-          <div className={activeTab === "realtime" ? "tab-pane tab-pane-active" : "tab-pane"}>
-            {activeTab === "realtime" && (
-              <RealtimePage apiBaseUrl={API_BASE_URL} authToken={authToken} />
-            )}
-          </div>
           <div
-            className={activeTab === "market" ? "tab-pane tab-pane-active" : "tab-pane"}
+            className={activeTab === "market" ? "tab-pane tab-pane-active mkt-tab-pane" : "tab-pane mkt-tab-pane"}
           >
-            {!error && !loading && !hasDateFilterError && bars.length === 0 && (
-              <p className="hint">
-                Sem velas para o símbolo/intervalo selecionado. Importe um CSV primeiro ou mude os filtros.
-              </p>
-            )}
-
-            {!error && !loading && bars.length > 0 && (
-              <div className="stats">
-                <div>
-                  <span className="stats-label">{barsSummaryLabel}</span>
-                  <strong>{barsSummaryValue}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Último fecho</span>
-                  <strong>{lastBar?.close}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Última data</span>
-                  <strong>{lastBar ? new Date(lastBar.timestamp).toLocaleDateString("pt-PT") : "-"}</strong>
-                </div>
-              </div>
-            )}
-
-            {backtestTradesOnChartRunId !== null && backtestTradesOnChart.length > 0 && (
-              <div className="backtest-chart-overlay-banner">
-                <p>
-                  Trades da simulação <strong>#{backtestTradesOnChartRunId}</strong> no gráfico (
-                  {backtestTradesOnChart.length} trades · setas verdes/vermelhas = entrada/saída).
-                </p>
-                <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
-                  Ocultar trades
-                </button>
-              </div>
-            )}
-
-            <div className="overlay-controls">
-              <span className="stats-label">Overlays no gráfico</span>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.sma20}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, sma20: event.target.checked }))
-                  }
-                />
-                SMA 20
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.ema20}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, ema20: event.target.checked }))
-                  }
-                />
-                EMA 20
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.bollinger}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, bollinger: event.target.checked }))
-                  }
-                />
-                Bollinger Bands
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.vwap}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, vwap: event.target.checked }))
-                  }
-                />
-                VWAP
-              </label>
-            </div>
-
-            {lastIndicatorRow && (
-              <div className="stats indicator-stats">
-                <div>
-                  <span className="stats-label">RSI (14)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.rsi_14, bars.length, 14)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd, bars.length, 26)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD Signal</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd_signal, bars.length, 34)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD Hist.</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd_histogram, bars.length, 34)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">ATR (14)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.atr_14, bars.length, 14)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Volume Relativo (20)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.relative_volume_20, bars.length, 20)}</strong>
-                </div>
-              </div>
-            )}
-
-            {!error && !loading && visibleOhlc && (
-              <div className="ohlc-panel">
-                <h3>Vela sob o cursor</h3>
-                <p className="hint">Passe o rato no gráfico para atualizar os valores.</p>
-                <div className="stats ohlc-stats">
-                  <div>
-                    <span className="stats-label">Data</span>
-                    <strong>{visibleOhlc.dateLabel}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Abertura</span>
-                    <strong>{formatPrice(visibleOhlc.open)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Máximo</span>
-                    <strong>{formatPrice(visibleOhlc.high)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Mínimo</span>
-                    <strong>{formatPrice(visibleOhlc.low)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Fecho</span>
-                    <strong>{formatPrice(visibleOhlc.close)}</strong>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div ref={chartContainerRef} className="chart" />
+            {activeTab === "market" && chartMode === "aovivo" ? (
+              <RealtimePage
+                apiBaseUrl={API_BASE_URL}
+                authToken={authToken}
+                symbol={selectedSymbol}
+                onSymbolChange={setSelectedSymbol}
+                candle={candle}
+                window={chartWindow}
+                manualCandle={manualCandle}
+                onCandleChange={handleMarketCandle}
+                onWindowChange={handleMarketWindow}
+                hideTimeframeControls
+                hideIndicatorControls
+                hideSymbolBar
+                activeIndicators={activeIndicators}
+                onToggleIndicator={toggleActiveIndicator}
+                useParentStream
+                tick={tick}
+                indices={indices}
+                streamStatus={streamStatus}
+                streamError={streamError}
+              />
+            ) : activeTab === "market" && chartMode === "historico" ? (
+              <HistoricalMarketView
+                chartContainerRef={chartContainerRef}
+                loading={loading}
+                error={error}
+                hasDateFilterError={hasDateFilterError}
+                barsCount={bars.length}
+                barsSummaryLabel={barsSummaryLabel}
+                barsSummaryValue={barsSummaryValue}
+                headBar={historicalHeadBar}
+                lastIndicatorRow={lastIndicatorRow}
+                formatIndicatorValue={formatIndicatorValue}
+                backtestTradesOnChartRunId={backtestTradesOnChartRunId}
+                backtestTradesCount={backtestTradesOnChart.length}
+                onClearBacktestTrades={handleClearBacktestTradesOnChart}
+              />
+            ) : null}
           </div>
 
           <div
             className={activeTab === "signals" ? "tab-pane tab-pane-active" : "tab-pane"}
           >
-            <div className="signals-panel">
+            <div className="rt-page signals-panel">
               <div className="signals-header">
-                <h3>Sinais da estratégia</h3>
+                <h3 className="section-title">Sinais da estratégia</h3>
               </div>
 
               {!isAuthenticated && !authChecking && (
@@ -3185,7 +3129,7 @@ function App() {
                             <button
                               type="button"
                               className="config-button"
-                              onClick={() => setSelectedStrategies(item.strategies)}
+                              onClick={() => setActiveStrategies(item.strategies)}
                             >
                               Aplicar
                             </button>
@@ -3208,43 +3152,11 @@ function App() {
 
               <section className="strategy-consensus-card">
                 <p className="strategy-consensus-caption">
-                  O sinal combinado é calculado a partir das estratégias ativas selecionadas abaixo.
+                  O sinal combinado é calculado a partir das estratégias ativas selecionadas nos filtros
+                  globais.
                 </p>
-                <div className="strategy-picker">
-                  <span className="stats-label">Estratégias ativas (consenso)</span>
-                  <div className="strategy-chip-list">
-                    {availableStrategies.map((strategy) => {
-                      const checked = selectedStrategies.includes(strategy);
-                      const info = STRATEGY_SUMMARY[strategy];
-                      return (
-                        <label
-                          key={strategy}
-                          className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(event) => {
-                              setSelectedStrategies((previous) => {
-                                if (event.target.checked) {
-                                  if (previous.includes(strategy)) {
-                                    return previous;
-                                  }
-                                  return [...previous, strategy];
-                                }
-                                return previous.filter((value) => value !== strategy);
-                              });
-                            }}
-                            disabled={loading}
-                          />
-                          <span>{info?.title ?? strategy}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
 
-                {selectedStrategies.length > 0 ? (
+                {activeStrategies.length > 0 ? (
                   <div className="strategy-summary">
                     <strong>
                       Sinal combinado:{" "}
@@ -3345,8 +3257,38 @@ function App() {
                 <p className="hint">Sem sinais para os filtros atuais.</p>
               )}
               {signals.length > 0 && (
-                <div className="signals-list">
-                  {signals.map((signal) => (
+                <>
+                  <div className="signals-list-header">
+                    <span className="stats-label">Sinais ({signals.length})</span>
+                    {signals.length > SIGNALS_PAGE_SIZE && (
+                      <div className="backtest-trades-pagination">
+                        <button
+                          type="button"
+                          className="config-button"
+                          disabled={signalsPage <= 1}
+                          onClick={() => setSignalsPage((page) => Math.max(1, page - 1))}
+                        >
+                          Anterior
+                        </button>
+                        <span className="hint">
+                          {Math.min((signalsPage - 1) * SIGNALS_PAGE_SIZE + 1, signals.length)}–
+                          {Math.min(signalsPage * SIGNALS_PAGE_SIZE, signals.length)} de {signals.length}
+                        </span>
+                        <button
+                          type="button"
+                          className="config-button"
+                          disabled={signalsPage >= signalsTotalPages}
+                          onClick={() =>
+                            setSignalsPage((page) => Math.min(signalsTotalPages, page + 1))
+                          }
+                        >
+                          Seguinte
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="signals-list">
+                    {paginatedSignals.map((signal) => (
                     <article key={signal.id} className="signal-row">
                       <div className="signal-main">
                         <div className="signal-top">
@@ -3361,15 +3303,16 @@ function App() {
                       </div>
                     </article>
                   ))}
-                </div>
+                  </div>
+                </>
               )}
             </div>
           </div>
 
           <div className={activeTab === "backtests" ? "tab-pane tab-pane-active" : "tab-pane"}>
-            <div className="backtests-panel">
+            <div className="rt-page backtests-panel">
               <div className="signals-header">
-                <h3>Backtesting (simulação histórica)</h3>
+                <h3 className="section-title">Backtesting (simulação histórica)</h3>
               </div>
               <p className="hint">Configura o run, executa e compara resultados entre simulações.</p>
 
@@ -3407,7 +3350,7 @@ function App() {
                       <p>
                         Sem velas para <strong>{backtestDataAvailability.symbol}</strong> /{" "}
                         <strong>{backtestDataAvailability.timeframe}</strong>
-                        {filterMode === "date"
+                        {periodMode === "date"
                           ? ` no intervalo ${startDate} – ${endDate}.`
                           : "."}
                       </p>
@@ -3488,43 +3431,19 @@ function App() {
 
               <section className="strategy-consensus-card">
                 <p className="strategy-consensus-caption">
-                  {backtestStrategies.length > 1
-                    ? "Cada estratégia tem o seu limiar de força mínima (0–100%). O consenso final exige acordo mínimo entre as estratégias activas — quanto maior a %, menos entradas."
+                  {activeStrategies.length > 1
+                    ? "Cada estratégia activa (filtros globais) tem o seu limiar de força mínima (0–100%). O consenso final exige acordo mínimo entre as estratégias activas — quanto maior a %, menos entradas."
                     : "Defina o limiar de força mínima (0–100%) da estratégia activa. Com uma só estratégia não há consenso combinado."}
                 </p>
-                <div className="strategy-picker">
-                  <span className="stats-label">Estratégias ativas (backtest)</span>
-                  <div className="strategy-chip-list">
-                    {availableStrategies.map((strategy) => {
-                      const checked = backtestStrategies.includes(strategy);
-                      const info = STRATEGY_SUMMARY[strategy];
-                      return (
-                        <label
-                          key={`backtest-${strategy}`}
-                          className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(event) =>
-                              handleToggleBacktestStrategy(strategy, event.target.checked)
-                            }
-                          />
-                          <span>{info?.title ?? strategy}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
 
-                {backtestStrategies.length > 0 ? (
+                {activeStrategies.length > 0 ? (
                   <>
                     <div className="backtest-strength-section">
                       <span className="stats-label">
-                        {backtestStrategies.length > 1 ? "Limiar por estratégia" : "Limiar de força"}
+                        {activeStrategies.length > 1 ? "Limiar por estratégia" : "Limiar de força"}
                       </span>
                       <div className="backtest-strength-list">
-                        {backtestStrategies.map((strategy) => {
+                        {activeStrategies.map((strategy) => {
                           const strengthPct =
                             backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT;
                           const info = STRATEGY_SUMMARY[strategy];
@@ -3565,7 +3484,7 @@ function App() {
                       </div>
                     </div>
 
-                    {backtestStrategies.length > 1 && (
+                    {activeStrategies.length > 1 && (
                       <div className="backtest-strength-section backtest-consensus-threshold">
                         <span className="stats-label">Limiar do sinal combinado</span>
                         <div className="backtest-strength-row">
@@ -3797,7 +3716,7 @@ function App() {
                       onChange={(event) => setBacktestMaxBarsInTrade(Number(event.target.value))}
                     />
                   </label>
-                  {filterMode === "date" && (
+                  {periodMode === "date" && (
                     <label className="field">
                       <span>Limite máx. de velas</span>
                       <input
@@ -3889,10 +3808,44 @@ function App() {
                 )}
 
                 {backtestRuns.length > 0 && (
+                  <>
+                    <div className="backtest-runs-list-header">
+                      <span className="stats-label">Runs ({backtestRuns.length})</span>
+                      {backtestRuns.length > BACKTEST_RUNS_PAGE_SIZE && (
+                        <div className="backtest-trades-pagination">
+                          <button
+                            type="button"
+                            className="config-button"
+                            disabled={backtestRunsPage <= 1}
+                            onClick={() => setBacktestRunsPage((page) => Math.max(1, page - 1))}
+                          >
+                            Anterior
+                          </button>
+                          <span className="hint">
+                            {Math.min((backtestRunsPage - 1) * BACKTEST_RUNS_PAGE_SIZE + 1, backtestRuns.length)}–
+                            {Math.min(backtestRunsPage * BACKTEST_RUNS_PAGE_SIZE, backtestRuns.length)} de{" "}
+                            {backtestRuns.length}
+                          </span>
+                          <button
+                            type="button"
+                            className="config-button"
+                            disabled={backtestRunsPage >= backtestRunsTotalPages}
+                            onClick={() =>
+                              setBacktestRunsPage((page) => Math.min(backtestRunsTotalPages, page + 1))
+                            }
+                          >
+                            Seguinte
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   <div className="backtest-runs-list">
-                    {backtestRuns.map((run) => {
+                    {paginatedBacktestRuns.map((run) => {
                       const pnlPositive = run.net_pnl >= 0;
                       const isDetailOpen = backtestSelectedRun?.id === run.id;
+                      const strategyLabel = run.strategy_names
+                        .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                        .join(" · ");
                       return (
                         <div key={run.id} className="backtest-run-entry">
                           <article
@@ -3903,25 +3856,23 @@ function App() {
                             }
                           >
                             <div className="backtest-run-main">
-                              <div className="backtest-run-title">
+                              <div className="backtest-run-line">
                                 <strong>
                                   #{run.id} · {run.symbol} / {run.timeframe}
                                 </strong>
-                                <span>{formatDateTimeLabel(run.created_at)}</span>
-                              </div>
-                              <p className="backtest-run-strategies">
-                                {run.strategy_names
-                                  .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
-                                  .join(" · ")}
-                              </p>
-                              <div className="backtest-run-meta">
-                                <span>{run.trades_count} trades</span>
-                                <span>Win {(run.win_rate * 100).toFixed(0)}%</span>
-                                <span>DD {(run.max_drawdown_pct * 100).toFixed(1)}%</span>
+                                <span className="backtest-run-muted">
+                                  {formatDateTimeLabel(run.created_at)}
+                                </span>
+                                <span className="backtest-run-sep">·</span>
+                                <span className="backtest-run-muted">{strategyLabel}</span>
+                                <span className="backtest-run-sep">·</span>
+                                <span className="backtest-run-muted">
+                                  {run.trades_count} trades · Win {(run.win_rate * 100).toFixed(0)}% · DD{" "}
+                                  {(run.max_drawdown_pct * 100).toFixed(1)}%
+                                </span>
                               </div>
                             </div>
                             <div className="backtest-run-pnl">
-                              <span className="stats-label">PnL</span>
                               <strong className={pnlPositive ? "signal-buy" : "signal-sell"}>
                                 {(run.net_pnl_pct * 100).toFixed(2)}%
                               </strong>
@@ -3945,14 +3896,14 @@ function App() {
                                 }
                                 onClick={() => void handleToggleBacktestRunDetail(run.id)}
                               >
-                                {isDetailOpen ? "Ocultar detalhe" : "Ver detalhe"}
+                                {isDetailOpen ? "Ocultar" : "Detalhe"}
                               </button>
                               <button
                                 type="button"
                                 className="config-button"
                                 onClick={() => handleApplyBacktestRunConfig(run)}
                               >
-                                Reutilizar config
+                                Reutilizar
                               </button>
                               {run.trades_count > 0 && (
                                 <button
@@ -3960,7 +3911,7 @@ function App() {
                                   className="config-button"
                                   onClick={() => void handleShowBacktestTradesOnChart(run)}
                                 >
-                                  Ver no gráfico
+                                  Gráfico
                                 </button>
                               )}
                               <button
@@ -3977,6 +3928,7 @@ function App() {
                       );
                     })}
                   </div>
+                  </>
                 )}
 
                 {comparedBacktestRuns.length === 2 && (
@@ -4005,6 +3957,7 @@ function App() {
 
         </div>
       </section>
+      </div>
       )}
     </main>
   );

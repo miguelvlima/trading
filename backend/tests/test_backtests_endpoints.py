@@ -126,7 +126,16 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
 
     owner_detail = client.get(f"/backtests/{run_id}", headers={"Authorization": f"Bearer {owner_token}"})
     assert owner_detail.status_code == 200
-    assert owner_detail.json()["id"] == run_id
+    detail_payload = owner_detail.json()
+    assert detail_payload["id"] == run_id
+    assert detail_payload["insight"] is not None
+    assert detail_payload["insight"]["run_id"] == run_id
+    assert len(detail_payload["insight"]["timeline"]) >= 1
+    assert isinstance(detail_payload["insight"]["lessons"], list)
+
+    lessons = client.get("/backtests/lessons", headers={"Authorization": f"Bearer {owner_token}"})
+    assert lessons.status_code == 200
+    assert len(lessons.json()) >= 1
 
     export_trades = client.get(
         f"/backtests/{run_id}/export?type=trades",

@@ -25,10 +25,12 @@ type InstrumentOption = {
 
 type MarketTab = "market" | "signals" | "backtests";
 type ChartMode = "historico" | "aovivo";
+type SignalsSourceMode = "historical" | "live";
 
 type GlobalMarketFiltersProps = {
   activeTab: MarketTab;
   chartMode: ChartMode;
+  signalsSourceMode?: SignalsSourceMode;
   apiBaseUrl: string;
   authToken: string;
   instruments: InstrumentOption[];
@@ -62,6 +64,7 @@ type GlobalMarketFiltersProps = {
 export function GlobalMarketFilters({
   activeTab,
   chartMode,
+  signalsSourceMode = "historical",
   apiBaseUrl,
   authToken,
   instruments,
@@ -99,7 +102,9 @@ export function GlobalMarketFilters({
     activeTab === "signals" || activeTab === "backtests" || chartMode === "historico";
   const showStrategies = activeTab === "signals" || activeTab === "backtests";
   const showIndicators = activeTab === "market";
-  const showStreamStatus = activeTab === "market" && chartMode === "aovivo";
+  const showStreamStatus =
+    (activeTab === "market" && chartMode === "aovivo") ||
+    (activeTab === "signals" && signalsSourceMode === "live");
 
   return (
     <div className="rt-page mkt-global-filters">

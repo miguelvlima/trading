@@ -25,14 +25,16 @@ export function useBars(
   window: string,
   limit: number,
   refreshMs = 20000,
+  enabled = true,
 ): UseBarsResult {
   const [bars, setBars] = useState<Quote[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token || !symbol) {
+    if (!enabled || !token || !symbol) {
       setBars([]);
+      setLoading(false);
       return;
     }
 
@@ -79,7 +81,7 @@ export function useBars(
       cancelled = true;
       globalThis.clearInterval(timer);
     };
-  }, [baseUrl, token, symbol, timeframe, window, limit, refreshMs]);
+  }, [baseUrl, token, symbol, timeframe, window, limit, refreshMs, enabled]);
 
   return { bars, loading, error };
 }

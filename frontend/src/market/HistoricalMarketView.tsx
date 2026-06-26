@@ -11,7 +11,12 @@ import {
 import "../realtime/realtime.css";
 
 import { buildBacktestTradeMarkers, type BacktestTradeForChart } from "./backtestMarkers";
-import { apiBarsToQuotes, quotesToIndicatorBars, type ApiBar } from "./chartBars";
+import {
+  STRATEGY_MARKER_COLORS,
+  buildSignalMarkers,
+  type SignalForChart,
+} from "./signalMarkers";
+import { apiBarsToQuotes, isoToChartTime, quotesToIndicatorBars, type ApiBar } from "./chartBars";
 import { indicatorRailRows } from "./indicatorRail";
 import { type PeriodMode, type WindowCode, WINDOW_SECONDS } from "./windowCandle";
 
@@ -22,13 +27,23 @@ type HistoricalMarketViewProps = {
   chartWindow: WindowCode;
   activeIndicators: ReadonlySet<IndicatorId>;
   tradeMarkers: BacktestTradeForChart[];
+  signalMarkers: SignalForChart[];
+  signalsOverlayEnabled: boolean;
+  selectedChartSignal: SignalForChart | null;
+  selectedChartSignalMatches: SignalForChart[];
+  strategyLabels: Record<string, string>;
   loading: boolean;
   error: string | null;
   hasDateFilterError: boolean;
   barLimit: number;
   backtestTradesOnChartRunId: number | null;
   backtestTradesCount: number;
+  signalsListCount: number;
   onClearBacktestTrades: () => void;
+  onClearSignalsOnChart: () => void;
+  onShowSignalsOnChart: () => void;
+  onChartSignalClick: (timeSec: number) => void;
+  onSelectChartSignal: (signal: SignalForChart | null) => void;
 };
 
 function formatHoverDate(timeSec: number): string {
@@ -42,13 +57,23 @@ export function HistoricalMarketView({
   chartWindow,
   activeIndicators,
   tradeMarkers,
+  signalMarkers,
+  signalsOverlayEnabled,
+  selectedChartSignal,
+  selectedChartSignalMatches,
+  strategyLabels,
   loading,
   error,
   hasDateFilterError,
   barLimit,
   backtestTradesOnChartRunId,
   backtestTradesCount,
+  signalsListCount,
   onClearBacktestTrades,
+  onClearSignalsOnChart,
+  onShowSignalsOnChart,
+  onChartSignalClick,
+  onSelectChartSignal,
 }: HistoricalMarketViewProps) {
   const [hoverBar, setHoverBar] = useState<HoverBar | null>(null);
 
@@ -60,7 +85,18 @@ export function HistoricalMarketView({
     [activeIndicators, indicatorBars],
   );
 
-  const markers = useMemo(() => buildBacktestTradeMarkers(tradeMarkers), [tradeMarkers]);
+  const markers = useMemo(() => {
+    const trade = buildBacktestTradeMarkers(tradeMarkers);
+    const signal = buildSignalMarkers(
+      signalMarkers,
+      selectedChartSignal?.id ?? null,
+    );
+    return [...trade, ...signal].sort((left, right) => Number(left.time) - Number(right.time));
+  }, [tradeMarkers, signalMarkers, selectedChartSignal?.id]);
+
+  const focusTimeSec = selectedChartSignal
+    ? Number(isoToChartTime(selectedChartSignal.timestamp))
+    : null;
 
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
   const fallbackHead = lastBar
@@ -89,6 +125,7 @@ export function HistoricalMarketView({
   const barsSummaryLabel = periodMode === "window" ? "Velas carregadas" : "Velas no período";
   const barsSummaryValue = periodMode === "window" ? `${bars.length} / ${barLimit}` : String(bars.length);
   const windowSeconds = periodMode === "window" ? WINDOW_SECONDS[chartWindow] : null;
+  const showSignalsBanner = signalsListCount > 0 || signalMarkers.length > 0;
   const railRows = useMemo(
     () => indicatorRailRows(activeIndicators, indicatorRenders, bars.length),
     [activeIndicators, indicatorRenders, bars.length],
@@ -105,6 +142,120 @@ export function HistoricalMarketView({
           <button type="button" className="rt-banner-btn" onClick={onClearBacktestTrades}>
             Ocultar
           </button>
+        </div>
+      )}
+
+      {showSignalsBanner && (
+        <div className="rt-banner rt-banner-signals">
+          <p>
+            {signalMarkers.length > 0 ? (
+              <>
+                {signalsOverlayEnabled ? (
+                  <>
+                    <strong>{signalMarkers.length}</strong> sinais no gráfico (overlay activo
+                    {signalMarkers.length >= 100 ? " · máx. 100" : ""}).
+                  </>
+                ) : (
+                  <>
+                    <strong>{signalMarkers.length}</strong> sinal(is) seleccionado(s) no gráfico.
+                  </>
+                )}{" "}
+                {selectedChartSignal ? (
+                  <>
+                    Marcador{" "}
+                    <strong className={selectedChartSignal.direction === "BUY" ? "signal-buy" : "signal-sell"}>
+                      {selectedChartSignal.direction === "BUY" ? "▲" : "▼"}{" "}
+                      {selectedChartSignal.direction}
+                    </strong>{" "}
+                    na vela de{" "}
+                    <strong>
+                      {new Date(selectedChartSignal.timestamp).toLocaleDateString("pt-PT")}
+                    </strong>{" "}
+                    (zoom aplicado — seta por cima da vela).
+                  </>
+                ) : (
+                  <>Cores por estratégia · clique num marcador para ver o rationale.</>
+                )}
+              </>
+            ) : (
+              <>
+                <strong>{signalsListCount}</strong> sinais disponíveis na lista (ocultos no gráfico).
+              </>
+            )}
+          </p>
+          <div className="rt-banner-actions">
+            {signalMarkers.length === 0 && (
+              <button
+                type="button"
+                className="rt-banner-btn"
+                disabled={signalsListCount === 0}
+                onClick={onShowSignalsOnChart}
+              >
+                Mostrar sinais no gráfico
+              </button>
+            )}
+            {signalMarkers.length > 0 && (
+              <button type="button" className="rt-banner-btn" onClick={onClearSignalsOnChart}>
+                Ocultar do gráfico
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selectedChartSignal && (
+        <div className="chart-signal-detail">
+          <div className="chart-signal-detail-header">
+            <strong
+              className={
+                selectedChartSignal.direction === "BUY" ? "signal-buy" : "signal-sell"
+              }
+            >
+              {selectedChartSignal.direction}
+            </strong>
+            <span>
+              {strategyLabels[selectedChartSignal.strategy] ?? selectedChartSignal.strategy}
+            </span>
+            <span>{new Date(selectedChartSignal.timestamp).toLocaleString("pt-PT")}</span>
+            <span>Força {(selectedChartSignal.strength * 100).toFixed(1)}%</span>
+            {selectedChartSignal.source && (
+              <span className="signal-source-badge">
+                {selectedChartSignal.source === "live" ? "Live" : "Hist."}
+              </span>
+            )}
+            <button
+              type="button"
+              className="rt-banner-btn"
+              onClick={() => onSelectChartSignal(null)}
+            >
+              Fechar
+            </button>
+          </div>
+          <p>{selectedChartSignal.rationale}</p>
+          {selectedChartSignalMatches.length > 1 && (
+            <div className="chart-signal-detail-alternates">
+              <span className="stats-label">Outros sinais nesta vela</span>
+              {selectedChartSignalMatches
+                .filter((item) => item.id !== selectedChartSignal.id)
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="config-button chart-signal-alt-btn"
+                    onClick={() => onSelectChartSignal(item)}
+                  >
+                    <span
+                      style={{
+                        color: STRATEGY_MARKER_COLORS[item.strategy] ?? "inherit",
+                      }}
+                    >
+                      {strategyLabels[item.strategy] ?? item.strategy}
+                    </span>{" "}
+                    · {item.direction} · {(item.strength * 100).toFixed(0)}%
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -148,6 +299,9 @@ export function HistoricalMarketView({
               windowSeconds={windowSeconds}
               markers={markers}
               onHoverBar={setHoverBar}
+              onChartClick={onChartSignalClick}
+              focusTimeSec={focusTimeSec}
+              focusBarsVisible={55}
             />
           )}
         </div>

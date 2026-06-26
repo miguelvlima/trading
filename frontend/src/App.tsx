@@ -13,8 +13,12 @@ import {
 } from "./market/windowCandle";
 
 import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
+import { resolveFormingBar } from "./market/formingBar";
+import { findSignalsAtChartTime } from "./market/signalMarkers";
 import { RealtimePage } from "./realtime/RealtimePage";
 import { INDICATORS, type IndicatorId } from "./realtime/indicators";
+import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
+import { useBars } from "./realtime/useBars";
 import { useTickStream } from "./realtime/useTickStream";
 
 type Instrument = {
@@ -37,6 +41,7 @@ type ApiBar = {
 
 type ViewTab = "market" | "signals" | "backtests";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
+type SignalsSourceMode = "historical" | "live";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
 
 type SignalItem = {
@@ -49,6 +54,7 @@ type SignalItem = {
   rationale: string;
   timestamp: string;
   indicator_snapshot: Record<string, number | null>;
+  source: string;
 };
 
 type StrategyContribution = {
@@ -110,6 +116,38 @@ type BacktestTrade = {
   exit_reason: string;
 };
 
+type BacktestRunInsight = {
+  id: number;
+  run_id: number;
+  narrative_summary: string;
+  timeline: Array<{
+    step: number;
+    phase: string;
+    title: string;
+    detail: string;
+    severity: string;
+  }>;
+  failure_modes: Array<{
+    code: string;
+    title: string;
+    detail: string;
+    severity: string;
+  }>;
+  lessons: Array<{
+    title: string;
+    detail: string;
+    priority: string;
+  }>;
+  recommendations: Array<{
+    area: string;
+    suggestion: string;
+    rationale: string;
+    param_hint?: string;
+  }>;
+  prior_runs_context: Record<string, unknown>;
+  created_at: string;
+};
+
 type BacktestRun = {
   id: number;
   owner_user_id: number;
@@ -132,6 +170,7 @@ type BacktestRun = {
   created_at: string;
   result_summary: Record<string, unknown>;
   trades?: BacktestTrade[];
+  insight?: BacktestRunInsight | null;
 };
 
 type BacktestPreset = {
@@ -230,10 +269,16 @@ const toUserFetchError = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ??
+  (import.meta.env.DEV ? "" : "http://localhost:8000");
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
 const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";
+const SIGNALS_SOURCE_MODE_STORAGE_KEY = "trading_signals_source_mode";
+const LIVE_SIGNALS_POLL_MS = 30_000;
+const SIGNALS_CHART_OVERLAY_STORAGE_KEY = "trading_signals_chart_overlay";
+const SIGNALS_CHART_OVERLAY_MAX = 100;
 const BACKTEST_PRESETS_STORAGE_KEY = "trading_backtest_presets";
 
 const readStoredNumber = (key: string, fallback: number, min: number, max: number): number => {
@@ -562,6 +607,17 @@ function App() {
   const [signalsFetchLimit, setSignalsFetchLimit] = useState<number>(() =>
     readStoredNumber(SIGNALS_FETCH_LIMIT_STORAGE_KEY, 500, 50, 2000),
   );
+  const [signalsSourceMode, setSignalsSourceMode] = useState<SignalsSourceMode>(() => {
+    const stored = localStorage.getItem(SIGNALS_SOURCE_MODE_STORAGE_KEY);
+    return stored === "live" ? "live" : "historical";
+  });
+  const [liveSignalIsForming, setLiveSignalIsForming] = useState(false);
+  const [pinnedSignalsOnChart, setPinnedSignalsOnChart] = useState<SignalItem[]>([]);
+  const [signalsChartOverlayEnabled, setSignalsChartOverlayEnabled] = useState<boolean>(
+    () => localStorage.getItem(SIGNALS_CHART_OVERLAY_STORAGE_KEY) === "true",
+  );
+  const [selectedChartSignal, setSelectedChartSignal] = useState<SignalItem | null>(null);
+  const [chartSignalMatches, setChartSignalMatches] = useState<SignalItem[]>([]);
   const [signalsRefreshToken, setSignalsRefreshToken] = useState(0);
   const [signalsPage, setSignalsPage] = useState(1);
   const [savedCombinations, setSavedCombinations] = useState<StrategyCombination[]>([]);
@@ -669,6 +725,21 @@ function App() {
   }, [signalsFetchLimit]);
 
   useEffect(() => {
+    localStorage.setItem(SIGNALS_SOURCE_MODE_STORAGE_KEY, signalsSourceMode);
+  }, [signalsSourceMode]);
+
+  useEffect(() => {
+    localStorage.setItem(SIGNALS_CHART_OVERLAY_STORAGE_KEY, String(signalsChartOverlayEnabled));
+  }, [signalsChartOverlayEnabled]);
+
+  const chartSignals = useMemo(() => {
+    if (signalsChartOverlayEnabled) {
+      return signals.slice(0, SIGNALS_CHART_OVERLAY_MAX);
+    }
+    return pinnedSignalsOnChart;
+  }, [signalsChartOverlayEnabled, signals, pinnedSignalsOnChart]);
+
+  useEffect(() => {
     localStorage.setItem(BACKTEST_PRESETS_STORAGE_KEY, JSON.stringify(backtestPresets));
   }, [backtestPresets]);
 
@@ -690,13 +761,27 @@ function App() {
 
   const isAuthenticated = Boolean(authToken && currentUser);
 
+  const isLiveSignals = activeTab === "signals" && signalsSourceMode === "live";
   const isLiveChart = activeTab === "market" && chartMode === "aovivo";
+  const useLiveStream = isAuthenticated && Boolean(selectedSymbol) && (isLiveChart || isLiveSignals);
+  const liveBarsLimit = periodMode === "window" ? barLimit : 5000;
 
   const { tick, indices, status: streamStatus, error: streamError } = useTickStream(
     API_BASE_URL,
     isAuthenticated ? authToken : "",
     selectedSymbol,
-    isLiveChart,
+    useLiveStream,
+  );
+
+  const { bars: liveSignalQuotes } = useBars(
+    API_BASE_URL,
+    authToken,
+    selectedSymbol,
+    selectedTimeframe,
+    chartWindow,
+    liveBarsLimit,
+    20_000,
+    isLiveSignals,
   );
 
   const [marketNowMs, setMarketNowMs] = useState(() => Date.now());
@@ -704,6 +789,17 @@ function App() {
     const timer = globalThis.setInterval(() => setMarketNowMs(Date.now()), 1000);
     return () => globalThis.clearInterval(timer);
   }, []);
+
+  const liveSignalForming = useMemo(
+    () => {
+      if (!isLiveSignals || liveSignalQuotes.length === 0) {
+        return { forming: null, isLiveForming: false };
+      }
+      const lastQuote = liveSignalQuotes[liveSignalQuotes.length - 1];
+      return resolveFormingBar(lastQuote, candle, tick, marketNowMs);
+    },
+    [isLiveSignals, liveSignalQuotes, candle, tick, marketNowMs],
+  );
 
   const followedSymbols = useMemo(() => {
     const set = new Set<string>();
@@ -787,9 +883,7 @@ function App() {
           setSelectedSymbol(payload[0].symbol);
         }
       } catch (loadError) {
-        const message =
-          loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar instrumentos.";
-        setError(message);
+        setError(toUserFetchError(loadError, "Erro inesperado ao carregar instrumentos."));
       } finally {
         setLoading(false);
       }
@@ -997,8 +1091,7 @@ function App() {
         }
         setBars((await response.json()) as ApiBar[]);
       } catch (loadError) {
-        const message = loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar velas.";
-        setError(message);
+        setError(toUserFetchError(loadError, "Erro inesperado ao carregar velas."));
       } finally {
         setLoading(false);
       }
@@ -1021,6 +1114,9 @@ function App() {
     if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setSignalsGenerating(false);
+      return;
+    }
+    if (signalsSourceMode !== "historical") {
       return;
     }
     if (hasDateFilterError) {
@@ -1075,12 +1171,123 @@ function App() {
     startDate,
     endDate,
     hasDateFilterError,
+    signalsSourceMode,
   ]);
 
   useEffect(() => {
     if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setConsensusSignals([]);
+      setSignalsGenerating(false);
+      return;
+    }
+    if (signalsSourceMode !== "live") {
+      return;
+    }
+    if (hasDateFilterError) {
+      setSignalsGenerating(false);
+      return;
+    }
+
+    let cancelled = false;
+    const evaluateLive = async () => {
+      setSignalsGenerating(true);
+      setSignalsError(null);
+      try {
+        const response = await fetch(`${API_BASE_URL}/signals/evaluate-live`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify(
+            buildLiveEvaluatePayload({
+              symbol: selectedSymbol,
+              timeframe: selectedTimeframe,
+              strategies: activeStrategies,
+              minStrength: signalMinStrengthPct / 100,
+              periodMode,
+              barLimit,
+              startDate,
+              endDate,
+              contextQuotes: liveSignalQuotes,
+              formingBar: liveSignalForming.forming,
+            }),
+          ),
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao avaliar sinais em tempo real.");
+        }
+        const payload = (await response.json()) as {
+          signals: SignalItem[];
+          is_forming_bar?: boolean;
+        };
+        if (cancelled) {
+          return;
+        }
+        setLiveSignalIsForming(Boolean(payload.is_forming_bar));
+        const filtered = payload.signals.filter((item) => {
+          if (signalDirectionFilter !== "BOTH" && item.direction !== signalDirectionFilter) {
+            return false;
+          }
+          return item.strength * 100 >= signalMinStrengthPct;
+        });
+        const sorted = [...filtered].sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+        );
+        setSignals(sorted);
+        setConsensusSignals(sorted);
+        setSignalsRefreshToken((previous) => previous + 1);
+      } catch (liveError) {
+        if (!cancelled) {
+          setSignalsError("Falha ao avaliar sinais em tempo real.");
+        }
+      } finally {
+        if (!cancelled) {
+          setSignalsGenerating(false);
+        }
+      }
+    };
+
+    const debounceId = window.setTimeout(() => {
+      void evaluateLive();
+    }, tick?.last != null ? 800 : 0);
+    const intervalId = window.setInterval(() => {
+      void evaluateLive();
+    }, LIVE_SIGNALS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(debounceId);
+      window.clearInterval(intervalId);
+    };
+  }, [
+    isAuthenticated,
+    authToken,
+    selectedSymbol,
+    selectedTimeframe,
+    activeStrategies,
+    signalsSourceMode,
+    periodMode,
+    barLimit,
+    startDate,
+    endDate,
+    hasDateFilterError,
+    signalMinStrengthPct,
+    signalDirectionFilter,
+    liveSignalQuotes,
+    liveSignalForming.forming,
+    liveSignalForming.isLiveForming,
+    tick?.last,
+  ]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
+      setSignals([]);
+      setConsensusSignals([]);
+      return;
+    }
+    if (signalsSourceMode === "live") {
       return;
     }
     if (signalsGenerating) {
@@ -1096,6 +1303,7 @@ function App() {
               timeframe: selectedTimeframe,
               strategy,
               limit: "1",
+              source: "historical",
             });
 
             const response = await fetch(`${API_BASE_URL}/signals?${query.toString()}`, {
@@ -1127,11 +1335,15 @@ function App() {
     activeStrategies,
     signalsRefreshToken,
     signalsGenerating,
+    signalsSourceMode,
   ]);
 
   useEffect(() => {
     if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
+      return;
+    }
+    if (signalsSourceMode === "live") {
       return;
     }
     if (signalsGenerating) {
@@ -1149,6 +1361,7 @@ function App() {
               strategy,
               limit: String(signalsFetchLimit),
               min_strength: String(signalMinStrengthPct / 100),
+              source: "historical",
             });
             if (signalDirectionFilter !== "BOTH") {
               query.set("direction", signalDirectionFilter);
@@ -1188,6 +1401,7 @@ function App() {
     signalsFetchLimit,
     signalsRefreshToken,
     signalsGenerating,
+    signalsSourceMode,
   ]);
 
   const signalsTotalPages = Math.max(1, Math.ceil(signals.length / SIGNALS_PAGE_SIZE));
@@ -1624,8 +1838,9 @@ function App() {
         throw new Error(parseApiError(errorPayload, "Falha ao correr backtest."));
       }
 
-      await response.json();
+      const created = (await response.json()) as BacktestRun;
       setBacktestRefreshToken((previous) => previous + 1);
+      setBacktestSelectedRun(created);
     } catch (runError) {
       setBacktestError(toUserFetchError(runError, "Erro inesperado ao correr backtest."));
     } finally {
@@ -1919,6 +2134,86 @@ function App() {
               benchmarkEnabled={benchmarkEnabled}
             />
           </div>
+        )}
+
+        {run.insight && (
+          <details className="backtest-insight-expand">
+            <summary>
+              <span>Análise crítica</span>
+              <span className="backtest-insight-expand-meta">
+                {run.insight.lessons.length} lições · {run.insight.recommendations.length} recomendações
+              </span>
+            </summary>
+            <div className="backtest-insight-body">
+              <p className="backtest-insight-summary">{run.insight.narrative_summary}</p>
+
+              {run.insight.timeline.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Cronologia</strong>
+                  <ol className="backtest-insight-timeline">
+                    {run.insight.timeline.map((item) => (
+                      <li
+                        key={`${item.step}-${item.phase}`}
+                        className={`backtest-insight-timeline-item backtest-insight-severity-${item.severity}`}
+                      >
+                        <strong>{item.title}</strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {run.insight.failure_modes.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Modos de falha</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.failure_modes.map((item) => (
+                      <li
+                        key={item.code}
+                        className={`backtest-insight-list-item backtest-insight-severity-${item.severity}`}
+                      >
+                        <strong>{item.title}</strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {run.insight.lessons.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Lições aprendidas</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.lessons.map((item) => (
+                      <li key={item.title} className="backtest-insight-list-item">
+                        <strong>
+                          {item.title}
+                          <span className="backtest-insight-priority"> · {item.priority}</span>
+                        </strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {run.insight.recommendations.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Recomendações para runs futuras</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.recommendations.map((item) => (
+                      <li key={`${item.area}-${item.suggestion}`} className="backtest-insight-list-item">
+                        <strong>{item.suggestion}</strong>
+                        <p>{item.rationale}</p>
+                        {item.param_hint && <p className="hint">Parâmetro: {item.param_hint}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
         )}
 
         {(run.trades_count > 0 || equityCurve.length > 0) && (
@@ -2225,6 +2520,63 @@ function App() {
   const handleClearBacktestTradesOnChart = () => {
     setBacktestTradesOnChart([]);
     setBacktestTradesOnChartRunId(null);
+  };
+
+  const handleClearSignalsOnChart = () => {
+    setPinnedSignalsOnChart([]);
+    setSignalsChartOverlayEnabled(false);
+    setSelectedChartSignal(null);
+    setChartSignalMatches([]);
+  };
+
+  const hasSignalsOnChart =
+    signalsChartOverlayEnabled || pinnedSignalsOnChart.length > 0;
+
+  const handleShowFilteredSignalsOnChart = () => {
+    if (signals.length === 0) {
+      return;
+    }
+    setSignalsChartOverlayEnabled(true);
+    setPinnedSignalsOnChart([]);
+    setSelectedChartSignal(null);
+    setChartSignalMatches([]);
+    setActiveTab("market");
+    setChartMode("historico");
+  };
+
+  const handleSignalsChartAction = () => {
+    if (signals.length === 0) {
+      return;
+    }
+    if (hasSignalsOnChart) {
+      setActiveTab("market");
+      setChartMode("historico");
+      return;
+    }
+    handleShowFilteredSignalsOnChart();
+  };
+
+  const handleShowSignalOnChart = (signal: SignalItem) => {
+    if (instruments.some((item) => item.symbol === signal.symbol)) {
+      setSelectedSymbol(signal.symbol);
+    }
+    setCandle(parseCandleCode(signal.timeframe));
+    setManualCandle(true);
+    setPinnedSignalsOnChart([signal]);
+    setSignalsChartOverlayEnabled(false);
+    setSelectedChartSignal(signal);
+    setChartSignalMatches([signal]);
+    setActiveTab("market");
+    setChartMode("historico");
+  };
+
+  const handleChartSignalClick = (timeSec: number) => {
+    const matches = findSignalsAtChartTime(chartSignals, timeSec) as SignalItem[];
+    if (matches.length === 0) {
+      return;
+    }
+    setChartSignalMatches(matches);
+    setSelectedChartSignal(matches[0]);
   };
 
   const handleShowBacktestTradesOnChart = async (run: BacktestRun) => {
@@ -2687,10 +3039,17 @@ function App() {
         {activeTab === "market" && (
           <MarketChartModeToggle mode={chartMode} onChange={setChartMode} />
         )}
+        {activeTab === "signals" && (
+          <MarketChartModeToggle
+            mode={signalsSourceMode === "historical" ? "historico" : "aovivo"}
+            onChange={(mode) => setSignalsSourceMode(mode === "historico" ? "historical" : "live")}
+          />
+        )}
 
         <GlobalMarketFilters
           activeTab={activeTab}
           chartMode={chartMode}
+          signalsSourceMode={signalsSourceMode}
           apiBaseUrl={API_BASE_URL}
           authToken={authToken}
           instruments={instruments}
@@ -2761,13 +3120,30 @@ function App() {
                 chartWindow={chartWindow}
                 activeIndicators={activeIndicators}
                 tradeMarkers={backtestTradesOnChart}
+                signalMarkers={chartSignals}
+                signalsOverlayEnabled={signalsChartOverlayEnabled}
+                selectedChartSignal={selectedChartSignal}
+                selectedChartSignalMatches={chartSignalMatches}
+                strategyLabels={STRATEGY_LABELS}
                 loading={loading}
                 error={error}
                 hasDateFilterError={hasDateFilterError}
                 barLimit={barLimit}
                 backtestTradesOnChartRunId={backtestTradesOnChartRunId}
                 backtestTradesCount={backtestTradesOnChart.length}
+                signalsListCount={signals.length}
                 onClearBacktestTrades={handleClearBacktestTradesOnChart}
+                onClearSignalsOnChart={handleClearSignalsOnChart}
+                onShowSignalsOnChart={handleShowFilteredSignalsOnChart}
+                onChartSignalClick={handleChartSignalClick}
+                onSelectChartSignal={(signal) => {
+                  setSelectedChartSignal(signal as SignalItem | null);
+                  if (signal) {
+                    setChartSignalMatches([signal as SignalItem]);
+                  } else {
+                    setChartSignalMatches([]);
+                  }
+                }}
               />
             ) : null}
 
@@ -2788,6 +3164,16 @@ function App() {
               <div className="signals-header">
                 <h3 className="section-title">Sinais da estratégia</h3>
               </div>
+              <p className="hint">
+                {signalsSourceMode === "historical"
+                  ? "Gera sinais sobre o período de barras seleccionado nos filtros globais."
+                  : liveSignalIsForming
+                    ? "Sinal na vela em formação (stream + ticks). Janela/datas definem o contexto dos indicadores."
+                    : "Última vela fechada na BD. Com stream IBKR activo, o sinal passa a reflectir a vela em formação."}
+              </p>
+              {signalsSourceMode === "live" && streamError && (
+                <p className="error">{streamError}</p>
+              )}
 
               {!isAuthenticated && !authChecking && (
                 <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
@@ -2954,7 +3340,32 @@ function App() {
                 <button type="button" className="config-button" onClick={handleResetSignalListFilters}>
                   Limpar filtros da lista
                 </button>
+                <button
+                  type="button"
+                  className="config-button"
+                  disabled={signals.length === 0}
+                  onClick={handleSignalsChartAction}
+                >
+                  {hasSignalsOnChart
+                    ? "Sinais visíveis no gráfico"
+                    : "Mostrar sinais no gráfico"}
+                </button>
+                {hasSignalsOnChart && (
+                  <button
+                    type="button"
+                    className="config-button"
+                    onClick={handleClearSignalsOnChart}
+                  >
+                    Ocultar do gráfico
+                  </button>
+                )}
               </div>
+              {signalsChartOverlayEnabled && (
+                <p className="hint">
+                  Até {SIGNALS_CHART_OVERLAY_MAX} sinais da lista no Mercado (histórico). Cores por
+                  estratégia.
+                </p>
+              )}
 
               <p className="hint signals-order-note">Mais recente {"->"} mais antigo.</p>
               {(signalsGenerating || signalsLoading) && <p className="hint">A atualizar sinais...</p>}
@@ -3004,8 +3415,20 @@ function App() {
                           <span>{STRATEGY_SUMMARY[signal.strategy]?.title ?? signal.strategy}</span>
                           <span>{formatDateTimeLabel(signal.timestamp)}</span>
                           <span>Força: {(signal.strength * 100).toFixed(1)}%</span>
+                          <span className="signal-source-badge">
+                            {signal.source === "live" ? "Live" : "Hist."}
+                          </span>
                         </div>
                         <p>{signal.rationale}</p>
+                      </div>
+                      <div className="signal-row-actions">
+                        <button
+                          type="button"
+                          className="config-button"
+                          onClick={() => handleShowSignalOnChart(signal)}
+                        >
+                          Ver no gráfico
+                        </button>
                       </div>
                     </article>
                   ))}

@@ -45,6 +45,10 @@ type CandleChartProps = {
   windowSeconds: number | null;
   markers?: SeriesMarker<UTCTimestamp>[];
   onHoverBar?: (bar: HoverBar | null) => void;
+  onChartClick?: (timeSec: number) => void;
+  /** When set, zooms the chart around this bar (overrides windowSeconds). */
+  focusTimeSec?: number | null;
+  focusBarsVisible?: number;
 };
 
 // Some endpoints serialize without a timezone designator; normalize the bare
@@ -60,6 +64,16 @@ function toLineData(points: LinePoint[]): LineData[] {
     .map((p) => ({ time: p.time as UTCTimestamp, value: p.value }));
 }
 
+function estimateBarPeriodSec(candles: CandlestickData[]): number {
+  if (candles.length < 2) {
+    return 86_400;
+  }
+  const prev = Number(candles[candles.length - 2].time);
+  const last = Number(candles[candles.length - 1].time);
+  const delta = last - prev;
+  return delta > 0 ? delta : 86_400;
+}
+
 export function CandleChart({
   bars,
   forming,
@@ -67,14 +81,23 @@ export function CandleChart({
   windowSeconds,
   markers = [],
   onHoverBar,
+  onChartClick,
+  focusTimeSec = null,
+  focusBarsVisible = 50,
 }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const markersRef = useRef<{
+    setMarkers: (markers: SeriesMarker<UTCTimestamp>[]) => void;
+    detach: () => void;
+  } | null>(null);
   const indicatorSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const onHoverRef = useRef<CandleChartProps["onHoverBar"]>(onHoverBar);
+  const onChartClickRef = useRef<CandleChartProps["onChartClick"]>(onChartClick);
   onHoverRef.current = onHoverBar;
+  onChartClickRef.current = onChartClick;
 
   // Create the chart once.
   useEffect(() => {
@@ -112,6 +135,7 @@ export function CandleChart({
     chartRef.current = chart;
     candleRef.current = candle;
     volumeRef.current = volume;
+    markersRef.current = createSeriesMarkers(candle, []) as NonNullable<typeof markersRef.current>;
 
     chart.subscribeCrosshairMove((param) => {
       const cb = onHoverRef.current;
@@ -132,6 +156,17 @@ export function CandleChart({
       });
     });
 
+    chart.subscribeClick((param) => {
+      const cb = onChartClickRef.current;
+      if (!cb || param.time === undefined) {
+        return;
+      }
+      const timeSec = typeof param.time === "number" ? param.time : Number(param.time);
+      if (Number.isFinite(timeSec)) {
+        cb(timeSec);
+      }
+    });
+
     const resize = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
       if (width) chart.applyOptions({ width: Math.floor(width) });
@@ -140,6 +175,8 @@ export function CandleChart({
 
     return () => {
       resize.disconnect();
+      markersRef.current?.detach();
+      markersRef.current = null;
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
@@ -147,6 +184,10 @@ export function CandleChart({
       indicatorSeriesRef.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    markersRef.current?.setMarkers(markers);
+  }, [markers]);
 
   // Full reload of candles + volume when the historical bars change.
   useEffect(() => {
@@ -178,7 +219,6 @@ export function CandleChart({
         else deduped.push(c);
       }
       candle.setData(deduped);
-      createSeriesMarkers(candle, markers);
 
       const vols: HistogramData[] = bars
         .map((b) => ({
@@ -200,8 +240,15 @@ export function CandleChart({
       // shows exactly the last hour of data), not just "fit whatever loaded".
       // "all" (null) falls back to fitting everything.
       const timeScale = chartRef.current?.timeScale();
-      if (timeScale) {
-        if (windowSeconds && deduped.length > 0) {
+      if (timeScale && deduped.length > 0) {
+        if (focusTimeSec != null) {
+          const period = estimateBarPeriodSec(deduped);
+          const halfSpan = (period * focusBarsVisible) / 2;
+          timeScale.setVisibleRange({
+            from: (focusTimeSec - halfSpan) as UTCTimestamp,
+            to: (focusTimeSec + halfSpan) as UTCTimestamp,
+          });
+        } else if (windowSeconds) {
           const end = Number(deduped[deduped.length - 1].time);
           timeScale.setVisibleRange({
             from: (end - windowSeconds) as UTCTimestamp,
@@ -214,7 +261,7 @@ export function CandleChart({
     } catch (err) {
       console.error("[Realtime] chart setData failed", err);
     }
-  }, [bars, windowSeconds, markers]);
+  }, [bars, windowSeconds, focusTimeSec, focusBarsVisible]);
 
   // Rebuild indicator series whenever the indicator set (or its data) changes.
   // Parent memoizes `indicators`, so this does not run on every live tick.

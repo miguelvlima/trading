@@ -378,6 +378,63 @@
   padding: 1px 5px;
 }
 
+.backtest-lessons-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.backtest-lesson-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rt-border);
+}
+
+.backtest-lesson-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.backtest-lesson-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.backtest-lesson-item p {
+  margin: 0 0 8px;
+  color: var(--rt-muted);
+  line-height: 1.45;
+}
+
+.backtest-lesson-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.backtest-lesson-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.backtest-lesson-priority-high strong {
+  color: var(--rt-down);
+}
+
+.backtest-lesson-priority-medium strong {
+  color: #d4a017;
+}
+
 .backtest-insight-expand {
   margin-top: 16px;
   padding: 10px 12px;

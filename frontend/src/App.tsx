@@ -116,6 +116,16 @@ type BacktestTrade = {
   exit_reason: string;
 };
 
+type BacktestLesson = {
+  title: string;
+  detail: string;
+  priority: string;
+  symbol: string;
+  strategy_names: string[];
+  run_id: number;
+  created_at: string;
+};
+
 type BacktestRunInsight = {
   id: number;
   run_id: number;
@@ -209,6 +219,31 @@ const BACKTEST_MIN_BARS = 200;
 const BACKTEST_TRADES_PAGE_SIZE = 20;
 const SIGNALS_PAGE_SIZE = 10;
 const BACKTEST_RUNS_PAGE_SIZE = 10;
+const BACKTEST_LESSONS_LIMIT = 10;
+
+const BACKTEST_LESSON_PRIORITY_RANK: Record<string, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+function sortBacktestLessons(lessons: BacktestLesson[]): BacktestLesson[] {
+  return [...lessons].sort((left, right) => {
+    const leftRank = BACKTEST_LESSON_PRIORITY_RANK[left.priority.toLowerCase()] ?? 3;
+    const rightRank = BACKTEST_LESSON_PRIORITY_RANK[right.priority.toLowerCase()] ?? 3;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  });
+}
+
+function isBacktestLessonRelevant(lesson: BacktestLesson, activeStrategies: string[]): boolean {
+  if (activeStrategies.length === 0) {
+    return false;
+  }
+  return activeStrategies.some((strategy) => lesson.strategy_names.includes(strategy));
+}
 
 const strengthLevelLabel = (pct: number): string => {
   if (pct <= 20) {
@@ -673,6 +708,8 @@ function App() {
   const [backtestRunning, setBacktestRunning] = useState(false);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
+  const [backtestLessons, setBacktestLessons] = useState<BacktestLesson[]>([]);
+  const [backtestLessonsLoading, setBacktestLessonsLoading] = useState(false);
   const [backtestRunsPage, setBacktestRunsPage] = useState(1);
   const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
   const [demoDataLoading, setDemoDataLoading] = useState(false);
@@ -1042,6 +1079,51 @@ function App() {
 
     loadBacktests();
   }, [authToken, isAuthenticated, backtestRefreshToken, selectedSymbol, selectedTimeframe]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !selectedSymbol) {
+      setBacktestLessons([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadLessons = async () => {
+      setBacktestLessonsLoading(true);
+      try {
+        const query = new URLSearchParams({
+          symbol: selectedSymbol,
+          limit: String(BACKTEST_LESSONS_LIMIT),
+        });
+        const response = await fetch(`${API_BASE_URL}/backtests/lessons?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar lições.");
+        }
+        if (!cancelled) {
+          setBacktestLessons((await response.json()) as BacktestLesson[]);
+        }
+      } catch {
+        if (!cancelled) {
+          setBacktestLessons([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setBacktestLessonsLoading(false);
+        }
+      }
+    };
+
+    void loadLessons();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, isAuthenticated, selectedSymbol, backtestRefreshToken]);
+
+  const sortedBacktestLessons = useMemo(
+    () => sortBacktestLessons(backtestLessons),
+    [backtestLessons],
+  );
 
   const backtestRunsTotalPages = Math.max(1, Math.ceil(backtestRuns.length / BACKTEST_RUNS_PAGE_SIZE));
 
@@ -2342,6 +2424,15 @@ function App() {
     }
   };
 
+  const handleViewLessonRun = async (runId: number) => {
+    setActiveTab("backtests");
+    const runIndex = backtestRuns.findIndex((run) => run.id === runId);
+    if (runIndex >= 0) {
+      setBacktestRunsPage(Math.floor(runIndex / BACKTEST_RUNS_PAGE_SIZE) + 1);
+    }
+    await handleOpenBacktestRun(runId);
+  };
+
   const handleToggleCompareRun = (runId: number) => {
     setBacktestCompareRunIds((previous) => {
       if (previous.includes(runId)) {
@@ -3508,6 +3599,54 @@ function App() {
                   </button>
                 </div>
               </section>
+
+              <details className="strategy-library-expand">
+                <summary>Lições de simulações anteriores</summary>
+                <div className="strategy-library">
+                  <p className="hint">
+                    {backtestLessonsLoading
+                      ? "A carregar lições..."
+                      : sortedBacktestLessons.length > 0
+                        ? `${sortedBacktestLessons.length} lição(ões) para ${selectedSymbol} — memória das análises críticas de runs anteriores.`
+                        : `Ainda sem lições para ${selectedSymbol} — corre uma simulação para gerar análise crítica.`}
+                  </p>
+                  {!backtestLessonsLoading && sortedBacktestLessons.length > 0 && (
+                    <ul className="backtest-lessons-list">
+                      {sortedBacktestLessons.map((lesson) => {
+                        const relevant = isBacktestLessonRelevant(lesson, activeStrategies);
+                        const strategyLabel = lesson.strategy_names
+                          .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                          .join(" · ");
+                        return (
+                          <li
+                            key={`${lesson.run_id}-${lesson.title}`}
+                            className={`backtest-lesson-item backtest-lesson-priority-${lesson.priority.toLowerCase()}`}
+                          >
+                            <div className="backtest-lesson-header">
+                              <strong>{lesson.title}</strong>
+                              {relevant && <span className="backtest-lesson-badge">Relevante</span>}
+                            </div>
+                            <p>{lesson.detail}</p>
+                            <div className="backtest-lesson-footer">
+                              <span className="hint">
+                                Run #{lesson.run_id} · {strategyLabel} ·{" "}
+                                {formatDateTimeLabel(lesson.created_at)} · {lesson.priority}
+                              </span>
+                              <button
+                                type="button"
+                                className="config-button"
+                                onClick={() => void handleViewLessonRun(lesson.run_id)}
+                              >
+                                Ver run
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </details>
 
               <details className="strategy-library-expand">
                 <summary>Presets de simulação</summary>

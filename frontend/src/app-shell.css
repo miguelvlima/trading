@@ -416,6 +416,17 @@
   flex-wrap: wrap;
 }
 
+.backtest-lesson-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.backtest-recommendation-apply-preview {
+  margin: 0 0 8px;
+}
+
 .backtest-lesson-badge {
   font-size: 10px;
   font-weight: 600;

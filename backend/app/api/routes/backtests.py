@@ -12,6 +12,7 @@ from app.db.dependencies import get_db_session
 from app.db.models import BacktestRun, BacktestRunInsight, BacktestTrade, Instrument, MarketBar, User
 from app.schemas.backtests import (
     BacktestLessonResponse,
+    BacktestRecommendationResponse,
     BacktestRunDetailResponse,
     BacktestRunInsightResponse,
     BacktestRunRequest,
@@ -235,6 +236,51 @@ def list_backtest_lessons(
             if len(lessons) >= limit:
                 return lessons
     return lessons
+
+
+@router.get("/recommendations", response_model=list[BacktestRecommendationResponse])
+def list_backtest_recommendations(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> list[BacktestRecommendationResponse]:
+    query = (
+        select(BacktestRunInsight)
+        .where(BacktestRunInsight.owner_user_id == current_user.id)
+        .order_by(BacktestRunInsight.created_at.desc())
+        .limit(limit * 3)
+    )
+    if symbol:
+        query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+
+    insights = db.execute(query).scalars().all()
+    recommendations: list[BacktestRecommendationResponse] = []
+    for insight in insights:
+        for item in insight.recommendations:
+            if not isinstance(item, dict):
+                continue
+            area = item.get("area")
+            suggestion = item.get("suggestion")
+            rationale = item.get("rationale")
+            if not isinstance(area, str) or not isinstance(suggestion, str) or not isinstance(rationale, str):
+                continue
+            param_hint = item.get("param_hint")
+            recommendations.append(
+                BacktestRecommendationResponse(
+                    area=area,
+                    suggestion=suggestion,
+                    rationale=rationale,
+                    param_hint=str(param_hint) if param_hint is not None else None,
+                    symbol=insight.symbol,
+                    strategy_names=insight.strategy_names,
+                    run_id=insight.run_id,
+                    created_at=insight.created_at,
+                )
+            )
+            if len(recommendations) >= limit:
+                return recommendations
+    return recommendations
 
 
 @router.get("/{run_id}/export")

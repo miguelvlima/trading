@@ -106,3 +106,14 @@ class BacktestLessonResponse(BaseModel):
     strategy_names: list[str]
     run_id: int
     created_at: datetime
+
+
+class BacktestRecommendationResponse(BaseModel):
+    area: str
+    suggestion: str
+    rationale: str
+    param_hint: str | None = None
+    symbol: str
+    strategy_names: list[str]
+    run_id: int
+    created_at: datetime

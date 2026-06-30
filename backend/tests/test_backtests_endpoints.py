@@ -137,6 +137,13 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
     assert lessons.status_code == 200
     assert len(lessons.json()) >= 1
 
+    recommendations = client.get(
+        "/backtests/recommendations",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert recommendations.status_code == 200
+    assert isinstance(recommendations.json(), list)
+
     export_trades = client.get(
         f"/backtests/{run_id}/export?type=trades",
         headers={"Authorization": f"Bearer {owner_token}"},

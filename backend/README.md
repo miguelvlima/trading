@@ -13,6 +13,8 @@ Consulte o guia completo para trabalho em paralelo (prompt-first):
 
 Spec da frente real-time (Nuno):
 - `../docs/realtime-data-feed-spec.md`
+- Plano funcional Backtesting/Simulação:
+- `../docs/backtesting-phase-plan.md`
 
 Templates de ambiente:
 - local: `backend/.env.example`

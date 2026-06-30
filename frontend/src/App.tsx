@@ -18,6 +18,12 @@ import { findSignalsAtChartTime } from "./market/signalMarkers";
 import { RealtimePage } from "./realtime/RealtimePage";
 import { INDICATORS, type IndicatorId } from "./realtime/indicators";
 import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
+import {
+  applyRecommendation,
+  buildRecommendationApplyPreview,
+  type BacktestFormSnapshot,
+  type BacktestRecommendation,
+} from "./backtests/recommendationApply";
 import { useBars } from "./realtime/useBars";
 import { useTickStream } from "./realtime/useTickStream";
 
@@ -220,6 +226,7 @@ const BACKTEST_TRADES_PAGE_SIZE = 20;
 const SIGNALS_PAGE_SIZE = 10;
 const BACKTEST_RUNS_PAGE_SIZE = 10;
 const BACKTEST_LESSONS_LIMIT = 10;
+const BACKTEST_RECOMMENDATIONS_LIMIT = 10;
 
 const BACKTEST_LESSON_PRIORITY_RANK: Record<string, number> = {
   high: 0,
@@ -710,6 +717,10 @@ function App() {
   const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
   const [backtestLessons, setBacktestLessons] = useState<BacktestLesson[]>([]);
   const [backtestLessonsLoading, setBacktestLessonsLoading] = useState(false);
+  const [backtestRecommendations, setBacktestRecommendations] = useState<BacktestRecommendation[]>(
+    [],
+  );
+  const [backtestRecommendationsLoading, setBacktestRecommendationsLoading] = useState(false);
   const [backtestRunsPage, setBacktestRunsPage] = useState(1);
   const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
   const [demoDataLoading, setDemoDataLoading] = useState(false);
@@ -1120,9 +1131,70 @@ function App() {
     };
   }, [authToken, isAuthenticated, selectedSymbol, backtestRefreshToken]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !selectedSymbol) {
+      setBacktestRecommendations([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadRecommendations = async () => {
+      setBacktestRecommendationsLoading(true);
+      try {
+        const query = new URLSearchParams({
+          symbol: selectedSymbol,
+          limit: String(BACKTEST_RECOMMENDATIONS_LIMIT),
+        });
+        const response = await fetch(`${API_BASE_URL}/backtests/recommendations?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar recomendações.");
+        }
+        if (!cancelled) {
+          setBacktestRecommendations((await response.json()) as BacktestRecommendation[]);
+        }
+      } catch {
+        if (!cancelled) {
+          setBacktestRecommendations([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setBacktestRecommendationsLoading(false);
+        }
+      }
+    };
+
+    void loadRecommendations();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, isAuthenticated, selectedSymbol, backtestRefreshToken]);
+
   const sortedBacktestLessons = useMemo(
     () => sortBacktestLessons(backtestLessons),
     [backtestLessons],
+  );
+
+  const backtestFormSnapshot = useMemo(
+    (): BacktestFormSnapshot => ({
+      exitMode: backtestExitMode,
+      stopLossPct: backtestStopLossPct,
+      takeProfitPct: backtestTakeProfitPct,
+      consensusStrengthPct: backtestConsensusStrengthPct,
+      entryConfirmationBars: backtestEntryConfirmationBars,
+      activeStrategies: [...activeStrategies],
+      strategyMinStrengthPct: { ...backtestStrategyMinStrengthPct },
+    }),
+    [
+      backtestExitMode,
+      backtestStopLossPct,
+      backtestTakeProfitPct,
+      backtestConsensusStrengthPct,
+      backtestEntryConfirmationBars,
+      activeStrategies,
+      backtestStrategyMinStrengthPct,
+    ],
   );
 
   const backtestRunsTotalPages = Math.max(1, Math.ceil(backtestRuns.length / BACKTEST_RUNS_PAGE_SIZE));
@@ -2433,6 +2505,33 @@ function App() {
     await handleOpenBacktestRun(runId);
   };
 
+  const handleApplyRecommendation = (recommendation: BacktestRecommendation) => {
+    const previews = buildRecommendationApplyPreview(recommendation, backtestFormSnapshot);
+    if (previews.length === 0) {
+      setBacktestError("Esta sugestão não tem parâmetros aplicáveis na configuração actual.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Aplicar sugestão do run #${recommendation.run_id}?\n\n${recommendation.suggestion}\n\n${previews.join("\n")}`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    const applied = applyRecommendation(recommendation, backtestFormSnapshot, {
+      setExitMode: setBacktestExitMode,
+      setStopLossPct: setBacktestStopLossPct,
+      setTakeProfitPct: setBacktestTakeProfitPct,
+      setConsensusStrengthPct: setBacktestConsensusStrengthPct,
+      setEntryConfirmationBars: setBacktestEntryConfirmationBars,
+      setStrategyMinStrengthPct: setBacktestStrategyMinStrengthPct,
+    });
+    if (!applied) {
+      setBacktestError("Não foi possível aplicar a sugestão com os valores actuais.");
+      return;
+    }
+    setBacktestError(null);
+  };
+
   const handleToggleCompareRun = (runId: number) => {
     setBacktestCompareRunIds((previous) => {
       if (previous.includes(runId)) {
@@ -3639,6 +3738,76 @@ function App() {
                               >
                                 Ver run
                               </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </details>
+
+              <details className="strategy-library-expand">
+                <summary>Recomendações para o próximo run</summary>
+                <div className="strategy-library">
+                  <p className="hint">
+                    {backtestRecommendationsLoading
+                      ? "A carregar recomendações..."
+                      : backtestRecommendations.length > 0
+                        ? `${backtestRecommendations.length} sugestão(ões) para ${selectedSymbol} — baseadas em runs anteriores.`
+                        : `Ainda sem recomendações para ${selectedSymbol}.`}
+                  </p>
+                  {!backtestRecommendationsLoading && backtestRecommendations.length > 0 && (
+                    <ul className="backtest-lessons-list">
+                      {backtestRecommendations.map((recommendation) => {
+                        const applyPreviews = buildRecommendationApplyPreview(
+                          recommendation,
+                          backtestFormSnapshot,
+                        );
+                        const canApply = applyPreviews.length > 0;
+                        const strategyLabel = recommendation.strategy_names
+                          .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                          .join(" · ");
+                        return (
+                          <li
+                            key={`${recommendation.run_id}-${recommendation.area}-${recommendation.suggestion}`}
+                            className="backtest-lesson-item"
+                          >
+                            <div className="backtest-lesson-header">
+                              <strong>{recommendation.suggestion}</strong>
+                              {recommendation.param_hint && (
+                                <span className="backtest-lesson-badge">{recommendation.param_hint}</span>
+                              )}
+                            </div>
+                            <p>{recommendation.rationale}</p>
+                            {canApply && (
+                              <p className="hint backtest-recommendation-apply-preview">
+                                Aplicar: {applyPreviews.join(" · ")}
+                              </p>
+                            )}
+                            <div className="backtest-lesson-footer">
+                              <span className="hint">
+                                Run #{recommendation.run_id} · {strategyLabel} ·{" "}
+                                {formatDateTimeLabel(recommendation.created_at)}
+                              </span>
+                              <div className="backtest-lesson-actions">
+                                {canApply && (
+                                  <button
+                                    type="button"
+                                    className="tab-button"
+                                    onClick={() => handleApplyRecommendation(recommendation)}
+                                  >
+                                    Aplicar sugestão
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="config-button"
+                                  onClick={() => void handleViewLessonRun(recommendation.run_id)}
+                                >
+                                  Ver run
+                                </button>
+                              </div>
                             </div>
                           </li>
                         );

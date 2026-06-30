@@ -9,6 +9,7 @@ Guia operacional completo:
 
 Specs de frentes paralelas (AI agents):
 - Real-time data feed: `docs/realtime-data-feed-spec.md`
+- Plano Backtesting/Simulação: `docs/backtesting-phase-plan.md`
 
 Convenção de branches:
 - `main`: produção
@@ -54,6 +55,19 @@ CI:
 - `POST /backtests/run` corre simulação histórica e persiste resultado
 - `GET /backtests` lista backtests do utilizador autenticado
 - Dashboard com gráfico, overlays e painel de sinais explicados
+
+## Próxima fase prioritária (Fase 5)
+
+Backtesting/Simulação é funcionalidade essencial do produto e será a próxima fase de implementação.
+
+Escopo da Fase 5:
+- definir estratégia + ativo + intervalo temporal de teste,
+- simular execução de ordens com regras explícitas (entrada/saída/risco),
+- gerar métricas de resultado (PnL, win rate, drawdown, equity curve),
+- disponibilizar API + UI para correr e analisar backtests.
+
+Detalhe do plano:
+- `docs/backtesting-phase-plan.md`
 
 ## Como arrancar
 

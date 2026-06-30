@@ -10,6 +10,14 @@ class InstrumentResponse(BaseModel):
     name: str | None = None
     exchange: str | None = None
     currency: str
+    followed: bool = True
+
+
+class InstrumentFollowRequest(BaseModel):
+    """Optional body for the follow endpoint: a display name to store when the
+    instrument is created for the first time."""
+
+    name: str | None = Field(default=None, max_length=255)
 
 
 class MarketBarResponse(BaseModel):
@@ -34,6 +42,22 @@ class CsvImportResponse(BaseModel):
     symbol: str
     timeframe: str
     imported_rows: int
+
+
+class LoadDemoDataRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=8)
+    period: str = Field(default="2y", min_length=2, max_length=8)
+    include_weekly: bool = False
+
+
+class LoadDemoSymbolResult(BaseModel):
+    symbol: str
+    imported_rows_1d: int
+    imported_rows_1w: int
+
+
+class LoadDemoDataResponse(BaseModel):
+    results: list[LoadDemoSymbolResult]
 
 
 class IndicatorRowResponse(BaseModel):

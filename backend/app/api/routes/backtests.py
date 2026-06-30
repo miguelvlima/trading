@@ -1,0 +1,571 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from app.api.dependencies.auth import get_current_user
+from app.db.dependencies import get_db_session
+from app.db.models import BacktestRun, BacktestRunInsight, BacktestTrade, Instrument, MarketBar, User
+from app.schemas.backtests import (
+    BacktestLessonResponse,
+    BacktestRecommendationResponse,
+    BacktestRunDetailResponse,
+    BacktestRunInsightResponse,
+    BacktestRunRequest,
+    BacktestRunSummaryResponse,
+    BacktestTradeResponse,
+)
+from app.services.backtest_engine import (
+    BacktestConfig,
+    aggregate_signals,
+    run_backtest_with_walkforward,
+)
+from app.services.backtest_export import render_equity_csv, render_trades_csv
+from app.services.backtest_insight_engine import PriorRunSnapshot, build_backtest_insight
+from app.services.strategy_engine import BarInput, get_available_strategies, run_strategy
+
+router = APIRouter(prefix="/backtests", tags=["backtests"])
+
+
+def _to_trade_response(item: BacktestTrade) -> BacktestTradeResponse:
+    return BacktestTradeResponse(
+        id=item.id,
+        direction=item.direction,
+        entry_timestamp=item.entry_timestamp,
+        exit_timestamp=item.exit_timestamp,
+        entry_price=float(item.entry_price),
+        exit_price=float(item.exit_price),
+        quantity=float(item.quantity),
+        gross_pnl=float(item.gross_pnl),
+        fee_paid=float(item.fee_paid),
+        net_pnl=float(item.net_pnl),
+        return_pct=float(item.return_pct),
+        bars_held=item.bars_held,
+        entry_reason=item.entry_reason,
+        exit_reason=item.exit_reason,
+    )
+
+
+def _to_insight_response(item: BacktestRunInsight) -> BacktestRunInsightResponse:
+    return BacktestRunInsightResponse(
+        id=item.id,
+        run_id=item.run_id,
+        narrative_summary=item.narrative_summary,
+        timeline=item.timeline,
+        failure_modes=item.failure_modes,
+        lessons=item.lessons,
+        recommendations=item.recommendations,
+        prior_runs_context=item.prior_runs_context,
+        created_at=item.created_at,
+    )
+
+
+def _to_run_detail(
+    run: BacktestRun,
+    trades: list[BacktestTrade],
+    insight: BacktestRunInsight | None = None,
+) -> BacktestRunDetailResponse:
+    return BacktestRunDetailResponse(
+        **_to_run_summary(run).model_dump(),
+        trades=[_to_trade_response(item) for item in trades],
+        insight=_to_insight_response(insight) if insight is not None else None,
+    )
+
+
+def _fetch_prior_run_snapshots(
+    db: Session,
+    *,
+    owner_user_id: int,
+    symbol: str,
+    exclude_run_id: int,
+    limit: int = 5,
+) -> list[PriorRunSnapshot]:
+    rows = db.execute(
+        select(BacktestRun)
+        .where(
+            BacktestRun.owner_user_id == owner_user_id,
+            BacktestRun.symbol == symbol,
+            BacktestRun.id != exclude_run_id,
+        )
+        .order_by(BacktestRun.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    return [
+        PriorRunSnapshot(
+            run_id=item.id,
+            created_at=item.created_at,
+            net_pnl_pct=float(item.net_pnl_pct),
+            win_rate=float(item.win_rate),
+            profit_factor=float(item.profit_factor),
+            trades_count=item.trades_count,
+        )
+        for item in rows
+    ]
+
+
+def _persist_run_insight(
+    db: Session,
+    *,
+    run_model: BacktestRun,
+    strategies: list[str],
+    output_metrics: object,
+    trade_models: list[BacktestTrade],
+    result_summary: dict[str, object],
+    owner_user_id: int,
+) -> BacktestRunInsight:
+    config_block = result_summary.get("config")
+    config = config_block if isinstance(config_block, dict) else {}
+    prior_runs = _fetch_prior_run_snapshots(
+        db,
+        owner_user_id=owner_user_id,
+        symbol=run_model.symbol,
+        exclude_run_id=run_model.id,
+    )
+    insight_payload = build_backtest_insight(
+        symbol=run_model.symbol,
+        timeframe=run_model.timeframe,
+        strategy_names=strategies,
+        metrics=output_metrics,
+        trades=trade_models,
+        result_summary=result_summary,
+        config=config,
+        prior_runs=prior_runs,
+    )
+    insight_model = BacktestRunInsight(
+        run_id=run_model.id,
+        owner_user_id=owner_user_id,
+        symbol=run_model.symbol,
+        timeframe=run_model.timeframe,
+        strategy_names=strategies,
+        narrative_summary=insight_payload.narrative_summary,
+        timeline=insight_payload.timeline,
+        failure_modes=insight_payload.failure_modes,
+        lessons=insight_payload.lessons,
+        recommendations=insight_payload.recommendations,
+        prior_runs_context=insight_payload.prior_runs_context,
+        created_at=datetime.now(UTC),
+    )
+    db.add(insight_model)
+    return insight_model
+
+
+def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
+    return BacktestRunSummaryResponse(
+        id=item.id,
+        owner_user_id=item.owner_user_id,
+        symbol=item.symbol,
+        timeframe=item.timeframe,
+        strategy_names=item.strategy_names,
+        start_at=item.start_at,
+        end_at=item.end_at,
+        initial_capital=float(item.initial_capital),
+        fee_bps=float(item.fee_bps),
+        slippage_bps=float(item.slippage_bps),
+        min_signal_strength=float(item.min_signal_strength),
+        bars_processed=item.bars_processed,
+        trades_count=item.trades_count,
+        net_pnl=float(item.net_pnl),
+        net_pnl_pct=float(item.net_pnl_pct),
+        win_rate=float(item.win_rate),
+        profit_factor=float(item.profit_factor),
+        max_drawdown_pct=float(item.max_drawdown_pct),
+        created_at=item.created_at,
+        result_summary=item.result_summary,
+    )
+
+
+@router.get("", response_model=list[BacktestRunSummaryResponse])
+def list_backtests(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    timeframe: str | None = Query(default=None, min_length=1, max_length=16),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> list[BacktestRunSummaryResponse]:
+    query = select(BacktestRun).where(BacktestRun.owner_user_id == current_user.id)
+    if symbol:
+        query = query.where(BacktestRun.symbol == symbol.upper().strip())
+    if timeframe:
+        query = query.where(BacktestRun.timeframe == timeframe)
+    rows = db.execute(query.order_by(BacktestRun.created_at.desc()).limit(limit)).scalars().all()
+    return [_to_run_summary(item) for item in rows]
+
+
+@router.get("/lessons", response_model=list[BacktestLessonResponse])
+def list_backtest_lessons(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> list[BacktestLessonResponse]:
+    query = (
+        select(BacktestRunInsight)
+        .where(BacktestRunInsight.owner_user_id == current_user.id)
+        .order_by(BacktestRunInsight.created_at.desc())
+        .limit(limit * 3)
+    )
+    if symbol:
+        query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+
+    insights = db.execute(query).scalars().all()
+    lessons: list[BacktestLessonResponse] = []
+    for insight in insights:
+        for lesson in insight.lessons:
+            if not isinstance(lesson, dict):
+                continue
+            title = lesson.get("title")
+            detail = lesson.get("detail")
+            priority = lesson.get("priority")
+            if not isinstance(title, str) or not isinstance(detail, str):
+                continue
+            lessons.append(
+                BacktestLessonResponse(
+                    title=title,
+                    detail=detail,
+                    priority=str(priority) if priority is not None else "medium",
+                    symbol=insight.symbol,
+                    strategy_names=insight.strategy_names,
+                    run_id=insight.run_id,
+                    created_at=insight.created_at,
+                )
+            )
+            if len(lessons) >= limit:
+                return lessons
+    return lessons
+
+
+@router.get("/recommendations", response_model=list[BacktestRecommendationResponse])
+def list_backtest_recommendations(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> list[BacktestRecommendationResponse]:
+    query = (
+        select(BacktestRunInsight)
+        .where(BacktestRunInsight.owner_user_id == current_user.id)
+        .order_by(BacktestRunInsight.created_at.desc())
+        .limit(limit * 3)
+    )
+    if symbol:
+        query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+
+    insights = db.execute(query).scalars().all()
+    recommendations: list[BacktestRecommendationResponse] = []
+    for insight in insights:
+        for item in insight.recommendations:
+            if not isinstance(item, dict):
+                continue
+            area = item.get("area")
+            suggestion = item.get("suggestion")
+            rationale = item.get("rationale")
+            if not isinstance(area, str) or not isinstance(suggestion, str) or not isinstance(rationale, str):
+                continue
+            param_hint = item.get("param_hint")
+            recommendations.append(
+                BacktestRecommendationResponse(
+                    area=area,
+                    suggestion=suggestion,
+                    rationale=rationale,
+                    param_hint=str(param_hint) if param_hint is not None else None,
+                    symbol=insight.symbol,
+                    strategy_names=insight.strategy_names,
+                    run_id=insight.run_id,
+                    created_at=insight.created_at,
+                )
+            )
+            if len(recommendations) >= limit:
+                return recommendations
+    return recommendations
+
+
+@router.get("/{run_id}/export")
+def export_backtest_run(
+    run_id: int,
+    export_type: Literal["trades", "equity"] = Query(alias="type"),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    run = db.execute(
+        select(BacktestRun).where(
+            BacktestRun.id == run_id,
+            BacktestRun.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backtest run not found.")
+
+    if export_type == "trades":
+        trades = db.execute(
+            select(BacktestTrade)
+            .where(BacktestTrade.run_id == run.id)
+            .order_by(BacktestTrade.entry_timestamp.asc())
+        ).scalars().all()
+        trade_rows = [
+            {
+                "direction": item.direction,
+                "entry_timestamp": item.entry_timestamp,
+                "exit_timestamp": item.exit_timestamp,
+                "entry_price": float(item.entry_price),
+                "exit_price": float(item.exit_price),
+                "quantity": float(item.quantity),
+                "gross_pnl": float(item.gross_pnl),
+                "fee_paid": float(item.fee_paid),
+                "net_pnl": float(item.net_pnl),
+                "return_pct": float(item.return_pct),
+                "bars_held": item.bars_held,
+                "entry_reason": item.entry_reason,
+                "exit_reason": item.exit_reason,
+            }
+            for item in trades
+        ]
+        csv_content = render_trades_csv(trade_rows)
+        filename = f"backtest_{run_id}_trades.csv"
+    else:
+        summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+        equity_curve = summary.get("equity_curve")
+        if not isinstance(equity_curve, list):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Equity curve not available for this run.",
+            )
+        csv_content = render_equity_csv(equity_curve)
+        filename = f"backtest_{run_id}_equity.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{run_id}", response_model=BacktestRunDetailResponse)
+def get_backtest_run(
+    run_id: int,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> BacktestRunDetailResponse:
+    run = db.execute(
+        select(BacktestRun)
+        .options(joinedload(BacktestRun.insight))
+        .where(
+            BacktestRun.id == run_id,
+            BacktestRun.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backtest run not found.")
+    trades = db.execute(
+        select(BacktestTrade)
+        .where(BacktestTrade.run_id == run.id)
+        .order_by(BacktestTrade.entry_timestamp.asc())
+    ).scalars().all()
+    return _to_run_detail(run, trades, run.insight)
+
+
+@router.post("/run", response_model=BacktestRunDetailResponse, status_code=status.HTTP_201_CREATED)
+def run_backtest_simulation(
+    payload: BacktestRunRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> BacktestRunDetailResponse:
+    symbol = payload.symbol.upper().strip()
+    strategies = sorted({name.strip() for name in payload.strategies if name.strip()})
+    if not strategies:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one strategy is required.")
+
+    available_strategies = set(get_available_strategies())
+    invalid = sorted(name for name in strategies if name not in available_strategies)
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown strategies: {', '.join(invalid)}",
+        )
+
+    instrument = db.execute(select(Instrument).where(Instrument.symbol == symbol)).scalar_one_or_none()
+    if instrument is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Instrument not found: {symbol}")
+
+    bar_query = select(MarketBar).where(
+        MarketBar.instrument_id == instrument.id,
+        MarketBar.timeframe == payload.timeframe,
+    )
+    if payload.start is not None:
+        bar_query = bar_query.where(MarketBar.timestamp >= payload.start)
+    if payload.end is not None:
+        bar_query = bar_query.where(MarketBar.timestamp <= payload.end)
+    bars = db.execute(bar_query.order_by(MarketBar.timestamp.asc()).limit(payload.limit)).scalars().all()
+    strategy_bars = [
+        BarInput(
+            timestamp=bar.timestamp,
+            open=float(bar.open),
+            high=float(bar.high),
+            low=float(bar.low),
+            close=float(bar.close),
+            volume=float(bar.volume),
+        )
+        for bar in bars
+    ]
+
+    per_strategy_signals: dict[str, list[tuple]] = {}
+    for strategy_name in strategies:
+        strategy_signals = run_strategy(strategy_name, symbol=symbol, bars=strategy_bars)
+        per_strategy_signals[strategy_name] = [
+            (item.timestamp, item.direction, item.strength) for item in strategy_signals
+        ]
+
+    aggregated = aggregate_signals(
+        per_strategy=per_strategy_signals,
+        min_signal_strength=payload.min_signal_strength,
+        strategy_min_strengths=payload.strategy_min_strengths,
+        min_consensus_strength=payload.min_consensus_strength,
+    )
+    if payload.exit_mode in {"tp_sl_or_opposite", "tp_sl_only"} and (
+        payload.stop_loss_pct is None and payload.take_profit_pct is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Configure stop-loss or take-profit when using TP/SL exit modes.",
+        )
+
+    config = BacktestConfig(
+        initial_capital=payload.initial_capital,
+        fee_bps=payload.fee_bps,
+        fee_model=payload.fee_model,
+        slippage_bps=payload.slippage_bps,
+        position_size_pct=payload.position_size_pct,
+        position_sizing_model=payload.position_sizing_model,
+        risk_per_trade_pct=payload.risk_per_trade_pct,
+        entry_confirmation_bars=payload.entry_confirmation_bars,
+        execution_timing=payload.execution_timing,
+        exit_mode=payload.exit_mode,
+        stop_loss_pct=payload.stop_loss_pct,
+        take_profit_pct=payload.take_profit_pct,
+        max_bars_in_trade=payload.max_bars_in_trade,
+        benchmark_enabled=payload.benchmark_enabled,
+        slippage_model=payload.slippage_model,
+    )
+    output = run_backtest_with_walkforward(
+        bars=strategy_bars,
+        aggregated_signals=aggregated,
+        config=config,
+        split_pct=payload.walkforward_split_pct,
+        walkforward_mode=payload.walkforward_mode,
+        walkforward_folds=payload.walkforward_folds,
+    )
+
+    run_model = BacktestRun(
+        owner_user_id=current_user.id,
+        instrument_id=instrument.id,
+        symbol=symbol,
+        timeframe=payload.timeframe,
+        strategy_names=strategies,
+        start_at=payload.start,
+        end_at=payload.end,
+        initial_capital=Decimal(f"{payload.initial_capital:.8f}"),
+        fee_bps=Decimal(f"{payload.fee_bps:.4f}"),
+        slippage_bps=Decimal(f"{payload.slippage_bps:.4f}"),
+        min_signal_strength=Decimal(f"{payload.min_signal_strength:.5f}"),
+        bars_processed=output.metrics.bars_processed,
+        trades_count=output.metrics.trades_count,
+        net_pnl=Decimal(f"{output.metrics.net_pnl:.8f}"),
+        net_pnl_pct=Decimal(f"{output.metrics.net_pnl_pct:.6f}"),
+        win_rate=Decimal(f"{output.metrics.win_rate:.6f}"),
+        profit_factor=Decimal(f"{output.metrics.profit_factor:.8f}"),
+        max_drawdown_pct=Decimal(f"{output.metrics.max_drawdown_pct:.6f}"),
+        result_summary={
+            **output.summary,
+            "config": {
+                **(output.summary.get("config") if isinstance(output.summary.get("config"), dict) else {}),
+                "strategies": strategies,
+                "fee_bps": payload.fee_bps,
+                "fee_model": payload.fee_model,
+                "slippage_bps": payload.slippage_bps,
+                "slippage_model": payload.slippage_model,
+                "initial_capital": payload.initial_capital,
+                "limit": payload.limit,
+                "walkforward_split_pct": payload.walkforward_split_pct,
+                "walkforward_mode": payload.walkforward_mode,
+                "walkforward_folds": payload.walkforward_folds,
+                "strategy_min_strengths": payload.strategy_min_strengths,
+                "min_consensus_strength": payload.min_consensus_strength
+                if payload.min_consensus_strength is not None
+                else payload.min_signal_strength,
+                "position_size_pct": payload.position_size_pct,
+                "position_sizing_model": payload.position_sizing_model,
+                "risk_per_trade_pct": payload.risk_per_trade_pct,
+                "entry_confirmation_bars": payload.entry_confirmation_bars,
+                "execution_timing": payload.execution_timing,
+                "exit_mode": payload.exit_mode,
+                "stop_loss_pct": payload.stop_loss_pct,
+                "take_profit_pct": payload.take_profit_pct,
+                "max_bars_in_trade": payload.max_bars_in_trade,
+                "benchmark_enabled": payload.benchmark_enabled,
+            },
+        },
+    )
+    db.add(run_model)
+    db.flush()
+
+    trade_models: list[BacktestTrade] = []
+    for trade in output.trades:
+        model = BacktestTrade(
+            run_id=run_model.id,
+            direction=trade.direction,
+            entry_timestamp=trade.entry_timestamp,
+            exit_timestamp=trade.exit_timestamp,
+            entry_price=Decimal(f"{trade.entry_price:.8f}"),
+            exit_price=Decimal(f"{trade.exit_price:.8f}"),
+            quantity=Decimal(f"{trade.quantity:.8f}"),
+            gross_pnl=Decimal(f"{trade.gross_pnl:.8f}"),
+            fee_paid=Decimal(f"{trade.fee_paid:.8f}"),
+            net_pnl=Decimal(f"{trade.net_pnl:.8f}"),
+            return_pct=Decimal(f"{trade.return_pct:.6f}"),
+            bars_held=trade.bars_held,
+            entry_reason=trade.entry_reason[:512],
+            exit_reason=trade.exit_reason[:512],
+        )
+        db.add(model)
+        trade_models.append(model)
+
+    result_summary = run_model.result_summary if isinstance(run_model.result_summary, dict) else {}
+
+    insight_model = _persist_run_insight(
+        db,
+        run_model=run_model,
+        strategies=strategies,
+        output_metrics=output.metrics,
+        trade_models=trade_models,
+        result_summary=result_summary,
+        owner_user_id=current_user.id,
+    )
+
+    db.commit()
+    db.refresh(run_model)
+    for model in trade_models:
+        db.refresh(model)
+    db.refresh(insight_model)
+
+    return _to_run_detail(run_model, trade_models, insight_model)
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_backtest_run(
+    run_id: int,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    run = db.execute(
+        select(BacktestRun).where(
+            BacktestRun.id == run_id,
+            BacktestRun.owner_user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Backtest run not found.")
+    db.delete(run)
+    db.commit()

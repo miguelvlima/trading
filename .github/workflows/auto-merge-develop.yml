@@ -1,0 +1,85 @@
+name: Auto merge to develop
+
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  try-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            async function findOpenPrForBranch(headBranch) {
+              const { data: prs } = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: "open",
+                head: `${owner}:${headBranch}`,
+              });
+              return prs[0] ?? null;
+            }
+
+            let pr = context.payload.pull_request ?? null;
+            if (!pr && context.eventName === "workflow_run") {
+              const branch = context.payload.workflow_run.head_branch;
+              if (!branch) {
+                return;
+              }
+              pr = await findOpenPrForBranch(branch);
+            }
+            if (!pr || pr.base.ref !== "develop") {
+              return;
+            }
+
+            const { data: fullPr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pr.number,
+            });
+            if (fullPr.merged || fullPr.state !== "open") {
+              return;
+            }
+
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number: fullPr.number,
+            });
+            const hasNonAuthorApproval = reviews.some(
+              (review) => review.state === "APPROVED" && review.user.login !== fullPr.user.login,
+            );
+            if (!hasNonAuthorApproval) {
+              core.info(`PR #${fullPr.number} waiting for non-author approval.`);
+              return;
+            }
+
+            try {
+              await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: fullPr.number,
+                merge_method: "merge",
+              });
+              core.info(`Merged PR #${fullPr.number}.`);
+              await github.rest.git
+                .deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${fullPr.head.ref}`,
+                })
+                .catch(() => undefined);
+            } catch (error) {
+              core.info(`Merge not ready for PR #${fullPr.number}: ${error.message}`);
+            }

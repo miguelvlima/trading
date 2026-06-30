@@ -1,0 +1,50 @@
+/* Scoped additions for the global filter block (reuses rt-* tokens from realtime.css). */
+
+.mkt-chart-mode-bar {
+  margin-bottom: 12px;
+}
+
+.mkt-chart-mode-seg {
+  display: inline-flex;
+}
+
+.mkt-chart-mode-seg button {
+  min-width: 96px;
+  padding: 8px 18px;
+  font-size: 12px;
+}
+
+.mkt-global-filters {
+  margin-bottom: 0.75rem;
+  gap: 10px;
+}
+
+.mkt-global-filters.rt-page {
+  gap: 10px;
+}
+
+.mkt-tab-pane {
+  margin-top: 0;
+}
+
+.mkt-date-row {
+  align-items: flex-end;
+}
+
+.mkt-date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--rt-faint);
+}
+
+.mkt-date-field input {
+  background: var(--rt-panel-2);
+  border: 1px solid var(--rt-border);
+  border-radius: 8px;
+  color: var(--rt-text);
+  font-family: var(--rt-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+}

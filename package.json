@@ -5,7 +5,7 @@
   "scripts": {
     "dev:db": "docker compose up -d postgres",
     "dev:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-backend.ps1",
-    "dev:frontend": "npm --prefix frontend run dev -- --host 0.0.0.0 --port 5173",
+    "dev:frontend": "npm --prefix frontend run dev",
     "dev:all": "npm run dev:db && concurrently -k -n BACKEND,FRONTEND -c cyan,magenta \"npm run dev:backend\" \"npm run dev:frontend\""
   },
   "devDependencies": {

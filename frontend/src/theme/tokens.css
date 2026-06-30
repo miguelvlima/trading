@@ -1,0 +1,21 @@
+/* Design tokens shared by Realtime charts and the app shell. */
+:root {
+  --rt-bg: #0a0e17;
+  --rt-panel: #0f1521;
+  --rt-panel-2: #141b2a;
+  --rt-border: #1e2738;
+  --rt-border-bright: #2a3550;
+  --rt-text: #e6edf7;
+  --rt-dim: #8492ad;
+  --rt-faint: #56627d;
+  --rt-up: #22c55e;
+  --rt-up-bg: rgba(34, 197, 94, 0.12);
+  --rt-down: #ef4444;
+  --rt-down-bg: rgba(239, 68, 68, 0.12);
+  --rt-accent: #3b82f6;
+  --rt-accent-dim: rgba(59, 130, 246, 0.15);
+  --rt-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --rt-radius: 10px;
+  --rt-radius-sm: 8px;
+  --rt-radius-xs: 6px;
+}

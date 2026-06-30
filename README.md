@@ -6,8 +6,10 @@ Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via
 
 Guia operacional completo:
 - `docs/development-environments-prompt-first.md`
-- Plano da próxima fase funcional (Backtesting/Simulação):
-- `docs/backtesting-phase-plan.md`
+
+Specs de frentes paralelas (AI agents):
+- Real-time data feed: `docs/realtime-data-feed-spec.md`
+- Plano Backtesting/Simulação: `docs/backtesting-phase-plan.md`
 
 Convenção de branches:
 - `main`: produção
@@ -50,6 +52,8 @@ CI:
 - `GET /signals/strategies` lista estratégias disponíveis
 - `POST /signals/generate` gera e persiste sinais por estratégia
 - `GET /signals` lista sinais persistidos
+- `POST /backtests/run` corre simulação histórica e persiste resultado
+- `GET /backtests` lista backtests do utilizador autenticado
 - Dashboard com gráfico, overlays e painel de sinais explicados
 
 ## Próxima fase prioritária (Fase 5)
@@ -153,8 +157,12 @@ Variáveis relevantes no `frontend/.env`:
 9. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
 10. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
-## Fora de escopo desta entrega técnica atual
+## Próximas frentes (em paralelo)
 
-- IBKR adapter/conectividade real
-- Execução real de ordens (live trading)
-- Preparação/confirmação de ordens com broker real
+- **Backtesting/Simulação** — em `develop` (tab Simulação + `/backtests/*`)
+- **Real-time market data feed** — spec em `docs/realtime-data-feed-spec.md`, branch `feature/realtime-data-feed-v1`
+
+## Fora de escopo (ainda)
+
+- Execução de ordens reais (live trading)
+- IBKR adapter (opcional numa fase futura; não bloqueia o feed v1)

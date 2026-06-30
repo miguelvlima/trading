@@ -12,9 +12,14 @@ from app.schemas.market_data import (
     CsvImportResponse,
     IndicatorResponse,
     IndicatorRowResponse,
+    InstrumentFollowRequest,
     InstrumentResponse,
+    LoadDemoDataRequest,
+    LoadDemoDataResponse,
+    LoadDemoSymbolResult,
     MarketBarResponse,
 )
+from app.scripts.load_demo_data import load_symbol
 from app.services.csv_importer import import_ohlcv_csv
 from app.services.indicator_engine import (
     atr,
@@ -37,6 +42,63 @@ def list_instruments(
 ) -> list[InstrumentResponse]:
     instruments = db.execute(select(Instrument).order_by(Instrument.symbol.asc())).scalars().all()
     return [InstrumentResponse.model_validate(item, from_attributes=True) for item in instruments]
+
+
+@router.post(
+    "/instruments/{symbol}/follow",
+    response_model=InstrumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def follow_instrument(
+    symbol: str,
+    payload: InstrumentFollowRequest | None = None,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> InstrumentResponse:
+    """Start following a symbol. Creates the instrument if needed (so a freshly
+    discovered symbol can be followed), otherwise just flips the flag on. Never
+    touches bars, so re-following is lossless."""
+    normalized = symbol.upper().strip()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Symbol is required.")
+
+    instrument = db.execute(
+        select(Instrument).where(Instrument.symbol == normalized)
+    ).scalar_one_or_none()
+    if instrument is None:
+        instrument = Instrument(
+            symbol=normalized,
+            name=(payload.name if payload else None),
+            currency="USD",
+            followed=True,
+        )
+        db.add(instrument)
+    else:
+        instrument.followed = True
+        if payload and payload.name and not instrument.name:
+            instrument.name = payload.name
+
+    db.commit()
+    db.refresh(instrument)
+    return InstrumentResponse.model_validate(instrument, from_attributes=True)
+
+
+@router.delete("/instruments/{symbol}/follow", status_code=status.HTTP_204_NO_CONTENT)
+def unfollow_instrument(
+    symbol: str,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Stop following a symbol: a soft flag flip, never a delete — the bars,
+    backtests and signals tied to the instrument are preserved."""
+    normalized = symbol.upper().strip()
+    instrument = db.execute(
+        select(Instrument).where(Instrument.symbol == normalized)
+    ).scalar_one_or_none()
+    if instrument is not None and instrument.followed:
+        instrument.followed = False
+        db.commit()
+    return None
 
 
 @router.get("/bars", response_model=list[MarketBarResponse])
@@ -163,3 +225,36 @@ def import_market_data_csv(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post(
+    "/load-demo",
+    response_model=LoadDemoDataResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def load_demo_market_data(
+    payload: LoadDemoDataRequest,
+    _: User = Depends(get_current_user),
+) -> LoadDemoDataResponse:
+    symbols = sorted({item.upper().strip() for item in payload.symbols if item.strip()})
+    if not symbols:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one symbol is required.")
+
+    results: list[LoadDemoSymbolResult] = []
+    include_weekly = payload.include_weekly
+    for symbol in symbols:
+        daily_rows, weekly_rows = load_symbol(symbol, payload.period, include_weekly)
+        if daily_rows == 0 and weekly_rows == 0:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not download market data for {symbol}.",
+            )
+        results.append(
+            LoadDemoSymbolResult(
+                symbol=symbol,
+                imported_rows_1d=daily_rows,
+                imported_rows_1w=weekly_rows,
+            )
+        )
+
+    return LoadDemoDataResponse(results=results)

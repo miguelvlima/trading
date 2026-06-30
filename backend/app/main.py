@@ -6,8 +6,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.backtests import router as backtests_router
 from app.api.routes.broker_connections import router as broker_connections_router
 from app.api.routes.market_data import router as market_data_router
+from app.api.routes.market_scanner import router as market_scanner_router
+from app.api.routes.realtime_data import router as realtime_data_router
+from app.api.routes.realtime_ws import router as realtime_ws_router
 from app.api.routes.signals import router as signals_router
 from app.api.routes.strategy_combinations import router as strategy_combinations_router
 from app.api.routes.system import router as system_router
@@ -35,6 +39,10 @@ app.add_middleware(
 app.include_router(system_router)
 app.include_router(auth_router)
 app.include_router(market_data_router)
+app.include_router(market_scanner_router)
+app.include_router(realtime_data_router)
+app.include_router(realtime_ws_router)
 app.include_router(signals_router)
 app.include_router(strategy_combinations_router)
 app.include_router(broker_connections_router)
+app.include_router(backtests_router)

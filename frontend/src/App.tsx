@@ -1,11 +1,31 @@
+import { useEffect, useMemo, useState } from "react";
+import { BacktestEquityChart, type EquityCurvePoint } from "./BacktestEquityChart";
+import { GlobalMarketFilters } from "./market/GlobalMarketFilters";
+import { HistoricalMarketView } from "./market/HistoricalMarketView";
+import { MarketChartModeToggle, type ChartMode } from "./market/MarketChartModeToggle";
 import {
-  CandlestickSeries,
-  LineSeries,
-  createChart,
-  type CandlestickData,
-  type LineData,
-} from "lightweight-charts";
-import { useEffect, useMemo, useRef, useState } from "react";
+  type CandleCode,
+  type PeriodMode,
+  type WindowCode,
+  SUGGESTED_CANDLE,
+  fetchLimitFor,
+  isSuggestedCandle,
+} from "./market/windowCandle";
+
+import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
+import { resolveFormingBar } from "./market/formingBar";
+import { findSignalsAtChartTime } from "./market/signalMarkers";
+import { RealtimePage } from "./realtime/RealtimePage";
+import { INDICATORS, type IndicatorId } from "./realtime/indicators";
+import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
+import {
+  applyRecommendation,
+  buildRecommendationApplyPreview,
+  type BacktestFormSnapshot,
+  type BacktestRecommendation,
+} from "./backtests/recommendationApply";
+import { useBars } from "./realtime/useBars";
+import { useTickStream } from "./realtime/useTickStream";
 
 type Instrument = {
   id: number;
@@ -13,6 +33,7 @@ type Instrument = {
   name: string | null;
   exchange: string | null;
   currency: string;
+  followed?: boolean;
 };
 
 type ApiBar = {
@@ -24,33 +45,9 @@ type ApiBar = {
   volume: string;
 };
 
-type OhlcDetails = {
-  dateLabel: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-};
-
-type IndicatorRow = {
-  timestamp: string;
-  sma_20: number | null;
-  ema_20: number | null;
-  rsi_14: number | null;
-  macd: number | null;
-  macd_signal: number | null;
-  macd_histogram: number | null;
-  bollinger_upper: number | null;
-  bollinger_middle: number | null;
-  bollinger_lower: number | null;
-  atr_14: number | null;
-  vwap: number | null;
-  relative_volume_20: number | null;
-};
-
-type FilterMode = "count" | "date";
-type ViewTab = "market" | "signals";
+type ViewTab = "market" | "signals" | "backtests";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
+type SignalsSourceMode = "historical" | "live";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
 
 type SignalItem = {
@@ -63,6 +60,7 @@ type SignalItem = {
   rationale: string;
   timestamp: string;
   indicator_snapshot: Record<string, number | null>;
+  source: string;
 };
 
 type StrategyContribution = {
@@ -107,10 +105,223 @@ type BrokerConnection = {
   updated_at: string;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+type BacktestTrade = {
+  id: number;
+  direction: string;
+  entry_timestamp: string;
+  exit_timestamp: string;
+  entry_price: number;
+  exit_price: number;
+  quantity: number;
+  gross_pnl: number;
+  fee_paid: number;
+  net_pnl: number;
+  return_pct: number;
+  bars_held: number;
+  entry_reason: string;
+  exit_reason: string;
+};
+
+type BacktestLesson = {
+  title: string;
+  detail: string;
+  priority: string;
+  symbol: string;
+  strategy_names: string[];
+  run_id: number;
+  created_at: string;
+};
+
+type BacktestRunInsight = {
+  id: number;
+  run_id: number;
+  narrative_summary: string;
+  timeline: Array<{
+    step: number;
+    phase: string;
+    title: string;
+    detail: string;
+    severity: string;
+  }>;
+  failure_modes: Array<{
+    code: string;
+    title: string;
+    detail: string;
+    severity: string;
+  }>;
+  lessons: Array<{
+    title: string;
+    detail: string;
+    priority: string;
+  }>;
+  recommendations: Array<{
+    area: string;
+    suggestion: string;
+    rationale: string;
+    param_hint?: string;
+  }>;
+  prior_runs_context: Record<string, unknown>;
+  created_at: string;
+};
+
+type BacktestRun = {
+  id: number;
+  owner_user_id: number;
+  symbol: string;
+  timeframe: string;
+  strategy_names: string[];
+  start_at: string | null;
+  end_at: string | null;
+  initial_capital: number;
+  fee_bps: number;
+  slippage_bps: number;
+  min_signal_strength: number;
+  bars_processed: number;
+  trades_count: number;
+  net_pnl: number;
+  net_pnl_pct: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+  created_at: string;
+  result_summary: Record<string, unknown>;
+  trades?: BacktestTrade[];
+  insight?: BacktestRunInsight | null;
+};
+
+type BacktestPreset = {
+  id: string;
+  name: string;
+  strategies: string[];
+  initialCapital: number;
+  feeBps: number;
+  feeModel: "fixed_bps" | "ibkr_us_tiered";
+  slippageBps: number;
+  slippageModel: "fixed" | "atr_volume";
+  strategyMinStrengthPct: Record<string, number>;
+  consensusStrengthPct: number;
+  /** @deprecated legacy single threshold */
+  minStrengthPct?: number;
+  limit: number;
+  positionSizePct: number;
+  entryConfirmationBars: number;
+  executionTiming: "signal_close" | "next_open";
+  positionSizingModel: "fixed_pct" | "atr_risk";
+  riskPerTradePct: number;
+  /** @deprecated legacy preset field */
+  entryTiming?: "signal_close" | "next_open";
+  exitMode: "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only";
+  stopLossPct: number | null;
+  takeProfitPct: number | null;
+  maxBarsInTrade: number | null;
+  walkforwardSplitPct: number;
+  walkforwardMode: "holdout" | "rolling";
+  walkforwardFolds: number;
+  benchmarkEnabled: boolean;
+};
+
+const DEFAULT_BACKTEST_STRENGTH_PCT = 10;
+const BACKTEST_MIN_BARS = 200;
+const BACKTEST_TRADES_PAGE_SIZE = 20;
+const SIGNALS_PAGE_SIZE = 10;
+const BACKTEST_RUNS_PAGE_SIZE = 10;
+const BACKTEST_LESSONS_LIMIT = 10;
+const BACKTEST_RECOMMENDATIONS_LIMIT = 10;
+
+const BACKTEST_LESSON_PRIORITY_RANK: Record<string, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+function sortBacktestLessons(lessons: BacktestLesson[]): BacktestLesson[] {
+  return [...lessons].sort((left, right) => {
+    const leftRank = BACKTEST_LESSON_PRIORITY_RANK[left.priority.toLowerCase()] ?? 3;
+    const rightRank = BACKTEST_LESSON_PRIORITY_RANK[right.priority.toLowerCase()] ?? 3;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  });
+}
+
+function isBacktestLessonRelevant(lesson: BacktestLesson, activeStrategies: string[]): boolean {
+  if (activeStrategies.length === 0) {
+    return false;
+  }
+  return activeStrategies.some((strategy) => lesson.strategy_names.includes(strategy));
+}
+
+const strengthLevelLabel = (pct: number): string => {
+  if (pct <= 20) {
+    return "Sensível";
+  }
+  if (pct <= 45) {
+    return "Moderado";
+  }
+  if (pct <= 70) {
+    return "Exigente";
+  }
+  return "Muito exigente";
+};
+
+const strengthLevelClass = (pct: number): string => {
+  if (pct <= 20) {
+    return "strength-level-low";
+  }
+  if (pct <= 45) {
+    return "strength-level-mid";
+  }
+  if (pct <= 70) {
+    return "strength-level-high";
+  }
+  return "strength-level-max";
+};
+
+const normalizeBacktestPreset = (item: BacktestPreset): BacktestPreset => {
+  const legacyStrength = item.minStrengthPct ?? item.consensusStrengthPct ?? DEFAULT_BACKTEST_STRENGTH_PCT;
+  const consensusStrengthPct = item.consensusStrengthPct ?? legacyStrength;
+  const strategyMinStrengthPct = { ...(item.strategyMinStrengthPct ?? {}) };
+  for (const strategy of item.strategies) {
+    if (strategyMinStrengthPct[strategy] === undefined) {
+      strategyMinStrengthPct[strategy] = legacyStrength;
+    }
+  }
+  return {
+    ...item,
+    consensusStrengthPct,
+    strategyMinStrengthPct,
+    slippageModel: item.slippageModel ?? "atr_volume",
+    feeModel: item.feeModel ?? "fixed_bps",
+    executionTiming: item.executionTiming ?? item.entryTiming ?? "next_open",
+    positionSizingModel: item.positionSizingModel ?? "fixed_pct",
+    riskPerTradePct: item.riskPerTradePct ?? 1,
+    walkforwardMode: item.walkforwardMode ?? "holdout",
+    walkforwardFolds: item.walkforwardFolds ?? 3,
+  };
+};
+
+const toUserFetchError = (error: unknown, fallback: string): string => {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return "Backend inacessível ou com erro. Confirme que `npm run dev:all` está a correr e que a migration de backtests foi aplicada.";
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return fallback;
+};
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ??
+  (import.meta.env.DEV ? "" : "http://localhost:8000");
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
 const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";
+const SIGNALS_SOURCE_MODE_STORAGE_KEY = "trading_signals_source_mode";
+const LIVE_SIGNALS_POLL_MS = 30_000;
+const SIGNALS_CHART_OVERLAY_STORAGE_KEY = "trading_signals_chart_overlay";
+const SIGNALS_CHART_OVERLAY_MAX = 100;
+const BACKTEST_PRESETS_STORAGE_KEY = "trading_backtest_presets";
 
 const readStoredNumber = (key: string, fallback: number, min: number, max: number): number => {
   const raw = localStorage.getItem(key);
@@ -122,6 +333,24 @@ const readStoredNumber = (key: string, fallback: number, min: number, max: numbe
     return fallback;
   }
   return Math.max(min, Math.min(max, parsed));
+};
+
+const readStoredBacktestPresets = (): BacktestPreset[] => {
+  const raw = localStorage.getItem(BACKTEST_PRESETS_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((item): item is BacktestPreset => Boolean(item && typeof item === "object"))
+      .map((item) => normalizeBacktestPreset(item));
+  } catch {
+    return [];
+  }
 };
 
 const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
@@ -143,6 +372,10 @@ const STRATEGY_SUMMARY: Record<string, { title: string; summary: string }> = {
   },
 };
 
+const STRATEGY_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(STRATEGY_SUMMARY).map(([key, { title }]) => [key, title]),
+);
+
 const formatPrice = (value: number): string =>
   value.toLocaleString("pt-PT", {
     minimumFractionDigits: 2,
@@ -155,6 +388,213 @@ const formatDateLabel = (dateText: string): string =>
 const formatDateTimeLabel = (dateText: string): string =>
   new Date(dateText).toLocaleString("pt-PT");
 
+const getSummaryNumber = (summary: Record<string, unknown>, key: string, fallback = 0): number => {
+  const value = summary[key];
+  return typeof value === "number" ? value : fallback;
+};
+
+const getSummaryCurve = (summary: Record<string, unknown>): EquityCurvePoint[] => {
+  const value = summary.equity_curve;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      if (typeof record.timestamp !== "string" || typeof record.equity !== "number") {
+        return null;
+      }
+      const point: EquityCurvePoint = {
+        timestamp: record.timestamp,
+        equity: record.equity,
+      };
+      if (typeof record.benchmark_equity === "number") {
+        point.benchmark_equity = record.benchmark_equity;
+      }
+      return point;
+    })
+    .filter((item): item is EquityCurvePoint => item !== null);
+};
+
+type WalkforwardMetrics = {
+  bars_processed: number;
+  trades_count: number;
+  net_pnl_pct: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+};
+
+const getWalkforwardMetrics = (value: unknown): WalkforwardMetrics | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const readNumber = (key: string) => (typeof record[key] === "number" ? (record[key] as number) : null);
+  const barsProcessed = readNumber("bars_processed");
+  const tradesCount = readNumber("trades_count");
+  const netPnlPct = readNumber("net_pnl_pct");
+  const winRate = readNumber("win_rate");
+  const profitFactor = readNumber("profit_factor");
+  const maxDrawdownPct = readNumber("max_drawdown_pct");
+  if (
+    barsProcessed === null ||
+    tradesCount === null ||
+    netPnlPct === null ||
+    winRate === null ||
+    profitFactor === null ||
+    maxDrawdownPct === null
+  ) {
+    return null;
+  }
+  return {
+    bars_processed: barsProcessed,
+    trades_count: tradesCount,
+    net_pnl_pct: netPnlPct,
+    win_rate: winRate,
+    profit_factor: profitFactor,
+    max_drawdown_pct: maxDrawdownPct,
+  };
+};
+
+const formatPct = (value: number, digits = 2): string => `${(value * 100).toFixed(digits)}%`;
+
+const formatExitModeLabel = (mode: string): string => {
+  if (mode === "opposite_signal") {
+    return "Só sinal oposto";
+  }
+  if (mode === "tp_sl_or_opposite") {
+    return "TP/SL + sinal oposto";
+  }
+  if (mode === "tp_sl_only") {
+    return "Só TP/SL";
+  }
+  return mode;
+};
+
+const formatExecutionTimingLabel = (timing: string): string => {
+  if (timing === "next_open") {
+    return "Abertura da vela seguinte (entrada e saída)";
+  }
+  if (timing === "signal_close") {
+    return "Fecho da vela do sinal";
+  }
+  return timing;
+};
+
+const formatPositionSizingLabel = (model: string): string => {
+  if (model === "atr_risk") {
+    return "Risco por trade (ATR/SL)";
+  }
+  if (model === "fixed_pct") {
+    return "% fixo do capital";
+  }
+  return model;
+};
+
+const formatSlippageModelLabel = (model: string): string => {
+  if (model === "atr_volume") {
+    return "Dinâmico (ATR + volume)";
+  }
+  if (model === "fixed") {
+    return "Fixo";
+  }
+  return model;
+};
+
+const formatFeeModelLabel = (model: string): string => {
+  if (model === "ibkr_us_tiered") {
+    return "IBKR US tiered";
+  }
+  if (model === "fixed_bps") {
+    return "Bps fixos";
+  }
+  return model;
+};
+
+const formatWalkforwardModeLabel = (mode: string): string => {
+  if (mode === "rolling") {
+    return "Rolling (vários blocos OOS)";
+  }
+  if (mode === "holdout") {
+    return "Holdout único";
+  }
+  return mode;
+};
+
+const formatStrengthPct = (value: unknown): string =>
+  typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
+
+const getRunConfigSnapshot = (run: BacktestRun): Record<string, unknown> => {
+  const stored =
+    typeof run.result_summary.config === "object" && run.result_summary.config !== null
+      ? (run.result_summary.config as Record<string, unknown>)
+      : {};
+  return {
+    ...stored,
+    strategies: stored.strategies ?? run.strategy_names,
+    fee_bps: stored.fee_bps ?? run.fee_bps,
+    slippage_bps: stored.slippage_bps ?? run.slippage_bps,
+    initial_capital: stored.initial_capital ?? run.initial_capital,
+    min_consensus_strength: stored.min_consensus_strength ?? run.min_signal_strength,
+  };
+};
+
+const buildStrategyStrengthPctFromRun = (run: BacktestRun, config: Record<string, unknown>) => {
+  const fallbackPct = Math.round(run.min_signal_strength * 100);
+  const rawStrengths = config.strategy_min_strengths;
+  if (!rawStrengths || typeof rawStrengths !== "object") {
+    return Object.fromEntries(run.strategy_names.map((strategy) => [strategy, fallbackPct]));
+  }
+  return Object.fromEntries(
+    run.strategy_names.map((strategy) => {
+      const value = (rawStrengths as Record<string, unknown>)[strategy];
+      return [strategy, typeof value === "number" ? Math.round(value * 100) : fallbackPct];
+    }),
+  );
+};
+
+const parseCandleCode = (timeframe: string): CandleCode => {
+  const allowed: CandleCode[] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"];
+  return allowed.includes(timeframe as CandleCode) ? (timeframe as CandleCode) : "1d";
+};
+
+const syncChartFiltersToRun = (
+  run: BacktestRun,
+  setters: {
+    setSelectedSymbol: (symbol: string) => void;
+    setCandle: (candle: CandleCode) => void;
+    setChartWindow: (chartWindow: WindowCode) => void;
+    setManualCandle: (manual: boolean) => void;
+    setPeriodMode: (mode: PeriodMode) => void;
+    setStartDate: (value: string) => void;
+    setEndDate: (value: string) => void;
+    setBacktestLimit: (value: number) => void;
+  },
+  instruments: Instrument[],
+) => {
+  const config = getRunConfigSnapshot(run);
+  const runLimit = typeof config.limit === "number" ? config.limit : run.bars_processed || 2000;
+  if (instruments.some((item) => item.symbol === run.symbol)) {
+    setters.setSelectedSymbol(run.symbol);
+  }
+  setters.setCandle(parseCandleCode(run.timeframe));
+  setters.setManualCandle(true);
+  if (run.start_at && run.end_at) {
+    setters.setPeriodMode("date");
+    setters.setStartDate(toInputDate(new Date(run.start_at)));
+    setters.setEndDate(toInputDate(new Date(run.end_at)));
+    setters.setBacktestLimit(runLimit);
+  } else {
+    setters.setPeriodMode("window");
+    setters.setChartWindow("all");
+    setters.setBacktestLimit(runLimit);
+  }
+};
+
 const toSignedScore = (direction: string, strength: number): number => {
   if (direction === "BUY") {
     return strength;
@@ -165,32 +605,9 @@ const toSignedScore = (direction: string, strength: number): number => {
   return 0;
 };
 
-const toChartDate = (dateText: string): string =>
-  new Date(dateText).toISOString().slice(0, 10);
-
 const toInputDate = (date: Date): string => date.toISOString().slice(0, 10);
 
-const toLineData = (rows: IndicatorRow[], field: keyof IndicatorRow): LineData[] =>
-  rows.flatMap((row) =>
-    row[field] === null ? [] : [{ time: toChartDate(row.timestamp), value: Number(row[field]) }],
-  );
-
-const formatIndicatorValue = (
-  value: number | null,
-  loadedBars: number,
-  minimumBars: number,
-): string => {
-  if (value !== null) {
-    return formatPrice(value);
-  }
-  if (loadedBars < minimumBars) {
-    return "Poucos dados";
-  }
-  return "-";
-};
-
 function App() {
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ?? "");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authEmail, setAuthEmail] = useState("");
@@ -202,21 +619,23 @@ function App() {
 
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>("1d");
+  const [candle, setCandle] = useState<CandleCode>("1d");
+  const [chartWindow, setChartWindow] = useState<WindowCode>("1y");
+  const [manualCandle, setManualCandle] = useState(false);
+  const [periodMode, setPeriodMode] = useState<PeriodMode>("window");
+  const selectedTimeframe = candle;
+  const barLimit = useMemo(() => fetchLimitFor(chartWindow, candle), [chartWindow, candle]);
   const [activeTab, setActiveTab] = useState<ViewTab>("market");
+  const [chartMode, setChartMode] = useState<ChartMode>("historico");
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("signals");
-  const [filterMode, setFilterMode] = useState<FilterMode>("count");
-  const [barLimit, setBarLimit] = useState<number>(500);
-  const [barLimitInput, setBarLimitInput] = useState<string>("500");
   const [startDate, setStartDate] = useState<string>(
     toInputDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)),
   );
   const [endDate, setEndDate] = useState<string>(toInputDate(new Date()));
   const [bars, setBars] = useState<ApiBar[]>([]);
-  const [indicatorRows, setIndicatorRows] = useState<IndicatorRow[]>([]);
   const [availableStrategies, setAvailableStrategies] = useState<string[]>([]);
-  const [selectedStrategies, setSelectedStrategies] = useState<string[]>([]);
+  const [activeStrategies, setActiveStrategies] = useState<string[]>([]);
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [consensusSignals, setConsensusSignals] = useState<SignalItem[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
@@ -230,7 +649,19 @@ function App() {
   const [signalsFetchLimit, setSignalsFetchLimit] = useState<number>(() =>
     readStoredNumber(SIGNALS_FETCH_LIMIT_STORAGE_KEY, 500, 50, 2000),
   );
+  const [signalsSourceMode, setSignalsSourceMode] = useState<SignalsSourceMode>(() => {
+    const stored = localStorage.getItem(SIGNALS_SOURCE_MODE_STORAGE_KEY);
+    return stored === "live" ? "live" : "historical";
+  });
+  const [liveSignalIsForming, setLiveSignalIsForming] = useState(false);
+  const [pinnedSignalsOnChart, setPinnedSignalsOnChart] = useState<SignalItem[]>([]);
+  const [signalsChartOverlayEnabled, setSignalsChartOverlayEnabled] = useState<boolean>(
+    () => localStorage.getItem(SIGNALS_CHART_OVERLAY_STORAGE_KEY) === "true",
+  );
+  const [selectedChartSignal, setSelectedChartSignal] = useState<SignalItem | null>(null);
+  const [chartSignalMatches, setChartSignalMatches] = useState<SignalItem[]>([]);
   const [signalsRefreshToken, setSignalsRefreshToken] = useState(0);
+  const [signalsPage, setSignalsPage] = useState(1);
   const [savedCombinations, setSavedCombinations] = useState<StrategyCombination[]>([]);
   const [newCombinationName, setNewCombinationName] = useState("");
   const [newCombinationDescription, setNewCombinationDescription] = useState("");
@@ -244,18 +675,66 @@ function App() {
   const [newBrokerEnvironment, setNewBrokerEnvironment] = useState("paper");
   const [newBrokerMetadataJson, setNewBrokerMetadataJson] = useState("{}");
   const [brokerFormError, setBrokerFormError] = useState<string | null>(null);
+  const [backtestInitialCapital, setBacktestInitialCapital] = useState<number>(10000);
+  const [backtestFeeBps, setBacktestFeeBps] = useState<number>(5);
+  const [backtestFeeModel, setBacktestFeeModel] = useState<"fixed_bps" | "ibkr_us_tiered">("fixed_bps");
+  const [backtestSlippageBps, setBacktestSlippageBps] = useState<number>(2);
+  const [backtestSlippageModel, setBacktestSlippageModel] = useState<"fixed" | "atr_volume">("atr_volume");
+  const [backtestStrategyMinStrengthPct, setBacktestStrategyMinStrengthPct] = useState<
+    Record<string, number>
+  >({});
+  const [backtestConsensusStrengthPct, setBacktestConsensusStrengthPct] = useState<number>(
+    DEFAULT_BACKTEST_STRENGTH_PCT,
+  );
+  const [backtestLimit, setBacktestLimit] = useState<number>(2000);
+  const [backtestPositionSizePct, setBacktestPositionSizePct] = useState<number>(100);
+  const [backtestPositionSizingModel, setBacktestPositionSizingModel] = useState<
+    "fixed_pct" | "atr_risk"
+  >("fixed_pct");
+  const [backtestRiskPerTradePct, setBacktestRiskPerTradePct] = useState<number>(1);
+  const [backtestEntryConfirmationBars, setBacktestEntryConfirmationBars] = useState<number>(1);
+  const [backtestExecutionTiming, setBacktestExecutionTiming] = useState<"signal_close" | "next_open">(
+    "next_open",
+  );
+  const [backtestExitMode, setBacktestExitMode] = useState<
+    "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only"
+  >("tp_sl_or_opposite");
+  const [backtestStopLossPct, setBacktestStopLossPct] = useState<number>(2);
+  const [backtestTakeProfitPct, setBacktestTakeProfitPct] = useState<number>(4);
+  const [backtestMaxBarsInTrade, setBacktestMaxBarsInTrade] = useState<number>(40);
+  const [backtestWalkforwardSplitPct, setBacktestWalkforwardSplitPct] = useState<number>(0);
+  const [backtestWalkforwardMode, setBacktestWalkforwardMode] = useState<"holdout" | "rolling">("holdout");
+  const [backtestWalkforwardFolds, setBacktestWalkforwardFolds] = useState<number>(3);
+  const [backtestBenchmarkEnabled, setBacktestBenchmarkEnabled] = useState(true);
+  const [backtestPresets, setBacktestPresets] = useState<BacktestPreset[]>(() => readStoredBacktestPresets());
+  const [backtestPresetName, setBacktestPresetName] = useState("");
+  const [backtestCompareRunIds, setBacktestCompareRunIds] = useState<number[]>([]);
+  const [backtestRuns, setBacktestRuns] = useState<BacktestRun[]>([]);
+  const [backtestSelectedRun, setBacktestSelectedRun] = useState<BacktestRun | null>(null);
+  const [backtestLoading, setBacktestLoading] = useState(false);
+  const [backtestRunning, setBacktestRunning] = useState(false);
+  const [backtestError, setBacktestError] = useState<string | null>(null);
+  const [backtestRefreshToken, setBacktestRefreshToken] = useState(0);
+  const [backtestLessons, setBacktestLessons] = useState<BacktestLesson[]>([]);
+  const [backtestLessonsLoading, setBacktestLessonsLoading] = useState(false);
+  const [backtestRecommendations, setBacktestRecommendations] = useState<BacktestRecommendation[]>(
+    [],
+  );
+  const [backtestRecommendationsLoading, setBacktestRecommendationsLoading] = useState(false);
+  const [backtestRunsPage, setBacktestRunsPage] = useState(1);
+  const [marketDataRefreshToken, setMarketDataRefreshToken] = useState(0);
+  const [demoDataLoading, setDemoDataLoading] = useState(false);
+  const [backtestTradesOnChartRunId, setBacktestTradesOnChartRunId] = useState<number | null>(null);
+  const [backtestTradesOnChart, setBacktestTradesOnChart] = useState<BacktestTrade[]>([]);
+  const [backtestTradesPage, setBacktestTradesPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hoveredOhlc, setHoveredOhlc] = useState<OhlcDetails | null>(null);
-  const [overlayVisibility, setOverlayVisibility] = useState({
-    sma20: true,
-    ema20: true,
-    bollinger: true,
-    vwap: true,
-  });
+  const [activeIndicators, setActiveIndicators] = useState<ReadonlySet<IndicatorId>>(
+    () => new Set(INDICATORS.filter((descriptor) => descriptor.defaultOn).map((descriptor) => descriptor.id)),
+  );
 
-  const isDateFilterIncomplete = filterMode === "date" && (!startDate || !endDate);
-  const isDateRangeInvalid = filterMode === "date" && !isDateFilterIncomplete && startDate > endDate;
+  const isDateFilterIncomplete = periodMode === "date" && (!startDate || !endDate);
+  const isDateRangeInvalid = periodMode === "date" && !isDateFilterIncomplete && startDate > endDate;
   const hasDateFilterError = isDateFilterIncomplete || isDateRangeInvalid;
 
   const buildMarketQueryParams = (): URLSearchParams => {
@@ -264,7 +743,7 @@ function App() {
       timeframe: selectedTimeframe,
     });
 
-    if (filterMode === "count") {
+    if (periodMode === "window") {
       query.set("limit", String(barLimit));
     } else {
       query.set("start", `${startDate}T00:00:00Z`);
@@ -273,9 +752,17 @@ function App() {
     return query;
   };
 
-  useEffect(() => {
-    setBarLimitInput(String(barLimit));
-  }, [barLimit]);
+  const handleMarketWindow = (next: WindowCode) => {
+    setChartWindow(next);
+    if (!manualCandle) {
+      setCandle(SUGGESTED_CANDLE[next]);
+    }
+  };
+
+  const handleMarketCandle = (next: CandleCode) => {
+    setCandle(next);
+    setManualCandle(!isSuggestedCandle(chartWindow, next));
+  };
 
   useEffect(() => {
     localStorage.setItem(CONSENSUS_THRESHOLD_STORAGE_KEY, String(consensusThresholdPct));
@@ -285,13 +772,32 @@ function App() {
     localStorage.setItem(SIGNALS_FETCH_LIMIT_STORAGE_KEY, String(signalsFetchLimit));
   }, [signalsFetchLimit]);
 
+  useEffect(() => {
+    localStorage.setItem(SIGNALS_SOURCE_MODE_STORAGE_KEY, signalsSourceMode);
+  }, [signalsSourceMode]);
+
+  useEffect(() => {
+    localStorage.setItem(SIGNALS_CHART_OVERLAY_STORAGE_KEY, String(signalsChartOverlayEnabled));
+  }, [signalsChartOverlayEnabled]);
+
+  const chartSignals = useMemo(() => {
+    if (signalsChartOverlayEnabled) {
+      return signals.slice(0, SIGNALS_CHART_OVERLAY_MAX);
+    }
+    return pinnedSignalsOnChart;
+  }, [signalsChartOverlayEnabled, signals, pinnedSignalsOnChart]);
+
+  useEffect(() => {
+    localStorage.setItem(BACKTEST_PRESETS_STORAGE_KEY, JSON.stringify(backtestPresets));
+  }, [backtestPresets]);
+
   const buildSignalGeneratePayload = (strategy: string): Record<string, string | number> => {
     const payload: Record<string, string | number> = {
       symbol: selectedSymbol,
       timeframe: selectedTimeframe,
       strategy,
     };
-    if (filterMode === "count") {
+    if (periodMode === "window") {
       payload.limit = barLimit;
     } else {
       payload.start = `${startDate}T00:00:00Z`;
@@ -302,6 +808,72 @@ function App() {
   };
 
   const isAuthenticated = Boolean(authToken && currentUser);
+
+  const isLiveSignals = activeTab === "signals" && signalsSourceMode === "live";
+  const isLiveChart = activeTab === "market" && chartMode === "aovivo";
+  const useLiveStream = isAuthenticated && Boolean(selectedSymbol) && (isLiveChart || isLiveSignals);
+  const liveBarsLimit = periodMode === "window" ? barLimit : 5000;
+
+  const { tick, indices, status: streamStatus, error: streamError } = useTickStream(
+    API_BASE_URL,
+    isAuthenticated ? authToken : "",
+    selectedSymbol,
+    useLiveStream,
+  );
+
+  const { bars: liveSignalQuotes } = useBars(
+    API_BASE_URL,
+    authToken,
+    selectedSymbol,
+    selectedTimeframe,
+    chartWindow,
+    liveBarsLimit,
+    20_000,
+    isLiveSignals,
+  );
+
+  const [marketNowMs, setMarketNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = globalThis.setInterval(() => setMarketNowMs(Date.now()), 1000);
+    return () => globalThis.clearInterval(timer);
+  }, []);
+
+  const liveSignalForming = useMemo(
+    () => {
+      if (!isLiveSignals || liveSignalQuotes.length === 0) {
+        return { forming: null, isLiveForming: false };
+      }
+      const lastQuote = liveSignalQuotes[liveSignalQuotes.length - 1];
+      return resolveFormingBar(lastQuote, candle, tick, marketNowMs);
+    },
+    [isLiveSignals, liveSignalQuotes, candle, tick, marketNowMs],
+  );
+
+  const followedSymbols = useMemo(() => {
+    const set = new Set<string>();
+    for (const instrument of instruments) {
+      if (instrument.followed !== false) set.add(instrument.symbol);
+    }
+    if (selectedSymbol) {
+      set.add(selectedSymbol);
+    }
+    return Array.from(set).sort();
+  }, [instruments, selectedSymbol]);
+
+  const isFollowingSelected = useMemo(
+    () => instruments.some((i) => i.symbol === selectedSymbol && i.followed !== false),
+    [instruments, selectedSymbol],
+  );
+
+  const lastBarMs = useMemo(() => {
+    const last = bars[bars.length - 1];
+    if (!last?.timestamp) {
+      return null;
+    }
+    const iso = /[zZ]$|[+-]\d\d:?\d\d$/.test(last.timestamp) ? last.timestamp : `${last.timestamp}Z`;
+    const parsed = Date.parse(iso);
+    return Number.isNaN(parsed) ? null : parsed;
+  }, [bars]);
 
   const logout = () => {
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
@@ -359,21 +931,19 @@ function App() {
           setSelectedSymbol(payload[0].symbol);
         }
       } catch (loadError) {
-        const message =
-          loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar instrumentos.";
-        setError(message);
+        setError(toUserFetchError(loadError, "Erro inesperado ao carregar instrumentos."));
       } finally {
         setLoading(false);
       }
     };
 
     loadInstruments();
-  }, [isAuthenticated, authToken]);
+  }, [isAuthenticated, authToken, marketDataRefreshToken]);
 
   useEffect(() => {
     if (!isAuthenticated) {
       setAvailableStrategies([]);
-      setSelectedStrategies([]);
+      setActiveStrategies([]);
       return;
     }
 
@@ -388,16 +958,20 @@ function App() {
         const payload = (await response.json()) as string[];
         setAvailableStrategies(payload);
         if (payload.length > 0) {
-          setSelectedStrategies([payload[0]]);
+          setActiveStrategies([payload[0]]);
         }
       } catch {
         setAvailableStrategies([]);
-        setSelectedStrategies([]);
+        setActiveStrategies([]);
       }
     };
 
     loadStrategies();
   }, [isAuthenticated, authToken]);
+
+  useEffect(() => {
+    setBacktestTradesPage(1);
+  }, [backtestSelectedRun?.id]);
 
   useEffect(() => {
     if (!authToken) {
@@ -481,6 +1055,174 @@ function App() {
   }, [authToken, isAuthenticated, brokerRefreshToken]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setBacktestRuns([]);
+      setBacktestSelectedRun(null);
+      return;
+    }
+
+    const loadBacktests = async () => {
+      setBacktestLoading(true);
+      setBacktestError(null);
+      try {
+        const query = new URLSearchParams({ limit: "30" });
+        if (selectedSymbol) {
+          query.set("symbol", selectedSymbol);
+          query.set("timeframe", selectedTimeframe);
+        }
+        const response = await fetch(`${API_BASE_URL}/backtests?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar backtests.");
+        }
+        const payload = (await response.json()) as BacktestRun[];
+        setBacktestRuns(payload);
+        setBacktestCompareRunIds((previous) =>
+          previous.filter((id) => payload.some((run) => run.id === id)).slice(0, 2),
+        );
+      } catch (loadError) {
+        setBacktestError(toUserFetchError(loadError, "Erro inesperado ao carregar backtests."));
+      } finally {
+        setBacktestLoading(false);
+      }
+    };
+
+    loadBacktests();
+  }, [authToken, isAuthenticated, backtestRefreshToken, selectedSymbol, selectedTimeframe]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !selectedSymbol) {
+      setBacktestLessons([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadLessons = async () => {
+      setBacktestLessonsLoading(true);
+      try {
+        const query = new URLSearchParams({
+          symbol: selectedSymbol,
+          limit: String(BACKTEST_LESSONS_LIMIT),
+        });
+        const response = await fetch(`${API_BASE_URL}/backtests/lessons?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar lições.");
+        }
+        if (!cancelled) {
+          setBacktestLessons((await response.json()) as BacktestLesson[]);
+        }
+      } catch {
+        if (!cancelled) {
+          setBacktestLessons([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setBacktestLessonsLoading(false);
+        }
+      }
+    };
+
+    void loadLessons();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, isAuthenticated, selectedSymbol, backtestRefreshToken]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !selectedSymbol) {
+      setBacktestRecommendations([]);
+      return;
+    }
+
+    let cancelled = false;
+    const loadRecommendations = async () => {
+      setBacktestRecommendationsLoading(true);
+      try {
+        const query = new URLSearchParams({
+          symbol: selectedSymbol,
+          limit: String(BACKTEST_RECOMMENDATIONS_LIMIT),
+        });
+        const response = await fetch(`${API_BASE_URL}/backtests/recommendations?${query.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao carregar recomendações.");
+        }
+        if (!cancelled) {
+          setBacktestRecommendations((await response.json()) as BacktestRecommendation[]);
+        }
+      } catch {
+        if (!cancelled) {
+          setBacktestRecommendations([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setBacktestRecommendationsLoading(false);
+        }
+      }
+    };
+
+    void loadRecommendations();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, isAuthenticated, selectedSymbol, backtestRefreshToken]);
+
+  const sortedBacktestLessons = useMemo(
+    () => sortBacktestLessons(backtestLessons),
+    [backtestLessons],
+  );
+
+  const backtestFormSnapshot = useMemo(
+    (): BacktestFormSnapshot => ({
+      exitMode: backtestExitMode,
+      stopLossPct: backtestStopLossPct,
+      takeProfitPct: backtestTakeProfitPct,
+      consensusStrengthPct: backtestConsensusStrengthPct,
+      entryConfirmationBars: backtestEntryConfirmationBars,
+      activeStrategies: [...activeStrategies],
+      strategyMinStrengthPct: { ...backtestStrategyMinStrengthPct },
+    }),
+    [
+      backtestExitMode,
+      backtestStopLossPct,
+      backtestTakeProfitPct,
+      backtestConsensusStrengthPct,
+      backtestEntryConfirmationBars,
+      activeStrategies,
+      backtestStrategyMinStrengthPct,
+    ],
+  );
+
+  const backtestRunsTotalPages = Math.max(1, Math.ceil(backtestRuns.length / BACKTEST_RUNS_PAGE_SIZE));
+
+  useEffect(() => {
+    setBacktestRunsPage(1);
+  }, [backtestRuns]);
+
+  useEffect(() => {
+    if (backtestRunsPage > backtestRunsTotalPages) {
+      setBacktestRunsPage(backtestRunsTotalPages);
+    }
+  }, [backtestRunsPage, backtestRunsTotalPages]);
+
+  const paginatedBacktestRuns = useMemo(
+    () =>
+      backtestRuns.slice(
+        (backtestRunsPage - 1) * BACKTEST_RUNS_PAGE_SIZE,
+        backtestRunsPage * BACKTEST_RUNS_PAGE_SIZE,
+      ),
+    [backtestRuns, backtestRunsPage],
+  );
+
+  useEffect(() => {
+    setBacktestTradesPage(1);
+  }, [backtestSelectedRun?.id]);
+
+  useEffect(() => {
     if (!selectedSymbol) {
       setBars([]);
       return;
@@ -503,49 +1245,32 @@ function App() {
         }
         setBars((await response.json()) as ApiBar[]);
       } catch (loadError) {
-        const message = loadError instanceof Error ? loadError.message : "Erro inesperado ao carregar velas.";
-        setError(message);
+        setError(toUserFetchError(loadError, "Erro inesperado ao carregar velas."));
       } finally {
         setLoading(false);
       }
     };
 
     loadBars();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
+  }, [
+    selectedSymbol,
+    selectedTimeframe,
+    barLimit,
+    periodMode,
+    startDate,
+    endDate,
+    hasDateFilterError,
+    authToken,
+    marketDataRefreshToken,
+  ]);
 
   useEffect(() => {
-    if (!selectedSymbol) {
-      setIndicatorRows([]);
-      return;
-    }
-    if (hasDateFilterError) {
-      setIndicatorRows([]);
-      return;
-    }
-
-    const loadIndicators = async () => {
-      try {
-        const query = buildMarketQueryParams();
-        const response = await fetch(`${API_BASE_URL}/market-data/indicators?${query.toString()}`, {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-        if (!response.ok) {
-          throw new Error("Falha ao carregar indicadores.");
-        }
-        const payload = (await response.json()) as { rows: IndicatorRow[] };
-        setIndicatorRows(payload.rows);
-      } catch {
-        setIndicatorRows([]);
-      }
-    };
-
-    loadIndicators();
-  }, [selectedSymbol, selectedTimeframe, barLimit, filterMode, startDate, endDate, hasDateFilterError, authToken]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setSignalsGenerating(false);
+      return;
+    }
+    if (signalsSourceMode !== "historical") {
       return;
     }
     if (hasDateFilterError) {
@@ -559,7 +1284,7 @@ function App() {
       setSignalsError(null);
       try {
         const responses = await Promise.all(
-          selectedStrategies.map((strategy) =>
+          activeStrategies.map((strategy) =>
             fetch(`${API_BASE_URL}/signals/generate`, {
               method: "POST",
               headers: {
@@ -594,18 +1319,129 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
-    filterMode,
+    activeStrategies,
+    periodMode,
     barLimit,
     startDate,
     endDate,
     hasDateFilterError,
+    signalsSourceMode,
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
       setConsensusSignals([]);
+      setSignalsGenerating(false);
+      return;
+    }
+    if (signalsSourceMode !== "live") {
+      return;
+    }
+    if (hasDateFilterError) {
+      setSignalsGenerating(false);
+      return;
+    }
+
+    let cancelled = false;
+    const evaluateLive = async () => {
+      setSignalsGenerating(true);
+      setSignalsError(null);
+      try {
+        const response = await fetch(`${API_BASE_URL}/signals/evaluate-live`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify(
+            buildLiveEvaluatePayload({
+              symbol: selectedSymbol,
+              timeframe: selectedTimeframe,
+              strategies: activeStrategies,
+              minStrength: signalMinStrengthPct / 100,
+              periodMode,
+              barLimit,
+              startDate,
+              endDate,
+              contextQuotes: liveSignalQuotes,
+              formingBar: liveSignalForming.forming,
+            }),
+          ),
+        });
+        if (!response.ok) {
+          throw new Error("Falha ao avaliar sinais em tempo real.");
+        }
+        const payload = (await response.json()) as {
+          signals: SignalItem[];
+          is_forming_bar?: boolean;
+        };
+        if (cancelled) {
+          return;
+        }
+        setLiveSignalIsForming(Boolean(payload.is_forming_bar));
+        const filtered = payload.signals.filter((item) => {
+          if (signalDirectionFilter !== "BOTH" && item.direction !== signalDirectionFilter) {
+            return false;
+          }
+          return item.strength * 100 >= signalMinStrengthPct;
+        });
+        const sorted = [...filtered].sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+        );
+        setSignals(sorted);
+        setConsensusSignals(sorted);
+        setSignalsRefreshToken((previous) => previous + 1);
+      } catch (liveError) {
+        if (!cancelled) {
+          setSignalsError("Falha ao avaliar sinais em tempo real.");
+        }
+      } finally {
+        if (!cancelled) {
+          setSignalsGenerating(false);
+        }
+      }
+    };
+
+    const debounceId = window.setTimeout(() => {
+      void evaluateLive();
+    }, tick?.last != null ? 800 : 0);
+    const intervalId = window.setInterval(() => {
+      void evaluateLive();
+    }, LIVE_SIGNALS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(debounceId);
+      window.clearInterval(intervalId);
+    };
+  }, [
+    isAuthenticated,
+    authToken,
+    selectedSymbol,
+    selectedTimeframe,
+    activeStrategies,
+    signalsSourceMode,
+    periodMode,
+    barLimit,
+    startDate,
+    endDate,
+    hasDateFilterError,
+    signalMinStrengthPct,
+    signalDirectionFilter,
+    liveSignalQuotes,
+    liveSignalForming.forming,
+    liveSignalForming.isLiveForming,
+    tick?.last,
+  ]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
+      setSignals([]);
+      setConsensusSignals([]);
+      return;
+    }
+    if (signalsSourceMode === "live") {
       return;
     }
     if (signalsGenerating) {
@@ -615,12 +1451,13 @@ function App() {
     const loadConsensusSignals = async () => {
       try {
         const responses = await Promise.all(
-          selectedStrategies.map(async (strategy) => {
+          activeStrategies.map(async (strategy) => {
             const query = new URLSearchParams({
               symbol: selectedSymbol,
               timeframe: selectedTimeframe,
               strategy,
               limit: "1",
+              source: "historical",
             });
 
             const response = await fetch(`${API_BASE_URL}/signals?${query.toString()}`, {
@@ -649,14 +1486,18 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
+    activeStrategies,
     signalsRefreshToken,
     signalsGenerating,
+    signalsSourceMode,
   ]);
 
   useEffect(() => {
-    if (!isAuthenticated || !selectedSymbol || selectedStrategies.length === 0) {
+    if (!isAuthenticated || !selectedSymbol || activeStrategies.length === 0) {
       setSignals([]);
+      return;
+    }
+    if (signalsSourceMode === "live") {
       return;
     }
     if (signalsGenerating) {
@@ -667,13 +1508,14 @@ function App() {
       setSignalsLoading(true);
       try {
         const responses = await Promise.all(
-          selectedStrategies.map(async (strategy) => {
+          activeStrategies.map(async (strategy) => {
             const query = new URLSearchParams({
               symbol: selectedSymbol,
               timeframe: selectedTimeframe,
               strategy,
               limit: String(signalsFetchLimit),
               min_strength: String(signalMinStrengthPct / 100),
+              source: "historical",
             });
             if (signalDirectionFilter !== "BOTH") {
               query.set("direction", signalDirectionFilter);
@@ -707,48 +1549,38 @@ function App() {
     authToken,
     selectedSymbol,
     selectedTimeframe,
-    selectedStrategies,
+    activeStrategies,
     signalDirectionFilter,
     signalMinStrengthPct,
     signalsFetchLimit,
     signalsRefreshToken,
     signalsGenerating,
+    signalsSourceMode,
   ]);
 
-  const chartData = useMemo<CandlestickData[]>(() => {
-    return bars.map((bar) => ({
-      time: toChartDate(bar.timestamp),
-      open: Number(bar.open),
-      high: Number(bar.high),
-      low: Number(bar.low),
-      close: Number(bar.close),
-    }));
-  }, [bars]);
+  const signalsTotalPages = Math.max(1, Math.ceil(signals.length / SIGNALS_PAGE_SIZE));
 
-  const sma20Data = useMemo(() => toLineData(indicatorRows, "sma_20"), [indicatorRows]);
-  const ema20Data = useMemo(() => toLineData(indicatorRows, "ema_20"), [indicatorRows]);
-  const vwapData = useMemo(() => toLineData(indicatorRows, "vwap"), [indicatorRows]);
-  const bollingerUpperData = useMemo(() => toLineData(indicatorRows, "bollinger_upper"), [indicatorRows]);
-  const bollingerMiddleData = useMemo(() => toLineData(indicatorRows, "bollinger_middle"), [indicatorRows]);
-  const bollingerLowerData = useMemo(() => toLineData(indicatorRows, "bollinger_lower"), [indicatorRows]);
+  useEffect(() => {
+    setSignalsPage(1);
+  }, [signals]);
 
-  const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
-  const lastIndicatorRow = indicatorRows.length > 0 ? indicatorRows[indicatorRows.length - 1] : null;
-  const fallbackOhlc = lastBar
-    ? {
-        dateLabel: formatDateLabel(lastBar.timestamp),
-        open: Number(lastBar.open),
-        high: Number(lastBar.high),
-        low: Number(lastBar.low),
-        close: Number(lastBar.close),
-      }
-    : null;
+  useEffect(() => {
+    if (signalsPage > signalsTotalPages) {
+      setSignalsPage(signalsTotalPages);
+    }
+  }, [signalsPage, signalsTotalPages]);
 
-  const visibleOhlc = hoveredOhlc ?? fallbackOhlc;
-  const barsSummaryLabel = filterMode === "count" ? "Velas carregadas" : "Velas no período";
-  const barsSummaryValue = filterMode === "count" ? `${bars.length} / ${barLimit}` : String(bars.length);
+  const paginatedSignals = useMemo(
+    () =>
+      signals.slice(
+        (signalsPage - 1) * SIGNALS_PAGE_SIZE,
+        signalsPage * SIGNALS_PAGE_SIZE,
+      ),
+    [signals, signalsPage],
+  );
+
   const strategyContributions = useMemo<StrategyContribution[]>(() => {
-    return selectedStrategies.map((strategy) => {
+    return activeStrategies.map((strategy) => {
       const latest = consensusSignals.find((item) => item.strategy === strategy);
       if (!latest) {
         return {
@@ -769,7 +1601,7 @@ function App() {
         timestamp: latest.timestamp,
       };
     });
-  }, [selectedStrategies, consensusSignals]);
+  }, [activeStrategies, consensusSignals]);
 
   const consensus = useMemo(() => {
     if (strategyContributions.length === 0) {
@@ -792,6 +1624,67 @@ function App() {
       return a.strategy.localeCompare(b.strategy);
     });
   }, [strategyContributions]);
+
+  const comparedBacktestRuns = useMemo(
+    () => backtestRuns.filter((run) => backtestCompareRunIds.includes(run.id)),
+    [backtestRuns, backtestCompareRunIds],
+  );
+
+  const simulationBarLimit = periodMode === "window" ? barLimit : backtestLimit;
+
+  const backtestDataAvailability = useMemo(() => {
+    if (!selectedSymbol) {
+      return { status: "no_symbol" as const };
+    }
+    if (loading) {
+      return { status: "loading" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    const hasInstrument = instruments.some((item) => item.symbol === selectedSymbol);
+    if (!hasInstrument) {
+      return { status: "no_instrument" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    const availableBars = bars.length;
+    if (availableBars === 0) {
+      return { status: "no_bars" as const, symbol: selectedSymbol, timeframe: selectedTimeframe };
+    }
+    if (availableBars < BACKTEST_MIN_BARS) {
+      return {
+        status: "insufficient_bars" as const,
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        availableBars,
+        requiredBars: BACKTEST_MIN_BARS,
+      };
+    }
+    if (availableBars < simulationBarLimit) {
+      return {
+        status: "partial_window" as const,
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        availableBars,
+        requestedBars: simulationBarLimit,
+      };
+    }
+    return {
+      status: "ready" as const,
+      symbol: selectedSymbol,
+      timeframe: selectedTimeframe,
+      availableBars,
+      requestedBars: simulationBarLimit,
+    };
+  }, [
+    bars.length,
+    instruments,
+    loading,
+    selectedSymbol,
+    selectedTimeframe,
+    simulationBarLimit,
+  ]);
+
+  const canRunBacktest =
+    activeStrategies.length > 0 &&
+    !backtestRunning &&
+    (backtestDataAvailability.status === "ready" || backtestDataAvailability.status === "partial_window");
 
   const handleAuthSubmit = async () => {
     setAuthLoading(true);
@@ -821,7 +1714,7 @@ function App() {
   };
 
   const handleCreateCombination = async () => {
-    if (!authToken || selectedStrategies.length === 0 || !newCombinationName.trim()) {
+    if (!authToken || activeStrategies.length === 0 || !newCombinationName.trim()) {
       return;
     }
     setCombinationError(null);
@@ -835,7 +1728,7 @@ function App() {
         body: JSON.stringify({
           name: newCombinationName.trim(),
           description: newCombinationDescription.trim() || null,
-          strategies: selectedStrategies,
+          strategies: activeStrategies,
           is_shared: true,
         }),
       });
@@ -967,140 +1860,1038 @@ function App() {
   const handleResetSignalListFilters = () => {
     setSignalDirectionFilter("BOTH");
     setSignalMinStrengthPct(0);
+    setSignalsPage(1);
   };
 
-  useEffect(() => {
-    setHoveredOhlc(null);
-  }, [selectedSymbol]);
+  const handleLoadDemoMarketData = async () => {
+    if (!authToken || !selectedSymbol) {
+      return;
+    }
+    setDemoDataLoading(true);
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/market-data/load-demo`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          symbols: [selectedSymbol],
+          period: "2y",
+          include_weekly: selectedTimeframe === "1w",
+        }),
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao carregar dados demo."));
+      }
+      const payload = (await response.json()) as {
+        results: Array<{ symbol: string; imported_rows_1d: number; imported_rows_1w: number }>;
+      };
+      const result = payload.results[0];
+      if (!result) {
+        throw new Error("Nenhum dado foi importado.");
+      }
+      const importedForTimeframe =
+        selectedTimeframe === "1w" ? result.imported_rows_1w : result.imported_rows_1d;
+      if (importedForTimeframe === 0) {
+        throw new Error(
+          selectedTimeframe === "1w"
+            ? "Dados diários importados, mas sem velas semanais. Tente intervalo 1d ou volte a carregar com semanal."
+            : "Nenhuma vela diária foi importada para este símbolo.",
+        );
+      }
+      setMarketDataRefreshToken((previous) => previous + 1);
+    } catch (loadError) {
+      setBacktestError(toUserFetchError(loadError, "Erro inesperado ao carregar dados demo."));
+    } finally {
+      setDemoDataLoading(false);
+    }
+  };
 
-  useEffect(() => {
-    if (!chartContainerRef.current) {
+  const handleRunBacktest = async () => {
+    if (!authToken || !selectedSymbol || activeStrategies.length === 0) {
+      return;
+    }
+    if (hasDateFilterError) {
+      setBacktestError("Defina um intervalo de datas válido para correr backtest.");
+      return;
+    }
+    if (backtestDataAvailability.status === "no_instrument" || backtestDataAvailability.status === "no_bars") {
+      setBacktestError(
+        `Sem velas para ${selectedSymbol} / ${selectedTimeframe}. Importe dados ou use "Carregar dados demo".`,
+      );
+      return;
+    }
+    if (backtestDataAvailability.status === "insufficient_bars") {
+      setBacktestError(
+        `Só ${backtestDataAvailability.availableBars} velas disponíveis; o backtest precisa de pelo menos ${BACKTEST_MIN_BARS}.`,
+      );
       return;
     }
 
-    const container = chartContainerRef.current;
-    const chart = createChart(chartContainerRef.current, {
-      layout: { background: { color: "#0f172a" }, textColor: "#d1d5db" },
-      grid: { vertLines: { color: "#334155" }, horzLines: { color: "#334155" } },
-      width: Math.max(container.clientWidth, 320),
-      height: 420,
-    });
-    const candleSeries = chart.addSeries(CandlestickSeries);
-    candleSeries.setData(chartData);
+    setBacktestRunning(true);
+    setBacktestError(null);
+    setBacktestSelectedRun(null);
+    try {
+      const strategyMinStrengths = Object.fromEntries(
+        activeStrategies.map((strategy) => [
+          strategy,
+          (backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT) / 100,
+        ]),
+      );
+      const singleStrategyOnly = activeStrategies.length === 1;
+      const fallbackMinStrength = singleStrategyOnly
+        ? strategyMinStrengths[activeStrategies[0]]
+        : backtestConsensusStrengthPct / 100;
 
-    if (overlayVisibility.sma20 && sma20Data.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 2, title: "SMA 20" });
-      series.setData(sma20Data);
-    }
+      const payload: Record<string, string | number | boolean | string[] | Record<string, number> | null> = {
+        symbol: selectedSymbol,
+        timeframe: selectedTimeframe,
+        strategies: activeStrategies,
+        initial_capital: backtestInitialCapital,
+        fee_bps: backtestFeeBps,
+        fee_model: backtestFeeModel,
+        slippage_bps: backtestSlippageBps,
+        slippage_model: backtestSlippageModel,
+        min_signal_strength: fallbackMinStrength,
+        strategy_min_strengths: strategyMinStrengths,
+        min_consensus_strength: singleStrategyOnly ? null : backtestConsensusStrengthPct / 100,
+        limit: simulationBarLimit,
+        position_size_pct: backtestPositionSizePct,
+        position_sizing_model: backtestPositionSizingModel,
+        risk_per_trade_pct: backtestRiskPerTradePct,
+        entry_confirmation_bars: backtestEntryConfirmationBars,
+        execution_timing: backtestExecutionTiming,
+        exit_mode: backtestExitMode,
+        stop_loss_pct: backtestExitMode === "opposite_signal" ? null : backtestStopLossPct,
+        take_profit_pct: backtestExitMode === "opposite_signal" ? null : backtestTakeProfitPct,
+        max_bars_in_trade: backtestMaxBarsInTrade > 0 ? backtestMaxBarsInTrade : null,
+        walkforward_split_pct: backtestWalkforwardSplitPct,
+        walkforward_mode: backtestWalkforwardMode,
+        walkforward_folds: backtestWalkforwardFolds,
+        benchmark_enabled: backtestBenchmarkEnabled,
+      };
 
-    if (overlayVisibility.ema20 && ema20Data.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#8b5cf6", lineWidth: 2, title: "EMA 20" });
-      series.setData(ema20Data);
-    }
-
-    if (overlayVisibility.vwap && vwapData.length > 0) {
-      const series = chart.addSeries(LineSeries, { color: "#22c55e", lineWidth: 2, title: "VWAP" });
-      series.setData(vwapData);
-    }
-
-    if (overlayVisibility.bollinger) {
-      if (bollingerUpperData.length > 0) {
-        const series = chart.addSeries(LineSeries, {
-          color: "#38bdf8",
-          lineWidth: 1,
-          lineStyle: 2,
-          title: "BB Upper",
-        });
-        series.setData(bollingerUpperData);
-      }
-      if (bollingerMiddleData.length > 0) {
-        const series = chart.addSeries(LineSeries, { color: "#0ea5e9", lineWidth: 1, title: "BB Mid" });
-        series.setData(bollingerMiddleData);
-      }
-      if (bollingerLowerData.length > 0) {
-        const series = chart.addSeries(LineSeries, {
-          color: "#38bdf8",
-          lineWidth: 1,
-          lineStyle: 2,
-          title: "BB Lower",
-        });
-        series.setData(bollingerLowerData);
-      }
-    }
-
-    chart.timeScale().fitContent();
-
-    chart.subscribeCrosshairMove((param) => {
-      if (param.time === undefined || !param.seriesData.size) {
-        setHoveredOhlc(null);
-        return;
+      if (periodMode === "date") {
+        payload.start = `${startDate}T00:00:00Z`;
+        payload.end = `${endDate}T23:59:59Z`;
       }
 
-      const rawData = param.seriesData.get(candleSeries);
-      if (
-        !rawData ||
-        typeof rawData !== "object" ||
-        !("open" in rawData) ||
-        !("high" in rawData) ||
-        !("low" in rawData) ||
-        !("close" in rawData)
-      ) {
-        setHoveredOhlc(null);
-        return;
-      }
-
-      let dateLabel: string;
-      if (typeof param.time === "string") {
-        dateLabel = formatDateLabel(param.time);
-      } else if (typeof param.time === "number") {
-        dateLabel = new Date(param.time * 1000).toLocaleDateString("pt-PT");
-      } else {
-        dateLabel = `${param.time.day.toString().padStart(2, "0")}/${param.time.month
-          .toString()
-          .padStart(2, "0")}/${param.time.year}`;
-      }
-
-      setHoveredOhlc({
-        dateLabel,
-        open: Number(rawData.open),
-        high: Number(rawData.high),
-        low: Number(rawData.low),
-        close: Number(rawData.close),
+      const response = await fetch(`${API_BASE_URL}/backtests/run`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(payload),
       });
-    });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao correr backtest."));
+      }
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) {
+      const created = (await response.json()) as BacktestRun;
+      setBacktestRefreshToken((previous) => previous + 1);
+      setBacktestSelectedRun(created);
+    } catch (runError) {
+      setBacktestError(toUserFetchError(runError, "Erro inesperado ao correr backtest."));
+    } finally {
+      setBacktestRunning(false);
+    }
+  };
+
+  const handleExportBacktestCsv = async (runId: number, exportType: "trades" | "equity") => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/backtests/${runId}/export?type=${exportType}`,
+        { headers: { Authorization: `Bearer ${authToken}` } },
+      );
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao exportar CSV."));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `backtest_${runId}_${exportType}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (exportError) {
+      setBacktestError(toUserFetchError(exportError, "Erro inesperado ao exportar CSV."));
+    }
+  };
+
+  const handleToggleBacktestRunDetail = async (runId: number) => {
+    if (backtestSelectedRun?.id === runId) {
+      setBacktestSelectedRun(null);
+      return;
+    }
+    await handleOpenBacktestRun(runId);
+  };
+
+  const renderBacktestRunDetail = (run: BacktestRun) => {
+    const equityCurve = getSummaryCurve(run.result_summary);
+    const walkforwardBlock =
+      typeof run.result_summary.walkforward === "object" && run.result_summary.walkforward !== null
+        ? (run.result_summary.walkforward as Record<string, unknown>)
+        : null;
+    const walkforwardInSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.in_sample) : null;
+    const walkforwardOutSample = walkforwardBlock ? getWalkforwardMetrics(walkforwardBlock.out_sample) : null;
+    const walkforwardAggregate = walkforwardBlock
+      ? getWalkforwardMetrics(walkforwardBlock.out_sample_aggregate)
+      : null;
+    const walkforwardMode =
+      typeof walkforwardBlock?.mode === "string" ? walkforwardBlock.mode : "holdout";
+    const walkforwardFolds =
+      Array.isArray(walkforwardBlock?.folds) ? (walkforwardBlock.folds as Record<string, unknown>[]) : [];
+    const benchmarkReturnPct = getSummaryNumber(run.result_summary, "benchmark_return_pct");
+    const runConfig = getRunConfigSnapshot(run);
+    const benchmarkEnabled = runConfig.benchmark_enabled !== false;
+    const trades = run.trades ?? [];
+    const totalTradePages = Math.max(1, Math.ceil(trades.length / BACKTEST_TRADES_PAGE_SIZE));
+
+    const renderWalkforwardColumn = (label: string, metrics: WalkforwardMetrics) => (
+      <article className="backtest-wf-col">
+        <strong>{label}</strong>
+        <p>PnL {formatPct(metrics.net_pnl_pct)}</p>
+        <p>
+          {metrics.trades_count} trades · Win {formatPct(metrics.win_rate, 0)}
+        </p>
+        <p>
+          PF {metrics.profit_factor.toFixed(2)} · DD {formatPct(metrics.max_drawdown_pct, 1)}
+        </p>
+        <p className="hint">{metrics.bars_processed} barras</p>
+      </article>
+    );
+
+    return (
+      <div className="backtest-detail-panel backtest-detail-inline">
+        <div className="stats">
+          <div>
+            <span className="stats-label">Capital inicial {"->"} final</span>
+            <strong>
+              {run.initial_capital.toFixed(2)} {"->"}{" "}
+              {getSummaryNumber(run.result_summary, "final_capital").toFixed(2)}
+            </strong>
+          </div>
+          <div>
+            <span className="stats-label">Profit factor</span>
+            <strong>{run.profit_factor.toFixed(2)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Expectancy</span>
+            <strong>{getSummaryNumber(run.result_summary, "expectancy").toFixed(2)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Retorno buy & hold</span>
+            <strong>{formatPct(benchmarkReturnPct)}</strong>
+          </div>
+          <div>
+            <span className="stats-label">Alpha vs benchmark</span>
+            <strong>{formatPct(getSummaryNumber(run.result_summary, "alpha_vs_benchmark_pct"))}</strong>
+          </div>
+        </div>
+
+        <div className="backtest-run-config-panel">
+          <span className="stats-label">Configuração deste run</span>
+          <div className="backtest-run-config-grid">
+            <div>
+              <span className="stats-label">Estratégias</span>
+              <strong>
+                {(Array.isArray(runConfig.strategies) ? runConfig.strategies : run.strategy_names)
+                  .map((name) => STRATEGY_SUMMARY[String(name)]?.title ?? String(name))
+                  .join(" · ")}
+              </strong>
+            </div>
+            <div>
+              <span className="stats-label">Fees / slippage</span>
+              <strong>
+                {typeof runConfig.fee_model === "string"
+                  ? formatFeeModelLabel(runConfig.fee_model)
+                  : `${Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps`}
+                {typeof runConfig.fee_model === "string" && runConfig.fee_model === "fixed_bps"
+                  ? ` (${Number(runConfig.fee_bps ?? run.fee_bps).toFixed(1)} bps)`
+                  : ""}
+                {" · "}
+                {Number(runConfig.slippage_bps ?? run.slippage_bps).toFixed(1)} bps slippage
+                {typeof runConfig.slippage_model === "string"
+                  ? ` · ${formatSlippageModelLabel(runConfig.slippage_model)}`
+                  : ""}
+              </strong>
+            </div>
+            {typeof runConfig.position_size_pct === "number" && (
+              <div>
+                <span className="stats-label">Capital por trade</span>
+                <strong>
+                  {typeof runConfig.position_sizing_model === "string"
+                    ? `${formatPositionSizingLabel(runConfig.position_sizing_model)} · `
+                    : ""}
+                  {runConfig.position_sizing_model === "atr_risk" &&
+                  typeof runConfig.risk_per_trade_pct === "number"
+                    ? `${Number(runConfig.risk_per_trade_pct).toFixed(1)}% risco`
+                    : `${runConfig.position_size_pct.toFixed(0)}%`}
+                  {runConfig.position_sizing_model === "atr_risk" &&
+                  typeof runConfig.position_size_pct === "number"
+                    ? ` · teto ${runConfig.position_size_pct.toFixed(0)}%`
+                    : ""}
+                </strong>
+              </div>
+            )}
+            {typeof runConfig.entry_confirmation_bars === "number" && (
+              <div>
+                <span className="stats-label">Confirmação entrada</span>
+                <strong>{runConfig.entry_confirmation_bars} vela(s)</strong>
+              </div>
+            )}
+            {typeof runConfig.execution_timing === "string" && (
+              <div>
+                <span className="stats-label">Timing execução</span>
+                <strong>{formatExecutionTimingLabel(runConfig.execution_timing)}</strong>
+              </div>
+            )}
+            {(typeof runConfig.execution_timing !== "string" &&
+              typeof runConfig.entry_timing === "string") && (
+              <div>
+                <span className="stats-label">Timing execução</span>
+                <strong>{formatExecutionTimingLabel(runConfig.entry_timing)}</strong>
+              </div>
+            )}
+            {typeof runConfig.exit_mode === "string" && (
+              <div>
+                <span className="stats-label">Modo de saída</span>
+                <strong>{formatExitModeLabel(runConfig.exit_mode)}</strong>
+              </div>
+            )}
+            {typeof runConfig.stop_loss_pct === "number" && (
+              <div>
+                <span className="stats-label">Stop-loss</span>
+                <strong>{runConfig.stop_loss_pct.toFixed(1)}%</strong>
+              </div>
+            )}
+            {typeof runConfig.take_profit_pct === "number" && (
+              <div>
+                <span className="stats-label">Take-profit</span>
+                <strong>{runConfig.take_profit_pct.toFixed(1)}%</strong>
+              </div>
+            )}
+            {typeof runConfig.max_bars_in_trade === "number" && (
+              <div>
+                <span className="stats-label">Máx. barras</span>
+                <strong>{runConfig.max_bars_in_trade}</strong>
+              </div>
+            )}
+            {typeof runConfig.walkforward_split_pct === "number" && runConfig.walkforward_split_pct > 0 && (
+              <div>
+                <span className="stats-label">Walk-forward</span>
+                <strong>
+                  {formatWalkforwardModeLabel(
+                    typeof runConfig.walkforward_mode === "string" ? runConfig.walkforward_mode : "holdout",
+                  )}{" "}
+                  · {Number(runConfig.walkforward_split_pct).toFixed(0)}% OOS
+                  {typeof runConfig.walkforward_folds === "number" &&
+                  runConfig.walkforward_mode === "rolling"
+                    ? ` · ${runConfig.walkforward_folds} folds`
+                    : ""}
+                </strong>
+              </div>
+            )}
+            {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length > 1 && (
+              <div>
+                <span className="stats-label">Consenso mínimo</span>
+                <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
+              </div>
+            )}
+            {typeof runConfig.min_consensus_strength === "number" && run.strategy_names.length === 1 && (
+              <div>
+                <span className="stats-label">Limiar de força</span>
+                <strong>{formatStrengthPct(runConfig.min_consensus_strength)}</strong>
+              </div>
+            )}
+          </div>
+          {typeof runConfig.strategy_min_strengths === "object" && runConfig.strategy_min_strengths !== null && (
+            <div className="backtest-run-config-thresholds">
+              {Object.entries(runConfig.strategy_min_strengths as Record<string, number>).map(
+                ([strategy, strength]) => (
+                  <span key={strategy} className="backtest-config-chip">
+                    {STRATEGY_SUMMARY[strategy]?.title ?? strategy}: {formatStrengthPct(strength)}
+                  </span>
+                ),
+              )}
+            </div>
+          )}
+          <p className="hint backtest-run-config-meta">
+            {run.bars_processed} barras processadas
+            {run.start_at || run.end_at
+              ? ` · ${run.start_at ? formatDateLabel(run.start_at) : "…"} – ${run.end_at ? formatDateLabel(run.end_at) : "…"}`
+              : ""}
+          </p>
+        </div>
+
+        {walkforwardMode === "holdout" && walkforwardInSample && walkforwardOutSample && walkforwardBlock && (
+          <div className="backtest-walkforward-panel">
+            <span className="stats-label">
+              Walk-forward · holdout {getSummaryNumber(walkforwardBlock, "split_pct", 0).toFixed(0)}%
+            </span>
+            <div className="backtest-wf-grid">
+              {renderWalkforwardColumn("In-sample", walkforwardInSample)}
+              {renderWalkforwardColumn("Out-of-sample", walkforwardOutSample)}
+            </div>
+          </div>
+        )}
+
+        {walkforwardMode === "rolling" && walkforwardBlock && (
+          <div className="backtest-walkforward-panel">
+            <span className="stats-label">
+              Walk-forward rolling · {getSummaryNumber(walkforwardBlock, "split_pct", 0).toFixed(0)}% por bloco
+              {typeof walkforwardBlock.folds_count === "number"
+                ? ` · ${walkforwardBlock.folds_count} folds`
+                : ""}
+            </span>
+            {walkforwardAggregate && (
+              <div className="backtest-wf-grid">
+                {renderWalkforwardColumn("OOS agregado", walkforwardAggregate)}
+              </div>
+            )}
+            {walkforwardFolds.length > 0 && (
+              <div className="backtest-wf-grid">
+                {walkforwardFolds.map((fold, index) => {
+                  const foldMetrics = getWalkforwardMetrics(fold.out_sample);
+                  if (!foldMetrics) {
+                    return null;
+                  }
+                  const foldNumber = typeof fold.fold === "number" ? fold.fold : index + 1;
+                  return (
+                    <div key={`wf-fold-${foldNumber}`}>
+                      {renderWalkforwardColumn(`Fold ${foldNumber} OOS`, foldMetrics)}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {equityCurve.length > 0 && (
+          <div className="equity-curve-list">
+            <span className="stats-label">Curva de equity</span>
+            <BacktestEquityChart
+              points={equityCurve}
+              initialCapital={run.initial_capital}
+              benchmarkReturnPct={benchmarkReturnPct}
+              benchmarkEnabled={benchmarkEnabled}
+            />
+          </div>
+        )}
+
+        {run.insight && (
+          <details className="backtest-insight-expand">
+            <summary>
+              <span>Análise crítica</span>
+              <span className="backtest-insight-expand-meta">
+                {run.insight.lessons.length} lições · {run.insight.recommendations.length} recomendações
+              </span>
+            </summary>
+            <div className="backtest-insight-body">
+              <p className="backtest-insight-summary">{run.insight.narrative_summary}</p>
+
+              {run.insight.timeline.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Cronologia</strong>
+                  <ol className="backtest-insight-timeline">
+                    {run.insight.timeline.map((item) => (
+                      <li
+                        key={`${item.step}-${item.phase}`}
+                        className={`backtest-insight-timeline-item backtest-insight-severity-${item.severity}`}
+                      >
+                        <strong>{item.title}</strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {run.insight.failure_modes.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Modos de falha</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.failure_modes.map((item) => (
+                      <li
+                        key={item.code}
+                        className={`backtest-insight-list-item backtest-insight-severity-${item.severity}`}
+                      >
+                        <strong>{item.title}</strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {run.insight.lessons.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Lições aprendidas</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.lessons.map((item) => (
+                      <li key={item.title} className="backtest-insight-list-item">
+                        <strong>
+                          {item.title}
+                          <span className="backtest-insight-priority"> · {item.priority}</span>
+                        </strong>
+                        <p>{item.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {run.insight.recommendations.length > 0 && (
+                <div className="backtest-insight-section">
+                  <strong className="backtest-insight-section-title">Recomendações para runs futuras</strong>
+                  <ul className="backtest-insight-list">
+                    {run.insight.recommendations.map((item) => (
+                      <li key={`${item.area}-${item.suggestion}`} className="backtest-insight-list-item">
+                        <strong>{item.suggestion}</strong>
+                        <p>{item.rationale}</p>
+                        {item.param_hint && <p className="hint">Parâmetro: {item.param_hint}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+
+        {(run.trades_count > 0 || equityCurve.length > 0) && (
+          <div className="backtest-detail-chart-action">
+            {run.trades_count > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="tab-button"
+                  onClick={() => void handleShowBacktestTradesOnChart(run)}
+                >
+                  {backtestTradesOnChartRunId === run.id
+                    ? "Trades visíveis no gráfico"
+                    : "Ver trades no gráfico"}
+                </button>
+                {backtestTradesOnChartRunId === run.id && (
+                  <button type="button" className="config-button" onClick={handleClearBacktestTradesOnChart}>
+                    Ocultar do gráfico
+                  </button>
+                )}
+              </>
+            )}
+            <button
+              type="button"
+              className="config-button"
+              onClick={() => void handleExportBacktestCsv(run.id, "trades")}
+            >
+              Exportar trades CSV
+            </button>
+            {equityCurve.length > 0 && (
+              <button
+                type="button"
+                className="config-button"
+                onClick={() => void handleExportBacktestCsv(run.id, "equity")}
+              >
+                Exportar equity CSV
+              </button>
+            )}
+          </div>
+        )}
+
+        {trades.length > 0 ? (
+          <div className="backtest-trades-list">
+            <div className="backtest-trades-list-header">
+              <span className="stats-label">Trades ({trades.length})</span>
+              {trades.length > BACKTEST_TRADES_PAGE_SIZE && (
+                <div className="backtest-trades-pagination">
+                  <button
+                    type="button"
+                    className="config-button"
+                    disabled={backtestTradesPage <= 1}
+                    onClick={() => setBacktestTradesPage((page) => Math.max(1, page - 1))}
+                  >
+                    Anterior
+                  </button>
+                  <span className="hint">
+                    {Math.min((backtestTradesPage - 1) * BACKTEST_TRADES_PAGE_SIZE + 1, trades.length)}–
+                    {Math.min(backtestTradesPage * BACKTEST_TRADES_PAGE_SIZE, trades.length)} de {trades.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="config-button"
+                    disabled={backtestTradesPage >= totalTradePages}
+                    onClick={() => setBacktestTradesPage((page) => Math.min(totalTradePages, page + 1))}
+                  >
+                    Seguinte
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="signals-list">
+              {trades
+                .slice(
+                  (backtestTradesPage - 1) * BACKTEST_TRADES_PAGE_SIZE,
+                  backtestTradesPage * BACKTEST_TRADES_PAGE_SIZE,
+                )
+                .map((trade) => (
+                  <article key={trade.id} className="signal-row">
+                    <div className="signal-main">
+                      <div className="signal-top">
+                        <strong>{trade.direction}</strong>
+                        <span>{formatDateTimeLabel(trade.entry_timestamp)}</span>
+                        <span>{formatDateTimeLabel(trade.exit_timestamp)}</span>
+                        <span>Barras: {trade.bars_held}</span>
+                      </div>
+                      <p>
+                        PnL:{" "}
+                        <strong className={trade.net_pnl >= 0 ? "signal-buy" : "signal-sell"}>
+                          {trade.net_pnl.toFixed(2)}
+                        </strong>{" "}
+                        | Retorno: {(trade.return_pct * 100).toFixed(2)}% | Entry {trade.entry_price.toFixed(2)}{" "}
+                        {"->"} Exit {trade.exit_price.toFixed(2)}
+                      </p>
+                      <p className="backtest-trade-reason">
+                        <span>Entrada: {trade.entry_reason}</span>
+                        <span>Saída: {trade.exit_reason}</span>
+                      </p>
+                    </div>
+                  </article>
+                ))}
+            </div>
+          </div>
+        ) : (
+          <p className="hint">Este run não gerou trades.</p>
+        )}
+      </div>
+    );
+  };
+
+  const handleOpenBacktestRun = async (runId: number) => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/backtests/${runId}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao carregar detalhe do backtest."));
+      }
+      setBacktestSelectedRun((await response.json()) as BacktestRun);
+    } catch (loadError) {
+      setBacktestError(loadError instanceof Error ? loadError.message : "Erro inesperado.");
+    }
+  };
+
+  const handleViewLessonRun = async (runId: number) => {
+    setActiveTab("backtests");
+    const runIndex = backtestRuns.findIndex((run) => run.id === runId);
+    if (runIndex >= 0) {
+      setBacktestRunsPage(Math.floor(runIndex / BACKTEST_RUNS_PAGE_SIZE) + 1);
+    }
+    await handleOpenBacktestRun(runId);
+  };
+
+  const handleApplyRecommendation = (recommendation: BacktestRecommendation) => {
+    const previews = buildRecommendationApplyPreview(recommendation, backtestFormSnapshot);
+    if (previews.length === 0) {
+      setBacktestError("Esta sugestão não tem parâmetros aplicáveis na configuração actual.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Aplicar sugestão do run #${recommendation.run_id}?\n\n${recommendation.suggestion}\n\n${previews.join("\n")}`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    const applied = applyRecommendation(recommendation, backtestFormSnapshot, {
+      setExitMode: setBacktestExitMode,
+      setStopLossPct: setBacktestStopLossPct,
+      setTakeProfitPct: setBacktestTakeProfitPct,
+      setConsensusStrengthPct: setBacktestConsensusStrengthPct,
+      setEntryConfirmationBars: setBacktestEntryConfirmationBars,
+      setStrategyMinStrengthPct: setBacktestStrategyMinStrengthPct,
+    });
+    if (!applied) {
+      setBacktestError("Não foi possível aplicar a sugestão com os valores actuais.");
+      return;
+    }
+    setBacktestError(null);
+  };
+
+  const handleToggleCompareRun = (runId: number) => {
+    setBacktestCompareRunIds((previous) => {
+      if (previous.includes(runId)) {
+        return previous.filter((id) => id !== runId);
+      }
+      if (previous.length >= 2) {
+        return [previous[1], runId];
+      }
+      return [...previous, runId];
+    });
+  };
+
+  const handleSaveBacktestPreset = () => {
+    const name = backtestPresetName.trim();
+    if (!name) {
+      setBacktestError("Defina um nome para guardar preset.");
+      return;
+    }
+    const preset: BacktestPreset = normalizeBacktestPreset({
+      id: `${Date.now()}`,
+      name,
+      strategies: activeStrategies,
+      initialCapital: backtestInitialCapital,
+      feeBps: backtestFeeBps,
+      feeModel: backtestFeeModel,
+      slippageBps: backtestSlippageBps,
+      slippageModel: backtestSlippageModel,
+      strategyMinStrengthPct: Object.fromEntries(
+        activeStrategies.map((strategy) => [
+          strategy,
+          backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT,
+        ]),
+      ),
+      consensusStrengthPct: backtestConsensusStrengthPct,
+      limit: periodMode === "window" ? barLimit : backtestLimit,
+      positionSizePct: backtestPositionSizePct,
+      positionSizingModel: backtestPositionSizingModel,
+      riskPerTradePct: backtestRiskPerTradePct,
+      entryConfirmationBars: backtestEntryConfirmationBars,
+      executionTiming: backtestExecutionTiming,
+      exitMode: backtestExitMode,
+      stopLossPct: backtestStopLossPct,
+      takeProfitPct: backtestTakeProfitPct,
+      maxBarsInTrade: backtestMaxBarsInTrade,
+      walkforwardSplitPct: backtestWalkforwardSplitPct,
+      walkforwardMode: backtestWalkforwardMode,
+      walkforwardFolds: backtestWalkforwardFolds,
+      benchmarkEnabled: backtestBenchmarkEnabled,
+    });
+    setBacktestPresets((previous) => [preset, ...previous].slice(0, 20));
+    setBacktestPresetName("");
+    setBacktestError(null);
+  };
+
+  const handleApplyBacktestPreset = (presetId: string) => {
+    const preset = backtestPresets.find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
+    const normalized = normalizeBacktestPreset(preset);
+    setActiveStrategies(normalized.strategies);
+    setBacktestInitialCapital(normalized.initialCapital);
+    setBacktestFeeBps(normalized.feeBps);
+    setBacktestFeeModel(normalized.feeModel);
+    setBacktestSlippageBps(normalized.slippageBps);
+    setBacktestSlippageModel(normalized.slippageModel);
+    setBacktestStrategyMinStrengthPct(normalized.strategyMinStrengthPct);
+    setBacktestConsensusStrengthPct(normalized.consensusStrengthPct);
+    if (periodMode === "window") {
+      setChartWindow("all");
+    } else {
+      setBacktestLimit(normalized.limit);
+    }
+    setBacktestPositionSizePct(normalized.positionSizePct);
+    setBacktestPositionSizingModel(normalized.positionSizingModel);
+    setBacktestRiskPerTradePct(normalized.riskPerTradePct);
+    setBacktestEntryConfirmationBars(normalized.entryConfirmationBars);
+    setBacktestExecutionTiming(normalized.executionTiming);
+    setBacktestExitMode(normalized.exitMode);
+    setBacktestStopLossPct(normalized.stopLossPct ?? 2);
+    setBacktestTakeProfitPct(normalized.takeProfitPct ?? 4);
+    setBacktestMaxBarsInTrade(normalized.maxBarsInTrade ?? 40);
+    setBacktestWalkforwardSplitPct(normalized.walkforwardSplitPct);
+    setBacktestWalkforwardMode(normalized.walkforwardMode);
+    setBacktestWalkforwardFolds(normalized.walkforwardFolds);
+    setBacktestBenchmarkEnabled(normalized.benchmarkEnabled);
+    setBacktestError(null);
+  };
+
+  const applyBacktestConfigFromRun = (run: BacktestRun) => {
+    const config = getRunConfigSnapshot(run);
+    const strategyStrengthPct = buildStrategyStrengthPctFromRun(run, config);
+    const consensusPct =
+      typeof config.min_consensus_strength === "number"
+        ? Math.round(config.min_consensus_strength * 100)
+        : Math.round(run.min_signal_strength * 100);
+    const runLimit = typeof config.limit === "number" ? config.limit : run.bars_processed || 2000;
+
+    if (instruments.some((item) => item.symbol === run.symbol)) {
+      setSelectedSymbol(run.symbol);
+    }
+    setCandle(parseCandleCode(run.timeframe));
+    setManualCandle(true);
+    setActiveStrategies([...run.strategy_names]);
+    setBacktestInitialCapital(Number(config.initial_capital ?? run.initial_capital));
+    setBacktestFeeBps(Number(config.fee_bps ?? run.fee_bps));
+    if (config.fee_model === "fixed_bps" || config.fee_model === "ibkr_us_tiered") {
+      setBacktestFeeModel(config.fee_model);
+    }
+    setBacktestSlippageBps(Number(config.slippage_bps ?? run.slippage_bps));
+    if (config.slippage_model === "fixed" || config.slippage_model === "atr_volume") {
+      setBacktestSlippageModel(config.slippage_model);
+    }
+    setBacktestStrategyMinStrengthPct(strategyStrengthPct);
+    setBacktestConsensusStrengthPct(consensusPct);
+
+    if (run.start_at && run.end_at) {
+      setPeriodMode("date");
+      setStartDate(toInputDate(new Date(run.start_at)));
+      setEndDate(toInputDate(new Date(run.end_at)));
+      setBacktestLimit(runLimit);
+    } else {
+      setPeriodMode("window");
+      setChartWindow("all");
+    }
+
+    if (typeof config.position_size_pct === "number") {
+      setBacktestPositionSizePct(config.position_size_pct);
+    }
+    if (config.position_sizing_model === "fixed_pct" || config.position_sizing_model === "atr_risk") {
+      setBacktestPositionSizingModel(config.position_sizing_model);
+    }
+    if (typeof config.risk_per_trade_pct === "number") {
+      setBacktestRiskPerTradePct(config.risk_per_trade_pct);
+    }
+    if (typeof config.entry_confirmation_bars === "number") {
+      setBacktestEntryConfirmationBars(config.entry_confirmation_bars);
+    }
+    if (config.execution_timing === "signal_close" || config.execution_timing === "next_open") {
+      setBacktestExecutionTiming(config.execution_timing);
+    } else if (config.entry_timing === "signal_close" || config.entry_timing === "next_open") {
+      setBacktestExecutionTiming(config.entry_timing);
+    }
+    if (config.exit_mode === "opposite_signal" || config.exit_mode === "tp_sl_or_opposite" || config.exit_mode === "tp_sl_only") {
+      setBacktestExitMode(config.exit_mode);
+    }
+    if (typeof config.stop_loss_pct === "number") {
+      setBacktestStopLossPct(config.stop_loss_pct);
+    }
+    if (typeof config.take_profit_pct === "number") {
+      setBacktestTakeProfitPct(config.take_profit_pct);
+    }
+    if (typeof config.max_bars_in_trade === "number") {
+      setBacktestMaxBarsInTrade(config.max_bars_in_trade);
+    }
+    if (typeof config.walkforward_split_pct === "number") {
+      setBacktestWalkforwardSplitPct(config.walkforward_split_pct);
+    }
+    if (config.walkforward_mode === "holdout" || config.walkforward_mode === "rolling") {
+      setBacktestWalkforwardMode(config.walkforward_mode);
+    }
+    if (typeof config.walkforward_folds === "number") {
+      setBacktestWalkforwardFolds(config.walkforward_folds);
+    }
+    if (typeof config.benchmark_enabled === "boolean") {
+      setBacktestBenchmarkEnabled(config.benchmark_enabled);
+    }
+
+    setBacktestError(null);
+  };
+
+  const handleApplyBacktestRunConfig = (run: BacktestRun) => {
+    applyBacktestConfigFromRun(run);
+  };
+
+  const handleClearBacktestTradesOnChart = () => {
+    setBacktestTradesOnChart([]);
+    setBacktestTradesOnChartRunId(null);
+  };
+
+  const handleClearSignalsOnChart = () => {
+    setPinnedSignalsOnChart([]);
+    setSignalsChartOverlayEnabled(false);
+    setSelectedChartSignal(null);
+    setChartSignalMatches([]);
+  };
+
+  const hasSignalsOnChart =
+    signalsChartOverlayEnabled || pinnedSignalsOnChart.length > 0;
+
+  const handleShowFilteredSignalsOnChart = () => {
+    if (signals.length === 0) {
+      return;
+    }
+    setSignalsChartOverlayEnabled(true);
+    setPinnedSignalsOnChart([]);
+    setSelectedChartSignal(null);
+    setChartSignalMatches([]);
+    setActiveTab("market");
+    setChartMode("historico");
+  };
+
+  const handleSignalsChartAction = () => {
+    if (signals.length === 0) {
+      return;
+    }
+    if (hasSignalsOnChart) {
+      setActiveTab("market");
+      setChartMode("historico");
+      return;
+    }
+    handleShowFilteredSignalsOnChart();
+  };
+
+  const handleShowSignalOnChart = (signal: SignalItem) => {
+    if (instruments.some((item) => item.symbol === signal.symbol)) {
+      setSelectedSymbol(signal.symbol);
+    }
+    setCandle(parseCandleCode(signal.timeframe));
+    setManualCandle(true);
+    setPinnedSignalsOnChart([signal]);
+    setSignalsChartOverlayEnabled(false);
+    setSelectedChartSignal(signal);
+    setChartSignalMatches([signal]);
+    setActiveTab("market");
+    setChartMode("historico");
+  };
+
+  const handleChartSignalClick = (timeSec: number) => {
+    const matches = findSignalsAtChartTime(chartSignals, timeSec) as SignalItem[];
+    if (matches.length === 0) {
+      return;
+    }
+    setChartSignalMatches(matches);
+    setSelectedChartSignal(matches[0]);
+  };
+
+  const handleShowBacktestTradesOnChart = async (run: BacktestRun) => {
+    if (!authToken) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      let trades = run.trades ?? [];
+      let chartRun = run;
+      if (trades.length === 0) {
+        const response = await fetch(`${API_BASE_URL}/backtests/${run.id}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!response.ok) {
+          const errorPayload = await response.json().catch(() => null);
+          throw new Error(parseApiError(errorPayload, "Falha ao carregar trades do run."));
+        }
+        chartRun = (await response.json()) as BacktestRun;
+        trades = chartRun.trades ?? [];
+      }
+      if (trades.length === 0) {
+        setBacktestError("Este run não tem trades para mostrar no gráfico.");
         return;
       }
-      chart.applyOptions({ width: Math.max(entry.contentRect.width, 320) });
-    });
-    resizeObserver.observe(container);
 
-    return () => {
-      resizeObserver.disconnect();
-      chart.remove();
-    };
-  }, [
-    chartData,
-    sma20Data,
-    ema20Data,
-    vwapData,
-    bollingerUpperData,
-    bollingerMiddleData,
-    bollingerLowerData,
-    overlayVisibility,
-  ]);
+      syncChartFiltersToRun(
+        chartRun,
+        {
+          setSelectedSymbol,
+          setCandle,
+          setChartWindow,
+          setManualCandle,
+          setPeriodMode,
+          setStartDate,
+          setEndDate,
+          setBacktestLimit,
+        },
+        instruments,
+      );
+      setBacktestTradesOnChart(trades);
+      setBacktestTradesOnChartRunId(chartRun.id);
+      setActiveTab("market");
+      setChartMode("historico");
+    } catch (showError) {
+      setBacktestError(toUserFetchError(showError, "Erro inesperado ao preparar gráfico."));
+    }
+  };
+
+  const handleDeleteBacktestRun = async (runId: number) => {
+    if (!authToken) {
+      return;
+    }
+    if (!window.confirm(`Apagar a simulação #${runId}? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+    setBacktestError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/backtests/${runId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        throw new Error(parseApiError(errorPayload, "Falha ao apagar simulação."));
+      }
+      if (backtestSelectedRun?.id === runId) {
+        setBacktestSelectedRun(null);
+      }
+      if (backtestTradesOnChartRunId === runId) {
+        handleClearBacktestTradesOnChart();
+      }
+      setBacktestCompareRunIds((previous) => previous.filter((id) => id !== runId));
+      setBacktestRefreshToken((previous) => previous + 1);
+    } catch (deleteError) {
+      setBacktestError(toUserFetchError(deleteError, "Erro inesperado ao apagar simulação."));
+    }
+  };
+
+  const toggleActiveStrategy = (strategy: string) => {
+    setActiveStrategies((previous) => {
+      if (previous.includes(strategy)) {
+        return previous.filter((value) => value !== strategy);
+      }
+      setBacktestStrategyMinStrengthPct((strengths) => ({
+        ...strengths,
+        [strategy]: strengths[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT,
+      }));
+      return [...previous, strategy];
+    });
+  };
+
+  const toggleActiveIndicator = (id: IndicatorId) => {
+    setActiveIndicators((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBacktestStrategyStrengthChange = (strategy: string, pct: number) => {
+    const normalized = Math.max(0, Math.min(100, pct));
+    setBacktestStrategyMinStrengthPct((previous) => ({
+      ...previous,
+      [strategy]: normalized,
+    }));
+  };
 
   return (
-    <main className="layout">
-      <header className="topbar">
-        <h1>Painel de Mercado</h1>
-        <div className="topbar-actions">
+    <main className="layout app-shell">
+      <header className="app-topbar">
+        <div className="app-topbar-left">
+          <h1>Painel de Mercado</h1>
+          <span className="app-env-badge">PAPER</span>
+        </div>
+        <div className="app-topbar-actions">
           {currentUser ? (
             <>
-              <span className="hint">Utilizador: {currentUser.display_name ?? currentUser.email}</span>
+              <span className="app-user-label" title={currentUser.email}>
+                {currentUser.display_name ?? currentUser.email}
+              </span>
               <button type="button" className="config-button" onClick={() => setShowAuthPanel(true)}>
                 Conta
               </button>
@@ -1125,7 +2916,6 @@ function App() {
           >
             Configuração
           </button>
-          <span className="badge">PAPER</span>
         </div>
       </header>
 
@@ -1203,50 +2993,38 @@ function App() {
             <p className="hint config-description">
               Parâmetros estáticos da aplicação. Esta área está preparada para crescer por secções.
             </p>
-            <div className="config-tabs">
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "data" ? "config-tab-button config-tab-button-active" : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("data")}
-              >
-                Dados
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "signals"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("signals")}
-              >
-                Sinais
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "execution"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("execution")}
-              >
-                Execução
-              </button>
-              <button
-                type="button"
-                className={
-                  activeConfigTab === "alerts"
-                    ? "config-tab-button config-tab-button-active"
-                    : "config-tab-button"
-                }
-                onClick={() => setActiveConfigTab("alerts")}
-              >
-                Alertas
-              </button>
-            </div>
+            <nav className="app-tabs config-tabs-nav" aria-label="Configuração">
+              <div className="rt-seg">
+                <button
+                  type="button"
+                  className={activeConfigTab === "data" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("data")}
+                >
+                  Dados
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "signals" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("signals")}
+                >
+                  Sinais
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "execution" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("execution")}
+                >
+                  Execução
+                </button>
+                <button
+                  type="button"
+                  className={activeConfigTab === "alerts" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("alerts")}
+                >
+                  Alertas
+                </button>
+              </div>
+            </nav>
             <div className="config-sections">
               {activeConfigTab === "data" && (
                 <section className="config-section">
@@ -1422,284 +3200,170 @@ function App() {
           </button>
         </section>
       ) : (
-      <section className="panel">
-        <div className="panel-header">
-          <div
-            className={`controls-grid ${
-              filterMode === "date" ? "controls-grid-date" : "controls-grid-count"
-            }`}
-          >
-            <label className="field">
-              <span>Janela</span>
-              <select
-                value={filterMode}
-                onChange={(event) => setFilterMode(event.target.value as FilterMode)}
-                disabled={loading}
-              >
-                <option value="count">Últimas N velas</option>
-                <option value="date">Intervalo de datas</option>
-              </select>
-            </label>
-
-            <label className="field">
-              <span>Símbolo</span>
-              <select
-                value={selectedSymbol}
-                onChange={(event) => setSelectedSymbol(event.target.value)}
-                disabled={instruments.length === 0 || loading}
-              >
-                {instruments.map((instrument) => (
-                  <option key={instrument.id} value={instrument.symbol}>
-                    {instrument.symbol}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field">
-              <span>Intervalo</span>
-              <select
-                value={selectedTimeframe}
-                onChange={(event) => setSelectedTimeframe(event.target.value)}
-                disabled={loading}
-              >
-                <option value="1m">1m</option>
-                <option value="5m">5m</option>
-                <option value="15m">15m</option>
-                <option value="1h">1h</option>
-                <option value="4h">4h</option>
-                <option value="1d">1d</option>
-                <option value="1w">1w</option>
-              </select>
-            </label>
-
-            {filterMode === "count" ? (
-              <label className="field">
-                <span>Nº velas</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="\d*"
-                  value={barLimitInput}
-                  onChange={(event) => {
-                    const { value } = event.target;
-                    if (!/^\d*$/.test(value)) {
-                      return;
-                    }
-                    setBarLimitInput(value);
-                  }}
-                  onBlur={() => {
-                    const parsed = Number(barLimitInput);
-                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
-                      setBarLimitInput(String(barLimit));
-                      return;
-                    }
-                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
-                    setBarLimit(normalized);
-                    setBarLimitInput(String(normalized));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    const parsed = Number(barLimitInput);
-                    if (Number.isNaN(parsed) || barLimitInput.trim() === "") {
-                      setBarLimitInput(String(barLimit));
-                      return;
-                    }
-                    const normalized = Math.max(1, Math.min(5000, Math.trunc(parsed)));
-                    setBarLimit(normalized);
-                    setBarLimitInput(String(normalized));
-                    (event.target as HTMLInputElement).blur();
-                  }}
-                />
-              </label>
-            ) : (
-              <>
-                <label className="field">
-                  <span>Data início</span>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(event) => setStartDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-                <label className="field">
-                  <span>Data fim</span>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(event) => setEndDate(event.target.value)}
-                    disabled={loading}
-                  />
-                </label>
-              </>
-            )}
-          </div>
-        </div>
-
-        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
-        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
-        {!error && loading && <p className="hint">A carregar dados...</p>}
-
-        <div className="tabs">
+      <div className="app-workspace">
+        <nav className="app-tabs-hanging" aria-label="Secções">
           <button
             type="button"
-            className={activeTab === "market" ? "tab-button tab-button-active" : "tab-button"}
+            className={activeTab === "market" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
             onClick={() => setActiveTab("market")}
           >
             Mercado
           </button>
           <button
             type="button"
-            className={activeTab === "signals" ? "tab-button tab-button-active" : "tab-button"}
+            className={activeTab === "signals" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
             onClick={() => setActiveTab("signals")}
           >
             Sinais
           </button>
-        </div>
+          <button
+            type="button"
+            className={activeTab === "backtests" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
+            onClick={() => setActiveTab("backtests")}
+          >
+            Simulação
+          </button>
+        </nav>
+
+      <section className="panel app-panel-card">
+        {activeTab === "market" && (
+          <MarketChartModeToggle mode={chartMode} onChange={setChartMode} />
+        )}
+        {activeTab === "signals" && (
+          <MarketChartModeToggle
+            mode={signalsSourceMode === "historical" ? "historico" : "aovivo"}
+            onChange={(mode) => setSignalsSourceMode(mode === "historico" ? "historical" : "live")}
+          />
+        )}
+
+        <GlobalMarketFilters
+          activeTab={activeTab}
+          chartMode={chartMode}
+          signalsSourceMode={signalsSourceMode}
+          apiBaseUrl={API_BASE_URL}
+          authToken={authToken}
+          instruments={instruments}
+          symbol={selectedSymbol}
+          followed={followedSymbols}
+          isFollowing={isFollowingSelected}
+          onFollowChange={() => setMarketDataRefreshToken((previous) => previous + 1)}
+          candle={candle}
+          window={chartWindow}
+          manualCandle={manualCandle}
+          periodMode={periodMode}
+          startDate={startDate}
+          endDate={endDate}
+          streamStatus={streamStatus}
+          lastBarMs={lastBarMs}
+          nowMs={marketNowMs}
+          onSymbol={setSelectedSymbol}
+          onCandle={handleMarketCandle}
+          onWindow={handleMarketWindow}
+          onPeriodMode={setPeriodMode}
+          onStartDate={setStartDate}
+          onEndDate={setEndDate}
+          availableStrategies={availableStrategies}
+          strategyLabels={STRATEGY_LABELS}
+          activeStrategies={activeStrategies}
+          onToggleStrategy={toggleActiveStrategy}
+          activeIndicators={activeIndicators}
+          onToggleIndicator={toggleActiveIndicator}
+        />
+
+        {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
+        {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
+        {!error && loading && <p className="hint">A carregar dados...</p>}
 
         {error && <p className="error">{error}</p>}
 
         <div className="tab-content">
           <div
-            className={activeTab === "market" ? "tab-pane tab-pane-active" : "tab-pane"}
+            className={activeTab === "market" ? "tab-pane tab-pane-active mkt-tab-pane" : "tab-pane mkt-tab-pane"}
           >
-            {!error && !loading && !hasDateFilterError && bars.length === 0 && (
-              <p className="hint">
-                Sem velas para o símbolo/intervalo selecionado. Importe um CSV primeiro ou mude os filtros.
-              </p>
-            )}
-
-            {!error && !loading && bars.length > 0 && (
-              <div className="stats">
-                <div>
-                  <span className="stats-label">{barsSummaryLabel}</span>
-                  <strong>{barsSummaryValue}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Último fecho</span>
-                  <strong>{lastBar?.close}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Última data</span>
-                  <strong>{lastBar ? new Date(lastBar.timestamp).toLocaleDateString("pt-PT") : "-"}</strong>
-                </div>
-              </div>
-            )}
-
-            <div className="overlay-controls">
-              <span className="stats-label">Overlays no gráfico</span>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.sma20}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, sma20: event.target.checked }))
+            {activeTab === "market" && chartMode === "aovivo" ? (
+              <RealtimePage
+                apiBaseUrl={API_BASE_URL}
+                authToken={authToken}
+                symbol={selectedSymbol}
+                onSymbolChange={setSelectedSymbol}
+                candle={candle}
+                window={chartWindow}
+                manualCandle={manualCandle}
+                onCandleChange={handleMarketCandle}
+                onWindowChange={handleMarketWindow}
+                hideTimeframeControls
+                hideIndicatorControls
+                hideSymbolBar
+                activeIndicators={activeIndicators}
+                onToggleIndicator={toggleActiveIndicator}
+                useParentStream
+                tick={tick}
+                indices={indices}
+                streamStatus={streamStatus}
+                streamError={streamError}
+              />
+            ) : activeTab === "market" && chartMode === "historico" ? (
+              <HistoricalMarketView
+                symbol={selectedSymbol}
+                bars={bars}
+                periodMode={periodMode}
+                chartWindow={chartWindow}
+                activeIndicators={activeIndicators}
+                tradeMarkers={backtestTradesOnChart}
+                signalMarkers={chartSignals}
+                signalsOverlayEnabled={signalsChartOverlayEnabled}
+                selectedChartSignal={selectedChartSignal}
+                selectedChartSignalMatches={chartSignalMatches}
+                strategyLabels={STRATEGY_LABELS}
+                loading={loading}
+                error={error}
+                hasDateFilterError={hasDateFilterError}
+                barLimit={barLimit}
+                backtestTradesOnChartRunId={backtestTradesOnChartRunId}
+                backtestTradesCount={backtestTradesOnChart.length}
+                signalsListCount={signals.length}
+                onClearBacktestTrades={handleClearBacktestTradesOnChart}
+                onClearSignalsOnChart={handleClearSignalsOnChart}
+                onShowSignalsOnChart={handleShowFilteredSignalsOnChart}
+                onChartSignalClick={handleChartSignalClick}
+                onSelectChartSignal={(signal) => {
+                  setSelectedChartSignal(signal as SignalItem | null);
+                  if (signal) {
+                    setChartSignalMatches([signal as SignalItem]);
+                  } else {
+                    setChartSignalMatches([]);
                   }
-                />
-                SMA 20
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.ema20}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, ema20: event.target.checked }))
-                  }
-                />
-                EMA 20
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.bollinger}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, bollinger: event.target.checked }))
-                  }
-                />
-                Bollinger Bands
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={overlayVisibility.vwap}
-                  onChange={(event) =>
-                    setOverlayVisibility((previous) => ({ ...previous, vwap: event.target.checked }))
-                  }
-                />
-                VWAP
-              </label>
-            </div>
+                }}
+              />
+            ) : null}
 
-            {lastIndicatorRow && (
-              <div className="stats indicator-stats">
-                <div>
-                  <span className="stats-label">RSI (14)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.rsi_14, bars.length, 14)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd, bars.length, 26)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD Signal</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd_signal, bars.length, 34)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">MACD Hist.</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.macd_histogram, bars.length, 34)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">ATR (14)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.atr_14, bars.length, 14)}</strong>
-                </div>
-                <div>
-                  <span className="stats-label">Volume Relativo (20)</span>
-                  <strong>{formatIndicatorValue(lastIndicatorRow.relative_volume_20, bars.length, 20)}</strong>
-                </div>
-              </div>
+            {activeTab === "market" && (
+              <HotMoversGrid
+                apiBaseUrl={API_BASE_URL}
+                authToken={authToken}
+                symbol={selectedSymbol}
+                onSelect={setSelectedSymbol}
+              />
             )}
-
-            {!error && !loading && visibleOhlc && (
-              <div className="ohlc-panel">
-                <h3>Vela sob o cursor</h3>
-                <p className="hint">Passe o rato no gráfico para atualizar os valores.</p>
-                <div className="stats ohlc-stats">
-                  <div>
-                    <span className="stats-label">Data</span>
-                    <strong>{visibleOhlc.dateLabel}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Abertura</span>
-                    <strong>{formatPrice(visibleOhlc.open)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Máximo</span>
-                    <strong>{formatPrice(visibleOhlc.high)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Mínimo</span>
-                    <strong>{formatPrice(visibleOhlc.low)}</strong>
-                  </div>
-                  <div>
-                    <span className="stats-label">Fecho</span>
-                    <strong>{formatPrice(visibleOhlc.close)}</strong>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div ref={chartContainerRef} className="chart" />
           </div>
 
           <div
             className={activeTab === "signals" ? "tab-pane tab-pane-active" : "tab-pane"}
           >
-            <div className="signals-panel">
+            <div className="rt-page signals-panel">
               <div className="signals-header">
-                <h3>Sinais da estratégia</h3>
+                <h3 className="section-title">Sinais da estratégia</h3>
               </div>
+              <p className="hint">
+                {signalsSourceMode === "historical"
+                  ? "Gera sinais sobre o período de barras seleccionado nos filtros globais."
+                  : liveSignalIsForming
+                    ? "Sinal na vela em formação (stream + ticks). Janela/datas definem o contexto dos indicadores."
+                    : "Última vela fechada na BD. Com stream IBKR activo, o sinal passa a reflectir a vela em formação."}
+              </p>
+              {signalsSourceMode === "live" && streamError && (
+                <p className="error">{streamError}</p>
+              )}
 
               {!isAuthenticated && !authChecking && (
                 <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
@@ -1747,7 +3411,7 @@ function App() {
                             <button
                               type="button"
                               className="config-button"
-                              onClick={() => setSelectedStrategies(item.strategies)}
+                              onClick={() => setActiveStrategies(item.strategies)}
                             >
                               Aplicar
                             </button>
@@ -1770,43 +3434,11 @@ function App() {
 
               <section className="strategy-consensus-card">
                 <p className="strategy-consensus-caption">
-                  O sinal combinado é calculado a partir das estratégias ativas selecionadas abaixo.
+                  O sinal combinado é calculado a partir das estratégias ativas selecionadas nos filtros
+                  globais.
                 </p>
-                <div className="strategy-picker">
-                  <span className="stats-label">Estratégias ativas (consenso)</span>
-                  <div className="strategy-chip-list">
-                    {availableStrategies.map((strategy) => {
-                      const checked = selectedStrategies.includes(strategy);
-                      const info = STRATEGY_SUMMARY[strategy];
-                      return (
-                        <label
-                          key={strategy}
-                          className={checked ? "strategy-chip strategy-chip-active" : "strategy-chip"}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(event) => {
-                              setSelectedStrategies((previous) => {
-                                if (event.target.checked) {
-                                  if (previous.includes(strategy)) {
-                                    return previous;
-                                  }
-                                  return [...previous, strategy];
-                                }
-                                return previous.filter((value) => value !== strategy);
-                              });
-                            }}
-                            disabled={loading}
-                          />
-                          <span>{info?.title ?? strategy}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
 
-                {selectedStrategies.length > 0 ? (
+                {activeStrategies.length > 0 ? (
                   <div className="strategy-summary">
                     <strong>
                       Sinal combinado:{" "}
@@ -1898,7 +3530,32 @@ function App() {
                 <button type="button" className="config-button" onClick={handleResetSignalListFilters}>
                   Limpar filtros da lista
                 </button>
+                <button
+                  type="button"
+                  className="config-button"
+                  disabled={signals.length === 0}
+                  onClick={handleSignalsChartAction}
+                >
+                  {hasSignalsOnChart
+                    ? "Sinais visíveis no gráfico"
+                    : "Mostrar sinais no gráfico"}
+                </button>
+                {hasSignalsOnChart && (
+                  <button
+                    type="button"
+                    className="config-button"
+                    onClick={handleClearSignalsOnChart}
+                  >
+                    Ocultar do gráfico
+                  </button>
+                )}
               </div>
+              {signalsChartOverlayEnabled && (
+                <p className="hint">
+                  Até {SIGNALS_CHART_OVERLAY_MAX} sinais da lista no Mercado (histórico). Cores por
+                  estratégia.
+                </p>
+              )}
 
               <p className="hint signals-order-note">Mais recente {"->"} mais antigo.</p>
               {(signalsGenerating || signalsLoading) && <p className="hint">A atualizar sinais...</p>}
@@ -1907,8 +3564,38 @@ function App() {
                 <p className="hint">Sem sinais para os filtros atuais.</p>
               )}
               {signals.length > 0 && (
-                <div className="signals-list">
-                  {signals.map((signal) => (
+                <>
+                  <div className="signals-list-header">
+                    <span className="stats-label">Sinais ({signals.length})</span>
+                    {signals.length > SIGNALS_PAGE_SIZE && (
+                      <div className="backtest-trades-pagination">
+                        <button
+                          type="button"
+                          className="config-button"
+                          disabled={signalsPage <= 1}
+                          onClick={() => setSignalsPage((page) => Math.max(1, page - 1))}
+                        >
+                          Anterior
+                        </button>
+                        <span className="hint">
+                          {Math.min((signalsPage - 1) * SIGNALS_PAGE_SIZE + 1, signals.length)}–
+                          {Math.min(signalsPage * SIGNALS_PAGE_SIZE, signals.length)} de {signals.length}
+                        </span>
+                        <button
+                          type="button"
+                          className="config-button"
+                          disabled={signalsPage >= signalsTotalPages}
+                          onClick={() =>
+                            setSignalsPage((page) => Math.min(signalsTotalPages, page + 1))
+                          }
+                        >
+                          Seguinte
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="signals-list">
+                    {paginatedSignals.map((signal) => (
                     <article key={signal.id} className="signal-row">
                       <div className="signal-main">
                         <div className="signal-top">
@@ -1918,18 +3605,796 @@ function App() {
                           <span>{STRATEGY_SUMMARY[signal.strategy]?.title ?? signal.strategy}</span>
                           <span>{formatDateTimeLabel(signal.timestamp)}</span>
                           <span>Força: {(signal.strength * 100).toFixed(1)}%</span>
+                          <span className="signal-source-badge">
+                            {signal.source === "live" ? "Live" : "Hist."}
+                          </span>
                         </div>
                         <p>{signal.rationale}</p>
                       </div>
+                      <div className="signal-row-actions">
+                        <button
+                          type="button"
+                          className="config-button"
+                          onClick={() => handleShowSignalOnChart(signal)}
+                        >
+                          Ver no gráfico
+                        </button>
+                      </div>
                     </article>
                   ))}
-                </div>
+                  </div>
+                </>
               )}
+            </div>
+          </div>
+
+          <div className={activeTab === "backtests" ? "tab-pane tab-pane-active" : "tab-pane"}>
+            <div className="rt-page backtests-panel">
+              <div className="signals-header">
+                <h3 className="section-title">Backtesting (simulação histórica)</h3>
+              </div>
+              <p className="hint">Configura o run, executa e compara resultados entre simulações.</p>
+
+              <section className="backtest-data-section">
+                <h4 className="backtest-section-title">Dados de mercado</h4>
+                {backtestDataAvailability.status === "loading" && (
+                  <p className="hint">A verificar velas disponíveis...</p>
+                )}
+                {backtestDataAvailability.status === "ready" && (
+                  <p className="hint backtest-data-ready">
+                    Dados OK: <strong>{backtestDataAvailability.availableBars}</strong> velas para{" "}
+                    <strong>
+                      {backtestDataAvailability.symbol} / {backtestDataAvailability.timeframe}
+                    </strong>
+                    .
+                  </p>
+                )}
+                {backtestDataAvailability.status === "partial_window" && (
+                  <p className="hint backtest-data-partial">
+                    Há <strong>{backtestDataAvailability.availableBars}</strong> velas (pediste{" "}
+                    {backtestDataAvailability.requestedBars}); o backtest usará só as disponíveis.
+                  </p>
+                )}
+                {(backtestDataAvailability.status === "no_instrument" ||
+                  backtestDataAvailability.status === "no_bars" ||
+                  backtestDataAvailability.status === "insufficient_bars") && (
+                  <div className="backtest-data-banner backtest-data-banner-warning">
+                    {backtestDataAvailability.status === "no_instrument" && (
+                      <p>
+                        <strong>{backtestDataAvailability.symbol}</strong> não está na base de dados para{" "}
+                        <strong>{backtestDataAvailability.timeframe}</strong>.
+                      </p>
+                    )}
+                    {backtestDataAvailability.status === "no_bars" && (
+                      <p>
+                        Sem velas para <strong>{backtestDataAvailability.symbol}</strong> /{" "}
+                        <strong>{backtestDataAvailability.timeframe}</strong>
+                        {periodMode === "date"
+                          ? ` no intervalo ${startDate} – ${endDate}.`
+                          : "."}
+                      </p>
+                    )}
+                    {backtestDataAvailability.status === "insufficient_bars" && (
+                      <p>
+                        Só <strong>{backtestDataAvailability.availableBars}</strong> velas; são necessárias pelo
+                        menos <strong>{backtestDataAvailability.requiredBars}</strong>.
+                      </p>
+                    )}
+                  </div>
+                )}
+                <div className="backtest-data-banner-actions">
+                  <button
+                    type="button"
+                    className="tab-button"
+                    onClick={() => void handleLoadDemoMarketData()}
+                    disabled={demoDataLoading || !selectedSymbol}
+                  >
+                    {demoDataLoading
+                      ? "A importar..."
+                      : backtestDataAvailability.status === "ready" ||
+                          backtestDataAvailability.status === "partial_window"
+                        ? "Atualizar dados demo (Yahoo, 2 anos)"
+                        : "Carregar dados demo (Yahoo, 2 anos)"}
+                  </button>
+                </div>
+              </section>
+
+              <details className="strategy-library-expand">
+                <summary>Lições de simulações anteriores</summary>
+                <div className="strategy-library">
+                  <p className="hint">
+                    {backtestLessonsLoading
+                      ? "A carregar lições..."
+                      : sortedBacktestLessons.length > 0
+                        ? `${sortedBacktestLessons.length} lição(ões) para ${selectedSymbol} — memória das análises críticas de runs anteriores.`
+                        : `Ainda sem lições para ${selectedSymbol} — corre uma simulação para gerar análise crítica.`}
+                  </p>
+                  {!backtestLessonsLoading && sortedBacktestLessons.length > 0 && (
+                    <ul className="backtest-lessons-list">
+                      {sortedBacktestLessons.map((lesson) => {
+                        const relevant = isBacktestLessonRelevant(lesson, activeStrategies);
+                        const strategyLabel = lesson.strategy_names
+                          .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                          .join(" · ");
+                        return (
+                          <li
+                            key={`${lesson.run_id}-${lesson.title}`}
+                            className={`backtest-lesson-item backtest-lesson-priority-${lesson.priority.toLowerCase()}`}
+                          >
+                            <div className="backtest-lesson-header">
+                              <strong>{lesson.title}</strong>
+                              {relevant && <span className="backtest-lesson-badge">Relevante</span>}
+                            </div>
+                            <p>{lesson.detail}</p>
+                            <div className="backtest-lesson-footer">
+                              <span className="hint">
+                                Run #{lesson.run_id} · {strategyLabel} ·{" "}
+                                {formatDateTimeLabel(lesson.created_at)} · {lesson.priority}
+                              </span>
+                              <button
+                                type="button"
+                                className="config-button"
+                                onClick={() => void handleViewLessonRun(lesson.run_id)}
+                              >
+                                Ver run
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </details>
+
+              <details className="strategy-library-expand">
+                <summary>Recomendações para o próximo run</summary>
+                <div className="strategy-library">
+                  <p className="hint">
+                    {backtestRecommendationsLoading
+                      ? "A carregar recomendações..."
+                      : backtestRecommendations.length > 0
+                        ? `${backtestRecommendations.length} sugestão(ões) para ${selectedSymbol} — baseadas em runs anteriores.`
+                        : `Ainda sem recomendações para ${selectedSymbol}.`}
+                  </p>
+                  {!backtestRecommendationsLoading && backtestRecommendations.length > 0 && (
+                    <ul className="backtest-lessons-list">
+                      {backtestRecommendations.map((recommendation) => {
+                        const applyPreviews = buildRecommendationApplyPreview(
+                          recommendation,
+                          backtestFormSnapshot,
+                        );
+                        const canApply = applyPreviews.length > 0;
+                        const strategyLabel = recommendation.strategy_names
+                          .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                          .join(" · ");
+                        return (
+                          <li
+                            key={`${recommendation.run_id}-${recommendation.area}-${recommendation.suggestion}`}
+                            className="backtest-lesson-item"
+                          >
+                            <div className="backtest-lesson-header">
+                              <strong>{recommendation.suggestion}</strong>
+                              {recommendation.param_hint && (
+                                <span className="backtest-lesson-badge">{recommendation.param_hint}</span>
+                              )}
+                            </div>
+                            <p>{recommendation.rationale}</p>
+                            {canApply && (
+                              <p className="hint backtest-recommendation-apply-preview">
+                                Aplicar: {applyPreviews.join(" · ")}
+                              </p>
+                            )}
+                            <div className="backtest-lesson-footer">
+                              <span className="hint">
+                                Run #{recommendation.run_id} · {strategyLabel} ·{" "}
+                                {formatDateTimeLabel(recommendation.created_at)}
+                              </span>
+                              <div className="backtest-lesson-actions">
+                                {canApply && (
+                                  <button
+                                    type="button"
+                                    className="tab-button"
+                                    onClick={() => handleApplyRecommendation(recommendation)}
+                                  >
+                                    Aplicar sugestão
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="config-button"
+                                  onClick={() => void handleViewLessonRun(recommendation.run_id)}
+                                >
+                                  Ver run
+                                </button>
+                              </div>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </details>
+
+              <details className="strategy-library-expand">
+                <summary>Presets de simulação</summary>
+                <div className="strategy-library">
+                  <div className="auth-grid">
+                    <label className="field">
+                      <span>Nome do preset</span>
+                      <input
+                        value={backtestPresetName}
+                        onChange={(event) => setBacktestPresetName(event.target.value)}
+                        placeholder="Ex.: Reversão diária conservadora"
+                      />
+                    </label>
+                  </div>
+                  <div className="auth-actions">
+                    <button type="button" className="tab-button" onClick={handleSaveBacktestPreset}>
+                      Guardar configuração atual
+                    </button>
+                  </div>
+                  {backtestPresets.length === 0 && (
+                    <p className="hint">Ainda sem presets guardados.</p>
+                  )}
+                  {backtestPresets.length > 0 && (
+                    <div className="combination-list">
+                      {backtestPresets.map((preset) => (
+                        <article key={preset.id} className="combination-row">
+                          <div>
+                            <strong>{preset.name}</strong>
+                            <p>
+                              {normalizeBacktestPreset(preset).strategies
+                                .map((strategy) => STRATEGY_SUMMARY[strategy]?.title ?? strategy)
+                                .join(", ")}
+                            </p>
+                          </div>
+                          <div className="auth-actions">
+                            <button
+                              type="button"
+                              className="config-button"
+                              onClick={() => handleApplyBacktestPreset(preset.id)}
+                            >
+                              Aplicar
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </details>
+
+              <section className="strategy-consensus-card">
+                <p className="strategy-consensus-caption">
+                  {activeStrategies.length > 1
+                    ? "Cada estratégia activa (filtros globais) tem o seu limiar de força mínima (0–100%). O consenso final exige acordo mínimo entre as estratégias activas — quanto maior a %, menos entradas."
+                    : "Defina o limiar de força mínima (0–100%) da estratégia activa. Com uma só estratégia não há consenso combinado."}
+                </p>
+
+                {activeStrategies.length > 0 ? (
+                  <>
+                    <div className="backtest-strength-section">
+                      <span className="stats-label">
+                        {activeStrategies.length > 1 ? "Limiar por estratégia" : "Limiar de força"}
+                      </span>
+                      <div className="backtest-strength-list">
+                        {activeStrategies.map((strategy) => {
+                          const strengthPct =
+                            backtestStrategyMinStrengthPct[strategy] ?? DEFAULT_BACKTEST_STRENGTH_PCT;
+                          const info = STRATEGY_SUMMARY[strategy];
+                          return (
+                            <article key={`strength-${strategy}`} className="backtest-strength-row">
+                              <div className="backtest-strength-header">
+                                <strong>{info?.title ?? strategy}</strong>
+                                <div className="backtest-strength-values">
+                                  <span className="strength-value-pct">{strengthPct}%</span>
+                                  <span
+                                    className={`strength-level-badge ${strengthLevelClass(strengthPct)}`}
+                                  >
+                                    {strengthLevelLabel(strengthPct)}
+                                  </span>
+                                </div>
+                              </div>
+                              <input
+                                type="range"
+                                className="strength-range"
+                                min={0}
+                                max={100}
+                                step={5}
+                                value={strengthPct}
+                                onChange={(event) =>
+                                  handleBacktestStrategyStrengthChange(
+                                    strategy,
+                                    Number(event.target.value),
+                                  )
+                                }
+                              />
+                              <div className="strength-range-labels">
+                                <span>0%</span>
+                                <span>100%</span>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {activeStrategies.length > 1 && (
+                      <div className="backtest-strength-section backtest-consensus-threshold">
+                        <span className="stats-label">Limiar do sinal combinado</span>
+                        <div className="backtest-strength-row">
+                          <div className="backtest-strength-header">
+                            <strong>Consenso final</strong>
+                            <div className="backtest-strength-values">
+                              <span className="strength-value-pct">{backtestConsensusStrengthPct}%</span>
+                              <span
+                                className={`strength-level-badge ${strengthLevelClass(backtestConsensusStrengthPct)}`}
+                              >
+                                {strengthLevelLabel(backtestConsensusStrengthPct)}
+                              </span>
+                            </div>
+                          </div>
+                          <input
+                            type="range"
+                            className="strength-range"
+                            min={0}
+                            max={100}
+                            step={5}
+                            value={backtestConsensusStrengthPct}
+                            onChange={(event) =>
+                              setBacktestConsensusStrengthPct(Number(event.target.value))
+                            }
+                          />
+                          <div className="strength-range-labels">
+                            <span>0%</span>
+                            <span>100%</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="hint">Selecione pelo menos uma estratégia para definir limiares.</p>
+                )}
+
+                <div className="backtests-grid backtests-entry-grid">
+                  <label className="field">
+                    <span>Confirmação de entrada</span>
+                    <select
+                      value={String(backtestEntryConfirmationBars)}
+                      onChange={(event) =>
+                        setBacktestEntryConfirmationBars(Number(event.target.value))
+                      }
+                    >
+                      <option value="1">Imediata (1 vela)</option>
+                      <option value="2">2 velas seguidas</option>
+                      <option value="3">3 velas seguidas</option>
+                      <option value="4">4 velas seguidas</option>
+                      <option value="5">5 velas seguidas</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Timing de execução</span>
+                    <select
+                      value={backtestExecutionTiming}
+                      onChange={(event) =>
+                        setBacktestExecutionTiming(event.target.value as "signal_close" | "next_open")
+                      }
+                    >
+                      <option value="next_open">Abertura da vela seguinte (entrada e saída)</option>
+                      <option value="signal_close">Fecho da vela do sinal</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Modo de saída</span>
+                    <select
+                      value={backtestExitMode}
+                      onChange={(event) =>
+                        setBacktestExitMode(
+                          event.target.value as "opposite_signal" | "tp_sl_or_opposite" | "tp_sl_only",
+                        )
+                      }
+                    >
+                      <option value="opposite_signal">Só sinal oposto</option>
+                      <option value="tp_sl_or_opposite">TP/SL + sinal oposto</option>
+                      <option value="tp_sl_only">Só TP/SL</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section className="strategy-consensus-card">
+                <div className="signals-header">
+                  <h3>Execução e risco</h3>
+                </div>
+                <div className="backtests-grid">
+                  <label className="field">
+                    <span>Capital inicial</span>
+                    <input
+                      type="number"
+                      min={100}
+                      max={10000000}
+                      step={100}
+                      value={backtestInitialCapital}
+                      onChange={(event) => setBacktestInitialCapital(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Modelo de tamanho</span>
+                    <select
+                      value={backtestPositionSizingModel}
+                      onChange={(event) =>
+                        setBacktestPositionSizingModel(event.target.value as "fixed_pct" | "atr_risk")
+                      }
+                    >
+                      <option value="fixed_pct">% fixo do capital</option>
+                      <option value="atr_risk">Risco por trade (ATR/SL)</option>
+                    </select>
+                  </label>
+                  {backtestPositionSizingModel === "fixed_pct" ? (
+                    <label className="field">
+                      <span>% do capital por trade</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={backtestPositionSizePct}
+                        onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
+                      />
+                    </label>
+                  ) : (
+                    <>
+                      <label className="field">
+                        <span>Risco por trade (%)</span>
+                        <input
+                          type="number"
+                          min={0.1}
+                          max={100}
+                          step={0.1}
+                          value={backtestRiskPerTradePct}
+                          onChange={(event) => setBacktestRiskPerTradePct(Number(event.target.value))}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Teto (% capital)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          step={1}
+                          value={backtestPositionSizePct}
+                          onChange={(event) => setBacktestPositionSizePct(Number(event.target.value))}
+                        />
+                      </label>
+                    </>
+                  )}
+                  <label className="field">
+                    <span>Modelo de fees</span>
+                    <select
+                      value={backtestFeeModel}
+                      onChange={(event) =>
+                        setBacktestFeeModel(event.target.value as "fixed_bps" | "ibkr_us_tiered")
+                      }
+                    >
+                      <option value="fixed_bps">Bps fixos</option>
+                      <option value="ibkr_us_tiered">IBKR US tiered</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Fee (bps)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      step={0.5}
+                      value={backtestFeeBps}
+                      onChange={(event) => setBacktestFeeBps(Number(event.target.value))}
+                      disabled={backtestFeeModel === "ibkr_us_tiered"}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Slippage (bps)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      step={0.5}
+                      value={backtestSlippageBps}
+                      onChange={(event) => setBacktestSlippageBps(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Modelo slippage</span>
+                    <select
+                      value={backtestSlippageModel}
+                      onChange={(event) =>
+                        setBacktestSlippageModel(event.target.value as "fixed" | "atr_volume")
+                      }
+                    >
+                      <option value="atr_volume">Dinâmico (ATR + volume)</option>
+                      <option value="fixed">Fixo</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Stop-loss (%)</span>
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={100}
+                      step={0.1}
+                      value={backtestStopLossPct}
+                      onChange={(event) => setBacktestStopLossPct(Number(event.target.value))}
+                      disabled={backtestExitMode === "opposite_signal"}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Take-profit (%)</span>
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={200}
+                      step={0.1}
+                      value={backtestTakeProfitPct}
+                      onChange={(event) => setBacktestTakeProfitPct(Number(event.target.value))}
+                      disabled={backtestExitMode === "opposite_signal"}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Máx. barras por trade</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      step={1}
+                      value={backtestMaxBarsInTrade}
+                      onChange={(event) => setBacktestMaxBarsInTrade(Number(event.target.value))}
+                    />
+                  </label>
+                  {periodMode === "date" && (
+                    <label className="field">
+                      <span>Limite máx. de velas</span>
+                      <input
+                        type="number"
+                        min={200}
+                        max={10000}
+                        step={100}
+                        value={backtestLimit}
+                        onChange={(event) => setBacktestLimit(Number(event.target.value))}
+                      />
+                    </label>
+                  )}
+                  <label className="field">
+                    <span>Walk-forward OOS (%)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={80}
+                      step={5}
+                      value={backtestWalkforwardSplitPct}
+                      onChange={(event) => setBacktestWalkforwardSplitPct(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Modo walk-forward</span>
+                    <select
+                      value={backtestWalkforwardMode}
+                      onChange={(event) =>
+                        setBacktestWalkforwardMode(event.target.value as "holdout" | "rolling")
+                      }
+                      disabled={backtestWalkforwardSplitPct <= 0}
+                    >
+                      <option value="holdout">Holdout único</option>
+                      <option value="rolling">Rolling (vários blocos)</option>
+                    </select>
+                  </label>
+                  {backtestWalkforwardMode === "rolling" && backtestWalkforwardSplitPct > 0 && (
+                    <label className="field">
+                      <span>Folds rolling</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={backtestWalkforwardFolds}
+                        onChange={(event) => setBacktestWalkforwardFolds(Number(event.target.value))}
+                      />
+                    </label>
+                  )}
+                  <label className="field">
+                    <span>Benchmark buy & hold</span>
+                    <select
+                      value={backtestBenchmarkEnabled ? "on" : "off"}
+                      onChange={(event) => setBacktestBenchmarkEnabled(event.target.value === "on")}
+                    >
+                      <option value="on">Ativo</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="auth-actions">
+                  <button
+                    type="button"
+                    className="tab-button"
+                    onClick={handleRunBacktest}
+                    disabled={!canRunBacktest}
+                  >
+                    {backtestRunning ? "A correr..." : "Correr backtest"}
+                  </button>
+                </div>
+              </section>
+
+              {backtestError && <p className="error">{backtestError}</p>}
+
+              <div className="backtests-results-zone">
+                <div className="backtests-results-header">
+                  <h3>Resultados</h3>
+                  <p className="hint">
+                    Histórico de simulações. Selecione até 2 runs para comparar. Use{" "}
+                    <strong>Ver detalhe</strong> para config, gráfico de equity e trades.
+                  </p>
+                </div>
+
+                {backtestLoading && <p className="hint">A carregar histórico...</p>}
+
+                {!backtestLoading && backtestRuns.length === 0 && (
+                  <p className="hint backtests-results-empty">Ainda sem simulações para este símbolo.</p>
+                )}
+
+                {backtestRuns.length > 0 && (
+                  <>
+                    <div className="backtest-runs-list-header">
+                      <span className="stats-label">Runs ({backtestRuns.length})</span>
+                      {backtestRuns.length > BACKTEST_RUNS_PAGE_SIZE && (
+                        <div className="backtest-trades-pagination">
+                          <button
+                            type="button"
+                            className="config-button"
+                            disabled={backtestRunsPage <= 1}
+                            onClick={() => setBacktestRunsPage((page) => Math.max(1, page - 1))}
+                          >
+                            Anterior
+                          </button>
+                          <span className="hint">
+                            {Math.min((backtestRunsPage - 1) * BACKTEST_RUNS_PAGE_SIZE + 1, backtestRuns.length)}–
+                            {Math.min(backtestRunsPage * BACKTEST_RUNS_PAGE_SIZE, backtestRuns.length)} de{" "}
+                            {backtestRuns.length}
+                          </span>
+                          <button
+                            type="button"
+                            className="config-button"
+                            disabled={backtestRunsPage >= backtestRunsTotalPages}
+                            onClick={() =>
+                              setBacktestRunsPage((page) => Math.min(backtestRunsTotalPages, page + 1))
+                            }
+                          >
+                            Seguinte
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  <div className="backtest-runs-list">
+                    {paginatedBacktestRuns.map((run) => {
+                      const pnlPositive = run.net_pnl >= 0;
+                      const isDetailOpen = backtestSelectedRun?.id === run.id;
+                      const strategyLabel = run.strategy_names
+                        .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
+                        .join(" · ");
+                      return (
+                        <div key={run.id} className="backtest-run-entry">
+                          <article
+                            className={
+                              pnlPositive
+                                ? "backtest-run-card backtest-run-card-positive"
+                                : "backtest-run-card backtest-run-card-negative"
+                            }
+                          >
+                            <div className="backtest-run-main">
+                              <div className="backtest-run-line">
+                                <strong>
+                                  #{run.id} · {run.symbol} / {run.timeframe}
+                                </strong>
+                                <span className="backtest-run-muted">
+                                  {formatDateTimeLabel(run.created_at)}
+                                </span>
+                                <span className="backtest-run-sep">·</span>
+                                <span className="backtest-run-muted">{strategyLabel}</span>
+                                <span className="backtest-run-sep">·</span>
+                                <span className="backtest-run-muted">
+                                  {run.trades_count} trades · Win {(run.win_rate * 100).toFixed(0)}% · DD{" "}
+                                  {(run.max_drawdown_pct * 100).toFixed(1)}%
+                                </span>
+                              </div>
+                            </div>
+                            <div className="backtest-run-pnl">
+                              <strong className={pnlPositive ? "signal-buy" : "signal-sell"}>
+                                {(run.net_pnl_pct * 100).toFixed(2)}%
+                              </strong>
+                              <span className="backtest-run-pnl-abs">{run.net_pnl.toFixed(2)}</span>
+                            </div>
+                            <div className="backtest-run-actions">
+                              <label className="backtest-compare-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={backtestCompareRunIds.includes(run.id)}
+                                  onChange={() => handleToggleCompareRun(run.id)}
+                                />
+                                <span>Comparar</span>
+                              </label>
+                              <button
+                                type="button"
+                                className={
+                                  isDetailOpen
+                                    ? "backtest-detail-button backtest-detail-button-active"
+                                    : "backtest-detail-button"
+                                }
+                                onClick={() => void handleToggleBacktestRunDetail(run.id)}
+                              >
+                                {isDetailOpen ? "Ocultar" : "Detalhe"}
+                              </button>
+                              <button
+                                type="button"
+                                className="config-button"
+                                onClick={() => handleApplyBacktestRunConfig(run)}
+                              >
+                                Reutilizar
+                              </button>
+                              {run.trades_count > 0 && (
+                                <button
+                                  type="button"
+                                  className="config-button"
+                                  onClick={() => void handleShowBacktestTradesOnChart(run)}
+                                >
+                                  Gráfico
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="config-button backtest-delete-button"
+                                onClick={() => void handleDeleteBacktestRun(run.id)}
+                              >
+                                Apagar
+                              </button>
+                            </div>
+                          </article>
+                          {isDetailOpen && backtestSelectedRun && renderBacktestRunDetail(backtestSelectedRun)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  </>
+                )}
+
+                {comparedBacktestRuns.length === 2 && (
+                  <div className="backtest-compare-panel">
+                    <h4>Comparação</h4>
+                    <div className="backtest-compare-grid">
+                      {comparedBacktestRuns.map((run) => (
+                        <article key={`compare-${run.id}`} className="backtest-compare-card">
+                          <strong>Run #{run.id}</strong>
+                          <p>
+                            {(run.net_pnl_pct * 100).toFixed(2)}% · {run.trades_count} trades
+                          </p>
+                          <p>
+                            Win {(run.win_rate * 100).toFixed(0)}% · PF {run.profit_factor.toFixed(2)} · DD{" "}
+                            {(run.max_drawdown_pct * 100).toFixed(1)}%
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
             </div>
           </div>
 
         </div>
       </section>
+      </div>
       )}
     </main>
   );

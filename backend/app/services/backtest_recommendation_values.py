@@ -79,6 +79,9 @@ def enrich_recommendation(
     config: dict[str, object],
     strategy_names: list[str],
 ) -> dict[str, Any]:
+    if recommendation.get("suggested_values"):
+        return recommendation
+
     param_hint = recommendation.get("param_hint")
     hint_text = str(param_hint) if param_hint is not None else None
     suggested = compute_suggested_values(hint_text, config, strategy_names)

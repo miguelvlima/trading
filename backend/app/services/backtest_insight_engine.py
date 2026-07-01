@@ -4,17 +4,22 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.services.backtest_concrete_pivots import (
+    build_strategy_pivot_recommendation,
+    build_timeframe_pivot_recommendation,
+    build_zero_trade_recovery_recommendations,
+)
+from app.services.strategy_engine import BarInput
+from app.services.backtest_insight_guards import (
+    apply_recommendation_guards,
+    detect_parameter_tuning_spiral,
+)
+from app.services.backtest_insight_types import PriorRunSnapshot
+from app.services.backtest_recommendation_policy import (
+    is_protected_winning_run,
+    suppress_recommendations_for_winning_run,
+)
 from app.services.backtest_recommendation_values import enrich_recommendation
-
-
-@dataclass
-class PriorRunSnapshot:
-    run_id: int
-    created_at: datetime
-    net_pnl_pct: float
-    win_rate: float
-    profit_factor: float
-    trades_count: int
 
 
 @dataclass
@@ -54,6 +59,8 @@ def build_backtest_insight(
     result_summary: dict[str, object],
     config: dict[str, object],
     prior_runs: list[PriorRunSnapshot],
+    bar_counts: dict[str, int] | None = None,
+    bars: list[BarInput] | None = None,
 ) -> InsightPayload:
     timeline: list[dict[str, Any]] = []
     failure_modes: list[dict[str, Any]] = []
@@ -66,6 +73,12 @@ def build_backtest_insight(
     profit_factor = float(metrics.profit_factor)
     max_dd = float(metrics.max_drawdown_pct)
     trades_count = int(metrics.trades_count)
+    zero_trade = trades_count == 0
+    protected_win = is_protected_winning_run(
+        trades_count=trades_count,
+        net_pnl_pct=net_pnl_pct,
+        profit_factor=profit_factor,
+    )
 
     timeline.append(
         {
@@ -97,7 +110,7 @@ def build_backtest_insight(
             }
         )
         step += 1
-        if net_pnl_pct < float(benchmark_return):
+        if net_pnl_pct < float(benchmark_return) and not zero_trade:
             failure_modes.append(
                 {
                     "code": "underperformed_benchmark",
@@ -116,14 +129,35 @@ def build_backtest_insight(
                 }
             )
             recommendations.append(
-                {
-                    "area": "strategy_selection",
-                    "suggestion": "Testar outra estratégia ou filtrar entradas com consenso mais exigente.",
-                    "rationale": "Alpha negativo sugere sinal fraco para este universo temporal.",
-                }
+                build_strategy_pivot_recommendation(
+                    strategy_names,
+                    bars=bars,
+                    symbol=symbol,
+                    config=config,
+                )
             )
 
-    if net_pnl_pct <= 0:
+    if zero_trade:
+        failure_modes.append(
+            {
+                "code": "no_trades_executed",
+                "title": "Nenhum trade executado",
+                "detail": (
+                    f"A simulação processou {metrics.bars_processed} barras sem abrir posições."
+                ),
+                "severity": "critical",
+            }
+        )
+        lessons.append(
+            {
+                "title": "Filtros demasiado apertados",
+                "detail": (
+                    "A combinação de estratégia, confirmação e limiar de força não gerou entradas."
+                ),
+                "priority": "high",
+            }
+        )
+    elif net_pnl_pct <= 0:
         failure_modes.append(
             {
                 "code": "negative_pnl",
@@ -282,22 +316,34 @@ def build_backtest_insight(
                     "priority": "high",
                 }
             )
-            recommendations.append(
-                {
-                    "area": "regime_change",
-                    "suggestion": "Alterar timeframe, janela temporal ou combinação de estratégias.",
-                    "rationale": "Histórico de runs sugere incompatibilidade estrutural com o mercado recente.",
-                }
-            )
+            timeframe_pivot = build_timeframe_pivot_recommendation(timeframe, bar_counts=bar_counts)
+            if timeframe_pivot is not None:
+                recommendations.append(timeframe_pivot)
 
     min_strength = config.get("min_consensus_strength") or config.get("min_signal_strength")
-    if trades_count > metrics.bars_processed * 0.15 and isinstance(min_strength, (int, float)):
+    if (
+        trades_count > metrics.bars_processed * 0.15
+        and isinstance(min_strength, (int, float))
+        and not detect_parameter_tuning_spiral(prior_runs, net_pnl_pct, min_streak=2)
+    ):
         recommendations.append(
             {
                 "area": "min_signal_strength",
                 "suggestion": f"Aumentar limiar de força (actual ~{float(min_strength):.0%}).",
                 "rationale": "Alta rotação de trades aumenta fees e slippage.",
                 "param_hint": "min_consensus_strength",
+            }
+        )
+
+    if protected_win:
+        lessons.append(
+            {
+                "title": "Configuração a funcionar",
+                "detail": (
+                    "PnL positivo com profit factor >= 1 — mantém esta combinação "
+                    "antes de testar pivots de estratégia ou timeframe."
+                ),
+                "priority": "high",
             }
         )
 
@@ -316,17 +362,72 @@ def build_backtest_insight(
     )
     if failure_modes:
         narrative += f"Identificámos {len(failure_modes)} modo(s) de falha principal. "
-    narrative += f"{len(lessons)} lição(ões) e {len(recommendations)} recomendação(ões) para runs futuras."
+    if protected_win:
+        narrative += "Sem alterações sugeridas — o resultado foi positivo com esta configuração. "
+    else:
+        narrative += f"{len(lessons)} lição(ões) e {len(recommendations)} recomendação(ões) para runs futuras."
+
+    if zero_trade:
+        recommendations = build_zero_trade_recovery_recommendations(
+            config=config,
+            strategy_names=strategy_names,
+            bars=bars,
+            symbol=symbol,
+        )
+        if bars and symbol:
+            from app.services.backtest_recommendation_probe import filter_viable_recommendations
+
+            viable = filter_viable_recommendations(
+                recommendations,
+                bars=bars,
+                symbol=symbol,
+                strategy_names=strategy_names,
+                base_config=config,
+            )
+            if viable:
+                recommendations = viable
 
     enriched_recommendations = [
         enrich_recommendation(item, config, strategy_names) for item in recommendations
     ]
+    guarded_recommendations = apply_recommendation_guards(
+        enriched_recommendations,
+        prior_runs=prior_runs,
+        current_pnl_pct=net_pnl_pct,
+        config=config,
+        strategy_names=strategy_names,
+        timeframe=timeframe,
+        bar_counts=bar_counts,
+        trades_count=trades_count,
+        bars=bars,
+        symbol=symbol,
+        profit_factor=profit_factor,
+    )
+    guarded_recommendations = suppress_recommendations_for_winning_run(
+        guarded_recommendations,
+        trades_count=trades_count,
+        net_pnl_pct=net_pnl_pct,
+        profit_factor=profit_factor,
+    )
+
+    if detect_parameter_tuning_spiral(prior_runs, net_pnl_pct):
+        failure_modes.append(
+            {
+                "code": "parameter_tuning_spiral",
+                "title": "Sequência de afinamento sem melhoria",
+                "detail": (
+                    "Vários runs seguidos com PnL negativo e em deterioração. "
+                    "Ajustes incrementais de parâmetros não estão a funcionar."
+                ),
+                "severity": "critical",
+            }
+        )
 
     return InsightPayload(
         narrative_summary=narrative,
         timeline=timeline,
         failure_modes=failure_modes,
         lessons=lessons,
-        recommendations=enriched_recommendations,
+        recommendations=guarded_recommendations,
         prior_runs_context=prior_context,
     )

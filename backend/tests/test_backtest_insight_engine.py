@@ -4,7 +4,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.db.models import BacktestTrade
-from app.services.backtest_insight_engine import PriorRunSnapshot, build_backtest_insight
+from app.services.backtest_insight_engine import build_backtest_insight
+from app.services.backtest_insight_types import PriorRunSnapshot
 
 
 def _trade(**kwargs: object) -> BacktestTrade:
@@ -92,3 +93,125 @@ def test_build_backtest_insight_flags_negative_run() -> None:
         item for item in payload.recommendations if item.get("param_hint") == "stop_loss_pct"
     )
     assert sl_recommendation.get("suggested_values") == {"stop_loss_pct": 2.5}
+
+
+def test_build_backtest_insight_blocks_param_recommendations_on_spiral() -> None:
+    metrics = SimpleNamespace(
+        net_pnl_pct=-0.2445,
+        win_rate=0.3,
+        profit_factor=0.38,
+        max_drawdown_pct=0.42,
+        trades_count=10,
+        bars_processed=200,
+    )
+    trades = [
+        _trade(exit_reason="stop-loss hit"),
+        _trade(exit_reason="stop-loss hit", net_pnl=Decimal("-40")),
+    ]
+    prior = [
+        PriorRunSnapshot(
+            run_id=17,
+            created_at=datetime(2026, 6, 1, 10, 46, tzinfo=UTC),
+            net_pnl_pct=-0.2231,
+            win_rate=0.273,
+            profit_factor=0.43,
+            trades_count=11,
+            stop_loss_pct=2.5,
+        ),
+        PriorRunSnapshot(
+            run_id=16,
+            created_at=datetime(2026, 6, 1, 10, 45, tzinfo=UTC),
+            net_pnl_pct=-0.2076,
+            win_rate=0.273,
+            profit_factor=0.44,
+            trades_count=11,
+            stop_loss_pct=2.0,
+        ),
+    ]
+    payload = build_backtest_insight(
+        symbol="AMZN",
+        timeframe="1d",
+        strategy_names=["bollinger_breakout"],
+        metrics=metrics,
+        trades=trades,
+        result_summary={
+            "benchmark_return_pct": 0.12,
+            "alpha_vs_benchmark_pct": -0.3,
+            "config": {"stop_loss_pct": 3.0, "min_consensus_strength": 0.15},
+        },
+        config={"stop_loss_pct": 3.0, "min_consensus_strength": 0.15},
+        prior_runs=prior,
+    )
+
+    assert any(item.get("area") == "strategy_pivot" for item in payload.recommendations)
+    assert any(item.get("param_hint") == "strategies" for item in payload.recommendations)
+    assert any(item["code"] == "parameter_tuning_spiral" for item in payload.failure_modes)
+
+
+def test_build_backtest_insight_zero_trades_suggests_loosening() -> None:
+    metrics = SimpleNamespace(
+        net_pnl_pct=0.0,
+        win_rate=0.0,
+        profit_factor=0.0,
+        max_drawdown_pct=0.0,
+        trades_count=0,
+        bars_processed=407,
+    )
+    payload = build_backtest_insight(
+        symbol="AMZN",
+        timeframe="1d",
+        strategy_names=["macd_crossover"],
+        metrics=metrics,
+        trades=[],
+        result_summary={
+            "benchmark_return_pct": 0.0122,
+            "alpha_vs_benchmark_pct": -0.0122,
+            "config": {
+                "stop_loss_pct": 2.0,
+                "take_profit_pct": 4.0,
+                "entry_confirmation_bars": 2,
+                "min_consensus_strength": 0.1,
+            },
+        },
+        config={
+            "stop_loss_pct": 2.0,
+            "take_profit_pct": 4.0,
+            "entry_confirmation_bars": 2,
+            "min_consensus_strength": 0.1,
+        },
+        prior_runs=[],
+    )
+
+    assert any(item["code"] == "no_trades_executed" for item in payload.failure_modes)
+    assert not any(item["code"] == "negative_pnl" for item in payload.failure_modes)
+    assert any(item.get("area") == "loosen_entry_confirmation" for item in payload.recommendations)
+    assert not any(item.get("area") == "entry_confirmation" for item in payload.recommendations)
+
+
+def test_build_backtest_insight_winning_run_has_no_recommendations() -> None:
+    from types import SimpleNamespace
+
+    metrics = SimpleNamespace(
+        net_pnl_pct=0.086,
+        win_rate=0.5,
+        profit_factor=1.74,
+        max_drawdown_pct=0.058,
+        trades_count=8,
+        bars_processed=407,
+    )
+    payload = build_backtest_insight(
+        symbol="AMZN",
+        timeframe="1d",
+        strategy_names=["rsi_mean_reversion"],
+        metrics=metrics,
+        trades=[],
+        result_summary={
+            "benchmark_return_pct": 0.012,
+            "alpha_vs_benchmark_pct": 0.074,
+            "config": {"stop_loss_pct": 2.0, "take_profit_pct": 4.0},
+        },
+        config={"stop_loss_pct": 2.0, "take_profit_pct": 4.0},
+        prior_runs=[],
+    )
+    assert payload.recommendations == []
+    assert "Sem alterações sugeridas" in payload.narrative_summary

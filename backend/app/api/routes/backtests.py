@@ -25,7 +25,13 @@ from app.services.backtest_engine import (
     run_backtest_with_walkforward,
 )
 from app.services.backtest_export import render_equity_csv, render_trades_csv
-from app.services.backtest_insight_engine import PriorRunSnapshot, build_backtest_insight
+from app.services.backtest_concrete_pivots import materialize_recommendations
+from app.services.backtest_insight_guards import filter_recommendations_for_symbol_streak
+from app.services.backtest_insight_engine import build_backtest_insight
+from app.services.backtest_insight_types import PriorRunSnapshot
+from app.services.backtest_recommendation_policy import is_protected_winning_run
+from app.services.backtest_recommendation_probe import load_symbol_bars
+from app.services.market_bar_availability import bar_counts_for_timeframes
 from app.services.strategy_engine import BarInput, get_available_strategies, run_strategy
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
@@ -50,7 +56,81 @@ def _to_trade_response(item: BacktestTrade) -> BacktestTradeResponse:
     )
 
 
-def _to_insight_response(item: BacktestRunInsight) -> BacktestRunInsightResponse:
+def _run_config(result_summary: object) -> dict[str, object]:
+    if not isinstance(result_summary, dict):
+        return {}
+    config = result_summary.get("config")
+    return config if isinstance(config, dict) else {}
+
+
+def _prepare_recommendations(
+    db: Session,
+    raw_recommendations: object,
+    *,
+    symbol: str,
+    config: dict[str, object],
+    strategy_names: list[str],
+    timeframe: str,
+    recent_symbol_pnls: list[float] | None = None,
+    trades_count: int | None = None,
+    net_pnl_pct: float | None = None,
+    profit_factor: float | None = None,
+) -> list[dict[str, object]]:
+    if is_protected_winning_run(
+        trades_count=trades_count,
+        net_pnl_pct=net_pnl_pct,
+        profit_factor=profit_factor,
+    ):
+        return []
+
+    if not isinstance(raw_recommendations, list):
+        return []
+    dict_items = [entry for entry in raw_recommendations if isinstance(entry, dict)]
+    filtered = (
+        filter_recommendations_for_symbol_streak(dict_items, recent_symbol_pnls)
+        if recent_symbol_pnls
+        else dict_items
+    )
+    bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=["1d", "1w"])
+    bars = load_symbol_bars(db, symbol=symbol, timeframe=timeframe)
+    return materialize_recommendations(
+        filtered,
+        config=config,
+        strategy_names=strategy_names,
+        timeframe=timeframe,
+        recent_pnls_newest_first=recent_symbol_pnls,
+        bar_counts=bar_counts,
+        bars=bars,
+        symbol=symbol,
+        trades_count=trades_count,
+        current_pnl_pct=net_pnl_pct,
+        profit_factor=profit_factor,
+    )
+
+
+def _to_insight_response(
+    item: BacktestRunInsight,
+    *,
+    db: Session,
+    run_config: dict[str, object] | None = None,
+    recent_symbol_pnls: list[float] | None = None,
+    trades_count: int | None = None,
+    net_pnl_pct: float | None = None,
+    profit_factor: float | None = None,
+) -> BacktestRunInsightResponse:
+    config = run_config if run_config is not None else {}
+    recommendations = _prepare_recommendations(
+        db,
+        item.recommendations,
+        symbol=item.symbol,
+        config=config,
+        strategy_names=item.strategy_names,
+        timeframe=item.timeframe,
+        recent_symbol_pnls=recent_symbol_pnls,
+        trades_count=trades_count,
+        net_pnl_pct=net_pnl_pct,
+        profit_factor=profit_factor,
+    )
     return BacktestRunInsightResponse(
         id=item.id,
         run_id=item.run_id,
@@ -58,21 +138,54 @@ def _to_insight_response(item: BacktestRunInsight) -> BacktestRunInsightResponse
         timeline=item.timeline,
         failure_modes=item.failure_modes,
         lessons=item.lessons,
-        recommendations=item.recommendations,
+        recommendations=recommendations,
         prior_runs_context=item.prior_runs_context,
         created_at=item.created_at,
     )
 
 
+def _recent_symbol_pnls(
+    db: Session,
+    *,
+    owner_user_id: int,
+    symbol: str,
+    limit: int = 5,
+) -> list[float]:
+    rows = db.execute(
+        select(BacktestRun.net_pnl_pct)
+        .where(
+            BacktestRun.owner_user_id == owner_user_id,
+            BacktestRun.symbol == symbol,
+        )
+        .order_by(BacktestRun.created_at.desc())
+        .limit(limit)
+    ).scalars().all()
+    return [float(value) for value in rows]
+
+
 def _to_run_detail(
+    db: Session,
     run: BacktestRun,
     trades: list[BacktestTrade],
     insight: BacktestRunInsight | None = None,
+    *,
+    symbol_run_number: int | None = None,
+    recent_symbol_pnls: list[float] | None = None,
 ) -> BacktestRunDetailResponse:
     return BacktestRunDetailResponse(
-        **_to_run_summary(run).model_dump(),
+        **_to_run_summary(run, symbol_run_number=symbol_run_number).model_dump(),
         trades=[_to_trade_response(item) for item in trades],
-        insight=_to_insight_response(insight) if insight is not None else None,
+        insight=_to_insight_response(
+            insight,
+            db=db,
+            run_config=_run_config(run.result_summary),
+            recent_symbol_pnls=recent_symbol_pnls,
+            trades_count=run.trades_count,
+            net_pnl_pct=float(run.net_pnl_pct),
+            profit_factor=float(run.profit_factor),
+        )
+        if insight is not None
+        else None,
     )
 
 
@@ -102,9 +215,39 @@ def _fetch_prior_run_snapshots(
             win_rate=float(item.win_rate),
             profit_factor=float(item.profit_factor),
             trades_count=item.trades_count,
+            stop_loss_pct=_config_float(item.result_summary, "stop_loss_pct"),
+            take_profit_pct=_config_float(item.result_summary, "take_profit_pct"),
+            min_consensus_strength=_config_float(item.result_summary, "min_consensus_strength"),
         )
         for item in rows
     ]
+
+
+def _config_float(result_summary: object, key: str) -> float | None:
+    if not isinstance(result_summary, dict):
+        return None
+    config = result_summary.get("config")
+    if not isinstance(config, dict):
+        return None
+    value = config.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _symbol_run_numbers_for_user(db: Session, owner_user_id: int) -> dict[int, int]:
+    from sqlalchemy import func
+
+    stmt = select(
+        BacktestRun.id,
+        func.row_number()
+        .over(
+            partition_by=BacktestRun.symbol,
+            order_by=(BacktestRun.created_at.asc(), BacktestRun.id.asc()),
+        )
+        .label("symbol_run_number"),
+    ).where(BacktestRun.owner_user_id == owner_user_id)
+    return {int(row.id): int(row.symbol_run_number) for row in db.execute(stmt).all()}
 
 
 def _persist_run_insight(
@@ -125,6 +268,8 @@ def _persist_run_insight(
         symbol=run_model.symbol,
         exclude_run_id=run_model.id,
     )
+    bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=["1d", "1w"])
+    bars = load_symbol_bars(db, symbol=run_model.symbol, timeframe=run_model.timeframe)
     insight_payload = build_backtest_insight(
         symbol=run_model.symbol,
         timeframe=run_model.timeframe,
@@ -134,6 +279,8 @@ def _persist_run_insight(
         result_summary=result_summary,
         config=config,
         prior_runs=prior_runs,
+        bar_counts=bar_counts,
+        bars=bars,
     )
     insight_model = BacktestRunInsight(
         run_id=run_model.id,
@@ -153,7 +300,7 @@ def _persist_run_insight(
     return insight_model
 
 
-def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
+def _to_run_summary(item: BacktestRun, *, symbol_run_number: int | None = None) -> BacktestRunSummaryResponse:
     insight_summary = None
     if item.insight is not None and item.insight.narrative_summary:
         insight_summary = item.insight.narrative_summary
@@ -179,6 +326,7 @@ def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
         created_at=item.created_at,
         result_summary=item.result_summary,
         insight_summary=insight_summary,
+        symbol_run_number=symbol_run_number,
     )
 
 
@@ -186,6 +334,8 @@ def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
 def list_backtests(
     symbol: str | None = Query(default=None, min_length=1, max_length=32),
     timeframe: str | None = Query(default=None, min_length=1, max_length=16),
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
@@ -195,14 +345,24 @@ def list_backtests(
         query = query.where(BacktestRun.symbol == symbol.upper().strip())
     if timeframe:
         query = query.where(BacktestRun.timeframe == timeframe)
+    if start is not None:
+        query = query.where(BacktestRun.created_at >= start)
+    if end is not None:
+        query = query.where(BacktestRun.created_at <= end)
     query = query.options(joinedload(BacktestRun.insight)).order_by(BacktestRun.created_at.desc()).limit(limit)
     rows = db.execute(query).scalars().unique().all()
-    return [_to_run_summary(item) for item in rows]
+    symbol_run_numbers = _symbol_run_numbers_for_user(db, current_user.id)
+    return [
+        _to_run_summary(item, symbol_run_number=symbol_run_numbers.get(item.id))
+        for item in rows
+    ]
 
 
 @router.get("/lessons", response_model=list[BacktestLessonResponse])
 def list_backtest_lessons(
     symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
@@ -215,6 +375,10 @@ def list_backtest_lessons(
     )
     if symbol:
         query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+    if start is not None:
+        query = query.where(BacktestRunInsight.created_at >= start)
+    if end is not None:
+        query = query.where(BacktestRunInsight.created_at <= end)
 
     insights = db.execute(query).scalars().all()
     lessons: list[BacktestLessonResponse] = []
@@ -246,7 +410,8 @@ def list_backtest_lessons(
 @router.get("/recommendations", response_model=list[BacktestRecommendationResponse])
 def list_backtest_recommendations(
     symbol: str | None = Query(default=None, min_length=1, max_length=32),
-    limit: int = Query(default=30, ge=1, le=100),
+    limit: int = Query(default=12, ge=1, le=100),
+    scope: Literal["latest_run", "all"] = Query(default="latest_run"),
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ) -> list[BacktestRecommendationResponse]:
@@ -254,17 +419,54 @@ def list_backtest_recommendations(
         select(BacktestRunInsight)
         .where(BacktestRunInsight.owner_user_id == current_user.id)
         .order_by(BacktestRunInsight.created_at.desc())
-        .limit(limit * 3)
     )
     if symbol:
         query = query.where(BacktestRunInsight.symbol == symbol.upper().strip())
+    if scope == "latest_run" and symbol:
+        query = query.limit(1)
+    else:
+        query = query.limit(limit * 3)
 
     insights = db.execute(query).scalars().all()
+    run_ids = [insight.run_id for insight in insights]
+    run_configs: dict[int, dict[str, object]] = {}
+    run_trades_count: dict[int, int] = {}
+    run_net_pnl_pct: dict[int, float] = {}
+    run_profit_factor: dict[int, float] = {}
+    if run_ids:
+        runs = db.execute(
+            select(BacktestRun).where(
+                BacktestRun.id.in_(run_ids),
+                BacktestRun.owner_user_id == current_user.id,
+            )
+        ).scalars().all()
+        run_configs = {item.id: _run_config(item.result_summary) for item in runs}
+        run_trades_count = {item.id: int(item.trades_count) for item in runs}
+        run_net_pnl_pct = {item.id: float(item.net_pnl_pct) for item in runs}
+        run_profit_factor = {item.id: float(item.profit_factor) for item in runs}
+
     recommendations: list[BacktestRecommendationResponse] = []
+    symbol_pnl_cache: dict[str, list[float]] = {}
     for insight in insights:
-        for item in insight.recommendations:
-            if not isinstance(item, dict):
-                continue
+        if insight.symbol not in symbol_pnl_cache:
+            symbol_pnl_cache[insight.symbol] = _recent_symbol_pnls(
+                db,
+                owner_user_id=current_user.id,
+                symbol=insight.symbol,
+            )
+        prepared_items = _prepare_recommendations(
+            db,
+            insight.recommendations,
+            symbol=insight.symbol,
+            config=run_configs.get(insight.run_id, {}),
+            strategy_names=insight.strategy_names,
+            timeframe=insight.timeframe,
+            recent_symbol_pnls=symbol_pnl_cache[insight.symbol],
+            trades_count=run_trades_count.get(insight.run_id),
+            net_pnl_pct=run_net_pnl_pct.get(insight.run_id),
+            profit_factor=run_profit_factor.get(insight.run_id),
+        )
+        for item in prepared_items:
             area = item.get("area")
             suggestion = item.get("suggestion")
             rationale = item.get("rationale")
@@ -371,7 +573,16 @@ def get_backtest_run(
         .where(BacktestTrade.run_id == run.id)
         .order_by(BacktestTrade.entry_timestamp.asc())
     ).scalars().all()
-    return _to_run_detail(run, trades, run.insight)
+    symbol_run_numbers = _symbol_run_numbers_for_user(db, current_user.id)
+    recent_pnls = _recent_symbol_pnls(db, owner_user_id=current_user.id, symbol=run.symbol)
+    return _to_run_detail(
+        db,
+        run,
+        trades,
+        run.insight,
+        symbol_run_number=symbol_run_numbers.get(run.id),
+        recent_symbol_pnls=recent_pnls,
+    )
 
 
 @router.post("/run", response_model=BacktestRunDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -512,6 +723,9 @@ def run_backtest_simulation(
                 "take_profit_pct": payload.take_profit_pct,
                 "max_bars_in_trade": payload.max_bars_in_trade,
                 "benchmark_enabled": payload.benchmark_enabled,
+                "period_mode": payload.period_mode,
+                "chart_window": payload.chart_window,
+                "min_signal_strength": payload.min_signal_strength,
             },
         },
     )
@@ -557,7 +771,16 @@ def run_backtest_simulation(
         db.refresh(model)
     db.refresh(insight_model)
 
-    return _to_run_detail(run_model, trade_models, insight_model)
+    symbol_run_numbers = _symbol_run_numbers_for_user(db, current_user.id)
+    recent_pnls = _recent_symbol_pnls(db, owner_user_id=current_user.id, symbol=run_model.symbol)
+    return _to_run_detail(
+        db,
+        run_model,
+        trade_models,
+        insight_model,
+        symbol_run_number=symbol_run_numbers.get(run_model.id),
+        recent_symbol_pnls=recent_pnls,
+    )
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

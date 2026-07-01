@@ -32,6 +32,8 @@ class BacktestRunRequest(BaseModel):
     walkforward_mode: Literal["holdout", "rolling"] = "holdout"
     walkforward_folds: int = Field(default=3, ge=1, le=8)
     benchmark_enabled: bool = True
+    period_mode: Literal["window", "date", "bars"] | None = None
+    chart_window: str | None = Field(default=None, max_length=16)
 
     @model_validator(mode="before")
     @classmethod
@@ -80,6 +82,7 @@ class BacktestRunSummaryResponse(BaseModel):
     created_at: datetime
     result_summary: dict[str, object]
     insight_summary: str | None = None
+    symbol_run_number: int | None = None
 
 
 class BacktestRunDetailResponse(BacktestRunSummaryResponse):

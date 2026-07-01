@@ -53,6 +53,8 @@ type GlobalMarketFiltersProps = {
   onPeriodMode: (mode: PeriodMode) => void;
   onStartDate: (value: string) => void;
   onEndDate: (value: string) => void;
+  barCountLimit?: number;
+  onBarCountLimit?: (value: number) => void;
   availableStrategies: string[];
   strategyLabels: Record<string, string>;
   activeStrategies: string[];
@@ -87,6 +89,8 @@ export function GlobalMarketFilters({
   onPeriodMode,
   onStartDate,
   onEndDate,
+  barCountLimit = 2000,
+  onBarCountLimit,
   availableStrategies,
   strategyLabels,
   activeStrategies,
@@ -137,6 +141,13 @@ export function GlobalMarketFilters({
               </button>
               <button
                 type="button"
+                className={periodMode === "bars" ? "rt-seg-active" : ""}
+                onClick={() => onPeriodMode("bars")}
+              >
+                N velas
+              </button>
+              <button
+                type="button"
                 className={periodMode === "date" ? "rt-seg-active" : ""}
                 onClick={() => onPeriodMode("date")}
               >
@@ -146,10 +157,13 @@ export function GlobalMarketFilters({
             {periodMode === "window" && (
               <span className="rt-hint">≈ {derivedLimit} velas pedidas à API</span>
             )}
+            {periodMode === "bars" && (
+              <span className="rt-hint">exactamente {barCountLimit} velas</span>
+            )}
           </div>
         )}
 
-        {(!showPeriodDates || periodMode === "window") && (
+        {(!showPeriodDates || periodMode === "window" || periodMode === "bars") && (
           <>
             <div className="rt-ctrl-row">
               <span className="rt-ctrl-lbl">Vela</span>
@@ -172,25 +186,41 @@ export function GlobalMarketFilters({
               </span>
             </div>
 
-            <div className="rt-ctrl-row">
-              <span className="rt-ctrl-lbl">Janela</span>
-              <div className="rt-seg">
-                {WINDOWS.map((option) => (
-                  <button
-                    key={option.code}
-                    type="button"
-                    className={option.code === window ? "rt-seg-active" : ""}
-                    onClick={() => onWindow(option.code)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
+            {periodMode === "window" && (
+              <div className="rt-ctrl-row">
+                <span className="rt-ctrl-lbl">Janela</span>
+                <div className="rt-seg">
+                  {WINDOWS.map((option) => (
+                    <button
+                      key={option.code}
+                      type="button"
+                      className={option.code === window ? "rt-seg-active" : ""}
+                      onClick={() => onWindow(option.code)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="rt-hint">
+                  ≈ {IBKR_DURATION[window]} · vela sugerida {suggested}
+                </span>
               </div>
-              <span className="rt-hint">
-                ≈ {IBKR_DURATION[window]} · vela sugerida {suggested}
-              </span>
-            </div>
+            )}
           </>
+        )}
+
+        {showPeriodDates && periodMode === "bars" && onBarCountLimit && (
+          <div className="rt-ctrl-row">
+            <span className="rt-ctrl-lbl">Velas</span>
+            <input
+              type="number"
+              min={200}
+              max={10000}
+              step={1}
+              value={barCountLimit}
+              onChange={(event) => onBarCountLimit(Number(event.target.value))}
+            />
+          </div>
         )}
 
         {showPeriodDates && periodMode === "date" && (

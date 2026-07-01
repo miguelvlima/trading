@@ -175,3 +175,81 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
     assert owner_list_after_delete.json() == []
 
     app.dependency_overrides.clear()
+
+
+def test_backtest_run_persists_period_mode_and_chart_window(tmp_path: Path) -> None:
+    test_session_factory = _build_test_session_factory(tmp_path)
+
+    def override_get_db_session():
+        session = test_session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    client = TestClient(app)
+
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    with test_session_factory() as session:
+        session.add(
+            User(
+                email="period_mode@example.com",
+                password_hash=hash_password("StrongPass123"),
+                display_name="Period Mode",
+                is_active=True,
+            )
+        )
+        instrument = Instrument(symbol="MSFT", name="Microsoft", exchange="NASDAQ", currency="USD")
+        session.add(instrument)
+        session.flush()
+
+        bars: list[MarketBar] = []
+        for idx in range(250):
+            close = Decimal("100") + Decimal(idx) * Decimal("0.01")
+            bars.append(
+                MarketBar(
+                    instrument_id=instrument.id,
+                    timeframe="1d",
+                    timestamp=start + timedelta(days=idx),
+                    open=close,
+                    high=close,
+                    low=close,
+                    close=close,
+                    volume=Decimal("1000"),
+                )
+            )
+        session.add_all(bars)
+        session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "period_mode@example.com", "password": "StrongPass123"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+
+    create_run = client.post(
+        "/backtests/run",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "symbol": "MSFT",
+            "timeframe": "1d",
+            "strategies": ["rsi_mean_reversion"],
+            "limit": 407,
+            "period_mode": "bars",
+            "chart_window": None,
+            "initial_capital": 10000,
+            "fee_bps": 5,
+            "slippage_bps": 2,
+            "min_signal_strength": 0.1,
+        },
+    )
+    assert create_run.status_code == 201
+    created = create_run.json()
+    config = created["result_summary"]["config"]
+    assert config["limit"] == 407
+    assert config["period_mode"] == "bars"
+    assert config["chart_window"] is None
+
+    app.dependency_overrides.clear()

@@ -1,5 +1,6 @@
 import type { FormingBar } from "../realtime/CandleChart";
 import type { Quote } from "../realtime/api";
+import type { PeriodMode } from "../market/windowCandle";
 
 export type LiveBarInput = {
   timestamp: string;
@@ -64,7 +65,7 @@ export function buildLiveEvaluatePayload(args: {
   timeframe: string;
   strategies: string[];
   minStrength: number;
-  periodMode: "window" | "date";
+  periodMode: PeriodMode;
   barLimit: number;
   startDate: string;
   endDate: string;
@@ -82,7 +83,7 @@ export function buildLiveEvaluatePayload(args: {
     strategies: args.strategies,
     min_strength: args.minStrength,
     persist: true,
-    limit: args.periodMode === "window" ? args.barLimit : 5000,
+    limit: args.periodMode === "date" ? 5000 : args.barLimit,
   };
 
   if (args.periodMode === "date") {

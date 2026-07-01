@@ -130,6 +130,27 @@ def list_market_bars(
     return [MarketBarResponse.model_validate(item, from_attributes=True) for item in bars]
 
 
+@router.get("/bars/availability")
+def market_bars_availability(
+    symbol: str = Query(min_length=1, max_length=32),
+    timeframe: str = Query(default="1d", min_length=1, max_length=16),
+    min_bars: int = Query(default=200, ge=1, le=5000),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    from app.services.market_bar_availability import count_market_bars
+
+    normalized_symbol = symbol.upper().strip()
+    available = count_market_bars(db, symbol=normalized_symbol, timeframe=timeframe)
+    return {
+        "symbol": normalized_symbol,
+        "timeframe": timeframe,
+        "available_bars": available,
+        "min_bars": min_bars,
+        "sufficient": available >= min_bars,
+    }
+
+
 @router.get("/indicators", response_model=IndicatorResponse)
 def get_indicators(
     symbol: str = Query(min_length=1, max_length=32),

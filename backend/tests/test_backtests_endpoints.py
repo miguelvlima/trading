@@ -119,6 +119,8 @@ def test_backtest_run_creation_and_user_scope(tmp_path: Path) -> None:
     assert owner_list.status_code == 200
     assert len(owner_list.json()) == 1
     assert owner_list.json()[0]["id"] == run_id
+    assert isinstance(owner_list.json()[0].get("insight_summary"), str)
+    assert len(owner_list.json()[0]["insight_summary"]) > 0
 
     other_list = client.get("/backtests", headers={"Authorization": f"Bearer {other_token}"})
     assert other_list.status_code == 200

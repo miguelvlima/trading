@@ -1,8 +1,17 @@
+export type SuggestedValues = {
+  stop_loss_pct?: number;
+  take_profit_pct?: number;
+  min_consensus_strength_pct?: number;
+  entry_confirmation_bars?: number;
+  strategy_min_strength_pct?: Record<string, number>;
+};
+
 export type BacktestRecommendation = {
   area: string;
   suggestion: string;
   rationale: string;
   param_hint: string | null;
+  suggested_values?: SuggestedValues | null;
   symbol: string;
   strategy_names: string[];
   run_id: number;
@@ -67,40 +76,65 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function resolveSuggestedValues(
+  recommendation?: Pick<BacktestRecommendation, "suggested_values">,
+): SuggestedValues | undefined {
+  const values = recommendation?.suggested_values;
+  if (!values || typeof values !== "object") {
+    return undefined;
+  }
+  return values;
+}
+
 export function buildParamApplyPreview(
   param: ApplicableParam,
   snapshot: BacktestFormSnapshot,
+  suggestedValues?: SuggestedValues,
 ): string | null {
   switch (param) {
     case "stop_loss_pct": {
-      const next = round1(Math.min(15, snapshot.stopLossPct + 0.5));
-      if (next <= snapshot.stopLossPct) {
+      const target =
+        typeof suggestedValues?.stop_loss_pct === "number"
+          ? round1(suggestedValues.stop_loss_pct)
+          : round1(Math.min(15, snapshot.stopLossPct + 0.5));
+      if (target <= snapshot.stopLossPct) {
         return null;
       }
-      return `Stop-loss: ${snapshot.stopLossPct}% → ${next}%`;
+      return `Stop-loss: ${snapshot.stopLossPct}% → ${target}%`;
     }
     case "take_profit_pct": {
-      const next = round1(Math.min(30, snapshot.takeProfitPct + 1));
-      if (next <= snapshot.takeProfitPct) {
+      const target =
+        typeof suggestedValues?.take_profit_pct === "number"
+          ? round1(suggestedValues.take_profit_pct)
+          : round1(Math.min(30, snapshot.takeProfitPct + 1));
+      if (target <= snapshot.takeProfitPct) {
         return null;
       }
-      return `Take-profit: ${snapshot.takeProfitPct}% → ${next}%`;
+      return `Take-profit: ${snapshot.takeProfitPct}% → ${target}%`;
     }
     case "min_consensus_strength": {
       if (snapshot.activeStrategies.length <= 1) {
         return null;
       }
-      const next = Math.min(100, snapshot.consensusStrengthPct + 10);
-      if (next <= snapshot.consensusStrengthPct) {
+      const target =
+        typeof suggestedValues?.min_consensus_strength_pct === "number"
+          ? Math.min(100, Math.round(suggestedValues.min_consensus_strength_pct))
+          : Math.min(100, snapshot.consensusStrengthPct + 10);
+      if (target <= snapshot.consensusStrengthPct) {
         return null;
       }
-      return `Consenso mínimo: ${snapshot.consensusStrengthPct}% → ${next}%`;
+      return `Consenso mínimo: ${snapshot.consensusStrengthPct}% → ${target}%`;
     }
     case "min_signal_strength": {
+      const perStrategy = suggestedValues?.strategy_min_strength_pct;
       const nextEntries = Object.fromEntries(
         snapshot.activeStrategies.map((strategy) => {
           const current = snapshot.strategyMinStrengthPct[strategy] ?? 10;
-          return [strategy, Math.min(100, current + 10)];
+          const target =
+            typeof perStrategy?.[strategy] === "number"
+              ? Math.min(100, Math.round(perStrategy[strategy]))
+              : Math.min(100, current + 10);
+          return [strategy, target];
         }),
       );
       const changed = snapshot.activeStrategies.some((strategy) => {
@@ -110,14 +144,27 @@ export function buildParamApplyPreview(
       if (!changed) {
         return null;
       }
+      if (perStrategy) {
+        const preview = snapshot.activeStrategies
+          .map((strategy) => {
+            const current = snapshot.strategyMinStrengthPct[strategy] ?? 10;
+            const target = nextEntries[strategy];
+            return target > current ? `${strategy} ${current}%→${target}%` : null;
+          })
+          .filter((item): item is string => item !== null);
+        return preview.length > 0 ? `Força mínima: ${preview.join(", ")}` : null;
+      }
       return `Força mínima por estratégia: +10 p.p. (${snapshot.activeStrategies.length} estratégias)`;
     }
     case "entry_confirmation_bars": {
-      const next = Math.min(5, snapshot.entryConfirmationBars + 1);
-      if (next <= snapshot.entryConfirmationBars) {
+      const target =
+        typeof suggestedValues?.entry_confirmation_bars === "number"
+          ? Math.min(5, Math.round(suggestedValues.entry_confirmation_bars))
+          : Math.min(5, snapshot.entryConfirmationBars + 1);
+      if (target <= snapshot.entryConfirmationBars) {
         return null;
       }
-      return `Confirmação de entrada: ${snapshot.entryConfirmationBars} → ${next} velas`;
+      return `Confirmação de entrada: ${snapshot.entryConfirmationBars} → ${target} velas`;
     }
     default:
       return null;
@@ -128,10 +175,14 @@ export function applyParamChange(
   param: ApplicableParam,
   snapshot: BacktestFormSnapshot,
   setters: BacktestFormSetters,
+  suggestedValues?: SuggestedValues,
 ): boolean {
   switch (param) {
     case "stop_loss_pct": {
-      const next = round1(Math.min(15, snapshot.stopLossPct + 0.5));
+      const next =
+        typeof suggestedValues?.stop_loss_pct === "number"
+          ? round1(suggestedValues.stop_loss_pct)
+          : round1(Math.min(15, snapshot.stopLossPct + 0.5));
       if (next <= snapshot.stopLossPct) {
         return false;
       }
@@ -142,7 +193,10 @@ export function applyParamChange(
       return true;
     }
     case "take_profit_pct": {
-      const next = round1(Math.min(30, snapshot.takeProfitPct + 1));
+      const next =
+        typeof suggestedValues?.take_profit_pct === "number"
+          ? round1(suggestedValues.take_profit_pct)
+          : round1(Math.min(30, snapshot.takeProfitPct + 1));
       if (next <= snapshot.takeProfitPct) {
         return false;
       }
@@ -156,7 +210,10 @@ export function applyParamChange(
       if (snapshot.activeStrategies.length <= 1) {
         return false;
       }
-      const next = Math.min(100, snapshot.consensusStrengthPct + 10);
+      const next =
+        typeof suggestedValues?.min_consensus_strength_pct === "number"
+          ? Math.min(100, Math.round(suggestedValues.min_consensus_strength_pct))
+          : Math.min(100, snapshot.consensusStrengthPct + 10);
       if (next <= snapshot.consensusStrengthPct) {
         return false;
       }
@@ -164,12 +221,16 @@ export function applyParamChange(
       return true;
     }
     case "min_signal_strength": {
+      const perStrategy = suggestedValues?.strategy_min_strength_pct;
       let applied = false;
       setters.setStrategyMinStrengthPct((previous) => {
         const next = { ...previous };
         for (const strategy of snapshot.activeStrategies) {
           const current = next[strategy] ?? 10;
-          const bumped = Math.min(100, current + 10);
+          const bumped =
+            typeof perStrategy?.[strategy] === "number"
+              ? Math.min(100, Math.round(perStrategy[strategy]))
+              : Math.min(100, current + 10);
           if (bumped > current) {
             next[strategy] = bumped;
             applied = true;
@@ -180,7 +241,10 @@ export function applyParamChange(
       return applied;
     }
     case "entry_confirmation_bars": {
-      const next = Math.min(5, snapshot.entryConfirmationBars + 1);
+      const next =
+        typeof suggestedValues?.entry_confirmation_bars === "number"
+          ? Math.min(5, Math.round(suggestedValues.entry_confirmation_bars))
+          : Math.min(5, snapshot.entryConfirmationBars + 1);
       if (next <= snapshot.entryConfirmationBars) {
         return false;
       }
@@ -196,10 +260,11 @@ export function buildRecommendationApplyPreview(
   recommendation: BacktestRecommendation,
   snapshot: BacktestFormSnapshot,
 ): string[] {
+  const suggestedValues = resolveSuggestedValues(recommendation);
   const params = parseParamHints(recommendation.param_hint);
   const lines: string[] = [];
   for (const param of params) {
-    const preview = buildParamApplyPreview(param, snapshot);
+    const preview = buildParamApplyPreview(param, snapshot, suggestedValues);
     if (preview) {
       lines.push(preview);
     }
@@ -212,12 +277,17 @@ export function applyRecommendation(
   snapshot: BacktestFormSnapshot,
   setters: BacktestFormSetters,
 ): boolean {
+  const suggestedValues = resolveSuggestedValues(recommendation);
   const params = parseParamHints(recommendation.param_hint);
   let applied = false;
   for (const param of params) {
-    if (applyParamChange(param, snapshot, setters)) {
+    if (applyParamChange(param, snapshot, setters, suggestedValues)) {
       applied = true;
     }
   }
   return applied;
+}
+
+export function isRecommendationReadOnly(recommendation: BacktestRecommendation): boolean {
+  return parseParamHints(recommendation.param_hint).length === 0;
 }

@@ -21,9 +21,11 @@ import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
 import {
   applyRecommendation,
   buildRecommendationApplyPreview,
+  isRecommendationReadOnly,
   type BacktestFormSnapshot,
   type BacktestRecommendation,
 } from "./backtests/recommendationApply";
+import { formatStaleBarMessage, isMarketDataStale } from "./market/dataFreshness";
 import { useBars } from "./realtime/useBars";
 import { useTickStream } from "./realtime/useTickStream";
 
@@ -185,6 +187,7 @@ type BacktestRun = {
   max_drawdown_pct: number;
   created_at: string;
   result_summary: Record<string, unknown>;
+  insight_summary?: string | null;
   trades?: BacktestTrade[];
   insight?: BacktestRunInsight | null;
 };
@@ -874,6 +877,11 @@ function App() {
     const parsed = Date.parse(iso);
     return Number.isNaN(parsed) ? null : parsed;
   }, [bars]);
+
+  const liveSignalsDataStale = useMemo(
+    () => signalsSourceMode === "live" && isMarketDataStale(lastBarMs, candle),
+    [signalsSourceMode, lastBarMs, candle],
+  );
 
   const logout = () => {
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
@@ -3364,6 +3372,9 @@ function App() {
               {signalsSourceMode === "live" && streamError && (
                 <p className="error">{streamError}</p>
               )}
+              {liveSignalsDataStale && lastBarMs !== null && (
+                <p className="hint">{formatStaleBarMessage(candle, lastBarMs)}</p>
+              )}
 
               {!isAuthenticated && !authChecking && (
                 <p className="hint">Inicie sessão no topo para gerar sinais e usar partilha.</p>
@@ -3765,6 +3776,7 @@ function App() {
                           backtestFormSnapshot,
                         );
                         const canApply = applyPreviews.length > 0;
+                        const readOnly = isRecommendationReadOnly(recommendation);
                         const strategyLabel = recommendation.strategy_names
                           .map((name) => STRATEGY_SUMMARY[name]?.title ?? name)
                           .join(" · ");
@@ -3778,6 +3790,7 @@ function App() {
                               {recommendation.param_hint && (
                                 <span className="backtest-lesson-badge">{recommendation.param_hint}</span>
                               )}
+                              {readOnly && <span className="backtest-lesson-badge">Só leitura</span>}
                             </div>
                             <p>{recommendation.rationale}</p>
                             {canApply && (
@@ -4308,6 +4321,9 @@ function App() {
                                   {(run.max_drawdown_pct * 100).toFixed(1)}%
                                 </span>
                               </div>
+                              {run.insight_summary && (
+                                <p className="hint backtest-run-insight-summary">{run.insight_summary}</p>
+                              )}
                             </div>
                             <div className="backtest-run-pnl">
                               <strong className={pnlPositive ? "signal-buy" : "signal-sell"}>

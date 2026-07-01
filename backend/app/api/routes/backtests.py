@@ -154,6 +154,9 @@ def _persist_run_insight(
 
 
 def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
+    insight_summary = None
+    if item.insight is not None and item.insight.narrative_summary:
+        insight_summary = item.insight.narrative_summary
     return BacktestRunSummaryResponse(
         id=item.id,
         owner_user_id=item.owner_user_id,
@@ -175,6 +178,7 @@ def _to_run_summary(item: BacktestRun) -> BacktestRunSummaryResponse:
         max_drawdown_pct=float(item.max_drawdown_pct),
         created_at=item.created_at,
         result_summary=item.result_summary,
+        insight_summary=insight_summary,
     )
 
 
@@ -191,7 +195,8 @@ def list_backtests(
         query = query.where(BacktestRun.symbol == symbol.upper().strip())
     if timeframe:
         query = query.where(BacktestRun.timeframe == timeframe)
-    rows = db.execute(query.order_by(BacktestRun.created_at.desc()).limit(limit)).scalars().all()
+    query = query.options(joinedload(BacktestRun.insight)).order_by(BacktestRun.created_at.desc()).limit(limit)
+    rows = db.execute(query).scalars().unique().all()
     return [_to_run_summary(item) for item in rows]
 
 
@@ -266,12 +271,14 @@ def list_backtest_recommendations(
             if not isinstance(area, str) or not isinstance(suggestion, str) or not isinstance(rationale, str):
                 continue
             param_hint = item.get("param_hint")
+            suggested_values = item.get("suggested_values")
             recommendations.append(
                 BacktestRecommendationResponse(
                     area=area,
                     suggestion=suggestion,
                     rationale=rationale,
                     param_hint=str(param_hint) if param_hint is not None else None,
+                    suggested_values=suggested_values if isinstance(suggested_values, dict) else None,
                     symbol=insight.symbol,
                     strategy_names=insight.strategy_names,
                     run_id=insight.run_id,

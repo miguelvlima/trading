@@ -79,6 +79,7 @@ class BacktestRunSummaryResponse(BaseModel):
     max_drawdown_pct: float
     created_at: datetime
     result_summary: dict[str, object]
+    insight_summary: str | None = None
 
 
 class BacktestRunDetailResponse(BacktestRunSummaryResponse):
@@ -113,6 +114,7 @@ class BacktestRecommendationResponse(BaseModel):
     suggestion: str
     rationale: str
     param_hint: str | None = None
+    suggested_values: dict[str, object] | None = None
     symbol: str
     strategy_names: list[str]
     run_id: int

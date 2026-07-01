@@ -88,3 +88,7 @@ def test_build_backtest_insight_flags_negative_run() -> None:
     assert len(payload.timeline) >= 2
     assert len(payload.lessons) >= 1
     assert payload.prior_runs_context["runs_considered"] == 1
+    sl_recommendation = next(
+        item for item in payload.recommendations if item.get("param_hint") == "stop_loss_pct"
+    )
+    assert sl_recommendation.get("suggested_values") == {"stop_loss_pct": 2.5}

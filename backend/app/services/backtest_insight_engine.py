@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.services.backtest_recommendation_values import enrich_recommendation
+
 
 @dataclass
 class PriorRunSnapshot:
@@ -316,11 +318,15 @@ def build_backtest_insight(
         narrative += f"Identificámos {len(failure_modes)} modo(s) de falha principal. "
     narrative += f"{len(lessons)} lição(ões) e {len(recommendations)} recomendação(ões) para runs futuras."
 
+    enriched_recommendations = [
+        enrich_recommendation(item, config, strategy_names) for item in recommendations
+    ]
+
     return InsightPayload(
         narrative_summary=narrative,
         timeline=timeline,
         failure_modes=failure_modes,
         lessons=lessons,
-        recommendations=recommendations,
+        recommendations=enriched_recommendations,
         prior_runs_context=prior_context,
     )

@@ -19,6 +19,8 @@ def load_symbol_bars(
     *,
     symbol: str,
     timeframe: str,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = 5000,
 ) -> list[BarInput]:
     instrument = db.execute(
@@ -26,14 +28,16 @@ def load_symbol_bars(
     ).scalar_one_or_none()
     if instrument is None:
         return []
+    query = select(MarketBar).where(
+        MarketBar.instrument_id == instrument,
+        MarketBar.timeframe == timeframe,
+    )
+    if start is not None:
+        query = query.where(MarketBar.timestamp >= start)
+    if end is not None:
+        query = query.where(MarketBar.timestamp <= end)
     rows = db.execute(
-        select(MarketBar)
-        .where(
-            MarketBar.instrument_id == instrument,
-            MarketBar.timeframe == timeframe,
-        )
-        .order_by(MarketBar.timestamp.asc())
-        .limit(limit)
+        query.order_by(MarketBar.timestamp.asc()).limit(limit)
     ).scalars().all()
     return [
         BarInput(
@@ -59,6 +63,19 @@ def _as_int(value: object | None, default: int) -> int:
         return value
     if isinstance(value, float):
         return int(value)
+    return default
+
+
+def _resolve_min_strength(config: dict[str, object], default: float = 0.1) -> float:
+    """Resolve the effective minimum strength, preserving an explicit stored ``0.0``.
+
+    A stored ``0.0`` means the user disabled the filter (schema allows ``ge=0.0``);
+    a plain ``or`` fallback would coerce it back to ``default`` and undercount trades.
+    """
+    for key in ("min_consensus_strength", "min_signal_strength"):
+        value = _as_float(config.get(key))
+        if value is not None:
+            return value
     return default
 
 
@@ -101,11 +118,7 @@ def estimate_trades(
     if not bars or not strategy_names:
         return 0
 
-    min_signal = (
-        _as_float(config.get("min_consensus_strength"))
-        or _as_float(config.get("min_signal_strength"))
-        or 0.1
-    )
+    min_signal = _resolve_min_strength(config)
     strategy_mins_raw = config.get("strategy_min_strengths")
     strategy_mins: dict[str, float] = {}
     if isinstance(strategy_mins_raw, dict):
@@ -138,11 +151,7 @@ def pick_strategy_with_most_trades(
 ) -> tuple[str, int] | None:
     probe_config = deepcopy(config)
     probe_config["entry_confirmation_bars"] = 1
-    current_strength = (
-        _as_float(probe_config.get("min_consensus_strength"))
-        or _as_float(probe_config.get("min_signal_strength"))
-        or 0.1
-    )
+    current_strength = _resolve_min_strength(probe_config)
     probe_config["min_consensus_strength"] = min(current_strength, 0.05)
     probe_config["min_signal_strength"] = min(current_strength, 0.05)
 

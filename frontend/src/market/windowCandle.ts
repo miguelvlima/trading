@@ -5,7 +5,7 @@
 
 export type WindowCode = "1h" | "4h" | "1d" | "1w" | "1mo" | "1y" | "all";
 export type CandleCode = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d" | "1w";
-export type PeriodMode = "window" | "date";
+export type PeriodMode = "window" | "date" | "bars";
 
 export type WindowOption = { code: WindowCode; label: string };
 

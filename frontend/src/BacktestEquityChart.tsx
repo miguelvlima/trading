@@ -1,4 +1,4 @@
-import { LineSeries, createChart, type LineData, type UTCTimestamp } from "lightweight-charts";
+import { LineSeries, createChart, type IChartApi, type ISeriesApi, type LineData, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useMemo, useRef } from "react";
 
 export type EquityCurvePoint = {
@@ -12,6 +12,8 @@ type BacktestEquityChartProps = {
   initialCapital: number;
   benchmarkReturnPct?: number;
   benchmarkEnabled?: boolean;
+  tradesCount?: number;
+  netPnlPct?: number;
 };
 
 const toChartTime = (timestamp: string): UTCTimestamp =>
@@ -32,13 +34,44 @@ const enrichBenchmarkCurve = (
   }));
 };
 
+function resolveStrategyColor(tradesCount: number, netPnlPct: number): string {
+  if (tradesCount === 0) {
+    return "#94a3b8";
+  }
+  if (netPnlPct > 0) {
+    return "#22c55e";
+  }
+  if (netPnlPct < 0) {
+    return "#ef4444";
+  }
+  return "#94a3b8";
+}
+
+function resolveLegendClass(tradesCount: number, netPnlPct: number): string {
+  if (tradesCount === 0) {
+    return "backtest-equity-legend-strategy-flat";
+  }
+  if (netPnlPct > 0) {
+    return "backtest-equity-legend-strategy-positive";
+  }
+  if (netPnlPct < 0) {
+    return "backtest-equity-legend-strategy-negative";
+  }
+  return "backtest-equity-legend-strategy-flat";
+}
+
 export function BacktestEquityChart({
   points,
   initialCapital,
   benchmarkReturnPct = 0,
   benchmarkEnabled = true,
+  tradesCount = 0,
+  netPnlPct = 0,
 }: BacktestEquityChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const equitySeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const benchmarkSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
   const chartPoints = useMemo(() => {
     const hasStoredBenchmark = points.some((point) => typeof point.benchmark_equity === "number");
@@ -49,13 +82,36 @@ export function BacktestEquityChart({
   }, [benchmarkEnabled, benchmarkReturnPct, initialCapital, points]);
 
   const showBenchmark = benchmarkEnabled && chartPoints.some((point) => typeof point.benchmark_equity === "number");
+  const strategyColor = resolveStrategyColor(tradesCount, netPnlPct);
+  const legendClass = resolveLegendClass(tradesCount, netPnlPct);
+
+  const equityLineData = useMemo(
+    (): LineData[] =>
+      chartPoints.map((point) => ({
+        time: toChartTime(point.timestamp),
+        value: point.equity,
+      })),
+    [chartPoints],
+  );
+
+  const benchmarkLineData = useMemo(
+    (): LineData[] =>
+      chartPoints
+        .filter((point) => typeof point.benchmark_equity === "number")
+        .map((point) => ({
+          time: toChartTime(point.timestamp),
+          value: point.benchmark_equity as number,
+        })),
+    [chartPoints],
+  );
 
   useEffect(() => {
-    if (!containerRef.current || chartPoints.length === 0) {
+    const container = containerRef.current;
+    if (!container) {
       return;
     }
 
-    const container = containerRef.current;
+    container.replaceChildren();
     const chart = createChart(container, {
       layout: { background: { color: "#0f172a" }, textColor: "#d1d5db" },
       grid: { vertLines: { color: "#334155" }, horzLines: { color: "#334155" } },
@@ -65,45 +121,30 @@ export function BacktestEquityChart({
       timeScale: { borderColor: "#334155" },
     });
 
-    const equitySeries = chart.addSeries(LineSeries, {
-      color: "#38bdf8",
+    chartRef.current = chart;
+    equitySeriesRef.current = chart.addSeries(LineSeries, {
+      color: strategyColor,
       lineWidth: 2,
-      title: "Estratégia",
       priceLineVisible: false,
       lastValueVisible: true,
     });
-    equitySeries.setData(
-      chartPoints.map((point) => ({
-        time: toChartTime(point.timestamp),
-        value: point.equity,
-      })),
-    );
 
     if (showBenchmark) {
-      const benchmarkSeries = chart.addSeries(LineSeries, {
+      benchmarkSeriesRef.current = chart.addSeries(LineSeries, {
         color: "#f59e0b",
         lineWidth: 2,
         lineStyle: 2,
-        title: "Buy & hold",
         priceLineVisible: false,
         lastValueVisible: true,
       });
-      benchmarkSeries.setData(
-        chartPoints
-          .filter((point) => typeof point.benchmark_equity === "number")
-          .map((point) => ({
-            time: toChartTime(point.timestamp),
-            value: point.benchmark_equity as number,
-          })),
-      );
+    } else {
+      benchmarkSeriesRef.current = null;
     }
-
-    chart.timeScale().fitContent();
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) {
-        chart.applyOptions({ width: Math.max(entry.contentRect.width, 280) });
+      if (entry && chartRef.current) {
+        chartRef.current.applyOptions({ width: Math.max(entry.contentRect.width, 280) });
       }
     });
     resizeObserver.observe(container);
@@ -111,8 +152,29 @@ export function BacktestEquityChart({
     return () => {
       resizeObserver.disconnect();
       chart.remove();
+      chartRef.current = null;
+      equitySeriesRef.current = null;
+      benchmarkSeriesRef.current = null;
+      container.replaceChildren();
     };
-  }, [chartPoints, showBenchmark]);
+  }, [showBenchmark, strategyColor]);
+
+  useEffect(() => {
+    if (!equitySeriesRef.current || equityLineData.length === 0) {
+      return;
+    }
+    equitySeriesRef.current.applyOptions({ color: strategyColor });
+    equitySeriesRef.current.setData(equityLineData);
+    chartRef.current?.timeScale().fitContent();
+  }, [equityLineData, strategyColor]);
+
+  useEffect(() => {
+    if (!showBenchmark || !benchmarkSeriesRef.current) {
+      return;
+    }
+    benchmarkSeriesRef.current.setData(benchmarkLineData);
+    chartRef.current?.timeScale().fitContent();
+  }, [benchmarkLineData, showBenchmark]);
 
   if (chartPoints.length === 0) {
     return null;
@@ -122,11 +184,14 @@ export function BacktestEquityChart({
     <div className="backtest-equity-chart-wrap">
       <div ref={containerRef} className="backtest-equity-chart" role="img" aria-label="Curva de equity" />
       <div className="backtest-equity-legend">
-        <span className="backtest-equity-legend-item backtest-equity-legend-strategy">Estratégia</span>
+        <span className={`backtest-equity-legend-item ${legendClass}`}>Estratégia</span>
         {showBenchmark && (
           <span className="backtest-equity-legend-item backtest-equity-legend-benchmark">Buy &amp; hold</span>
         )}
       </div>
+      {tradesCount === 0 && (
+        <p className="hint backtest-equity-flat-note">Sem trades — a linha da estratégia mantém-se plana no capital inicial.</p>
+      )}
     </div>
   );
 }

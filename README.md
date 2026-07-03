@@ -1,6 +1,18 @@
-# App Trading - Fase 4
+# App Trading
 
-Scaffold da aplicação com backend FastAPI, frontend React/Vite, PostgreSQL via Docker Compose, indicadores técnicos e geração de sinais por estratégia.
+Plataforma de análise e decisão de trading em modo **PAPER** (sem execução de ordens reais): mercado, sinais, simulação histórica e memória institucional entre runs.
+
+## Estado actual (Jun 2026)
+
+| Área | Disponível |
+|------|------------|
+| Mercado | Histórico + tempo real (gráfico, indicadores, IBKR stream) |
+| Sinais | Histórico + live (`POST /signals/evaluate-live`), overlay no gráfico |
+| Simulação | Backtest realista, walk-forward, export CSV, análise crítica por run |
+| Memória | Lições e recomendações entre simulações, botão **Aplicar sugestão** |
+| Auth | JWT multi-utilizador, combinações de estratégias partilhadas |
+
+Documentação de estado: `docs/status-2026-06-30.md`
 
 ## Desenvolvimento em paralelo (prompt-first)
 
@@ -53,21 +65,21 @@ CI:
 - `POST /signals/generate` gera e persiste sinais por estratégia
 - `GET /signals` lista sinais persistidos
 - `POST /backtests/run` corre simulação histórica e persiste resultado
-- `GET /backtests` lista backtests do utilizador autenticado
-- Dashboard com gráfico, overlays e painel de sinais explicados
+- `GET /backtests` lista backtests do utilizador autenticado (com resumo de insight)
+- `GET /backtests/lessons` e `GET /backtests/recommendations` — memória institucional
+- `POST /signals/evaluate-live` — sinais na vela em formação
+- Dashboard com gráfico, overlays, simulação e sinais explicados
 
-## Próxima fase prioritária (Fase 5)
+## Próxima fase prioritária
 
-Backtesting/Simulação é funcionalidade essencial do produto e será a próxima fase de implementação.
+**Paper trading em tempo real** — ordens simuladas com base em sinais/consenso, portfolio virtual e PnL intraday. O modo `PAPER` e o motor de backtest já existem; falta a camada de execução simulada live.
 
-Escopo da Fase 5:
-- definir estratégia + ativo + intervalo temporal de teste,
-- simular execução de ordens com regras explícitas (entrada/saída/risco),
-- gerar métricas de resultado (PnL, win rate, drawdown, equity curve),
-- disponibilizar API + UI para correr e analisar backtests.
+Melhorias em curso (memória v2 + UX):
+- valores sugeridos exactos nas recomendações (em vez de deltas heurísticos),
+- resumo de insight na lista de runs,
+- aviso quando dados de mercado estão obsoletos nos sinais live.
 
-Detalhe do plano:
-- `docs/backtesting-phase-plan.md`
+Histórico do plano de backtesting (já entregue): `docs/backtesting-phase-plan.md`
 
 ## Como arrancar
 
@@ -159,8 +171,9 @@ Variáveis relevantes no `frontend/.env`:
 
 ## Próximas frentes (em paralelo)
 
-- **Backtesting/Simulação** — em `develop` (tab Simulação + `/backtests/*`)
-- **Real-time market data feed** — spec em `docs/realtime-data-feed-spec.md`, branch `feature/realtime-data-feed-v1`
+- **Paper trading** — próximo salto de produto (execução simulada live)
+- **Feed IBKR robusto** — spec em `docs/realtime-data-feed-spec.md` (Nuno)
+- **Onboarding Mac/Linux** — scripts cross-platform para `npm run dev:all` (só Postgres em Docker)
 
 ## Fora de escopo (ainda)
 

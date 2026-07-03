@@ -122,8 +122,16 @@ export function HistoricalMarketView({
     : fallbackHead;
 
   const headDir = headBar ? (headBar.close >= headBar.open ? "up" : "down") : "up";
-  const barsSummaryLabel = periodMode === "window" ? "Velas carregadas" : "Velas no período";
-  const barsSummaryValue = periodMode === "window" ? `${bars.length} / ${barLimit}` : String(bars.length);
+  const barsSummaryLabel =
+    periodMode === "window"
+      ? "Velas carregadas"
+      : periodMode === "bars"
+        ? "Velas (N fixo)"
+        : "Velas no período";
+  const barsSummaryValue =
+    periodMode === "window" || periodMode === "bars"
+      ? `${bars.length} / ${barLimit}`
+      : String(bars.length);
   const windowSeconds = periodMode === "window" ? WINDOW_SECONDS[chartWindow] : null;
   const showSignalsBanner = signalsListCount > 0 || signalMarkers.length > 0;
   const railRows = useMemo(

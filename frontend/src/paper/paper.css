@@ -212,18 +212,131 @@
 }
 
 /* -- equity panel -- */
-.pp-sparkline {
+.pp-panel-wide {
   width: 100%;
-  height: 96px;
+}
+
+.pp-equity-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .pp-equity-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pp-equity-chart {
+  min-width: 0;
+}
+
+.pp-stats-column {
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 0;
+}
+
+/* -- risk gauges -- */
+.pp-gauges {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pp-gauge-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.pp-gauge-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+  overflow: hidden;
+}
+
+.pp-gauge-fill {
   display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
 }
 
-.pp-line-up {
-  stroke: var(--rt-up);
+.pp-gauge-ok {
+  background: var(--rt-up);
 }
 
-.pp-line-down {
-  stroke: var(--rt-down);
+.pp-gauge-warn {
+  background: #eab308;
+}
+
+.pp-gauge-danger {
+  background: var(--rt-down);
+}
+
+/* -- per-symbol PnL bars -- */
+.pp-pnl-bars {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pp-pnl-bar-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.pp-pnl-bar-symbol {
+  font-weight: 700;
+}
+
+.pp-pnl-bar-track {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+}
+
+.pp-pnl-bar-half {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+
+.pp-pnl-bar-neg {
+  justify-content: flex-end;
+  border-right: 1px solid var(--rt-border-bright, var(--rt-border));
+}
+
+.pp-pnl-bar-half i {
+  display: block;
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.pp-pnl-bar-neg i {
+  background: var(--rt-down);
+}
+
+.pp-pnl-bar-pos i {
+  background: var(--rt-up);
+}
+
+.pp-pnl-bar-value {
+  text-align: right;
+  font-family: var(--rt-mono, monospace);
 }
 
 .pp-stats {

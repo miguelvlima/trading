@@ -19,6 +19,8 @@ import {
   type PaperOrder,
   type PaperPortfolio,
 } from "./api";
+import { EquityChart } from "./EquityChart";
+import { computeRiskGauges, pnlBars } from "./monitor";
 import { affectsPendingOrders, eventTone } from "./streamReducer";
 import { usePaperStream } from "./usePaperStream";
 
@@ -201,37 +203,24 @@ function PendingOrderCard({
   );
 }
 
-// -- equity sparkline -------------------------------------------------------------
+// -- live PnL cell with flash on change ---------------------------------------------
 
-function EquitySparkline({ points }: { points: Array<{ at: string; equity: number }> }) {
-  if (points.length < 2) {
-    return <p className="pp-muted">A curva intraday aparece com o engine ligado.</p>;
+function PnlCell({ value }: { value: number | null }) {
+  const previousRef = useRef<number | null>(null);
+  const flashRef = useRef<{ dir: "up" | "down"; key: number } | null>(null);
+  const previous = previousRef.current;
+  if (value !== null && previous !== null && value !== previous) {
+    flashRef.current = { dir: value > previous ? "up" : "down", key: Date.now() };
   }
-  const values = points.map((point) => point.equity);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const width = 560;
-  const height = 96;
-  const step = width / (points.length - 1);
-  const path = points
-    .map((point, index) => {
-      const x = index * step;
-      const y = height - ((point.equity - min) / span) * (height - 8) - 4;
-      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const rising = values[values.length - 1] >= values[0];
+  previousRef.current = value;
+  const flash = flashRef.current;
   return (
-    <svg
-      className="pp-sparkline"
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      role="img"
-      aria-label="Curva de equity intraday"
+    <span
+      key={flash?.key ?? 0}
+      className={`${pnlClass(value)} ${flash ? `rt-flash-${flash.dir}` : ""}`.trim()}
     >
-      <path d={path} fill="none" strokeWidth="2" className={rising ? "pp-line-up" : "pp-line-down"} />
-    </svg>
+      {fmtSigned(value)}
+    </span>
   );
 }
 
@@ -352,6 +341,17 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     [state.positions],
   );
 
+  const riskGauges = useMemo(
+    () =>
+      computeRiskGauges({
+        positions: state.positions,
+        equity: state.pnl?.equity ?? portfolio?.equity ?? null,
+        dayPnl: state.pnl?.day_pnl ?? null,
+        riskSettings: portfolio?.risk_settings ?? null,
+      }),
+    [state.positions, state.pnl, portfolio],
+  );
+
   if (portfolioMissing) {
     return (
       <div className="rt-page pp-page">
@@ -409,6 +409,49 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
       />
       {(error || wsError) && <p className="pp-error">{error ?? wsError}</p>}
 
+      <section className="rt-card pp-panel pp-panel-wide">
+        <div className="rt-card-h">
+          <span className="rt-card-t">Equity intraday</span>
+          <span className="pp-muted">
+            {state.equitySeries.length < 2
+              ? "a curva desenha-se com o engine ligado"
+              : `${state.equitySeries.length} amostras`}
+          </span>
+        </div>
+        <div className="pp-equity-row">
+          <EquityChart
+            points={state.equitySeries}
+            baseline={state.pnl ? state.pnl.equity - state.pnl.day_pnl : null}
+          />
+          <div className="pp-stats pp-stats-column">
+            <div className="pp-stat">
+              <span className="rt-k">Equity</span>
+              <span className="rt-v pp-stat-v">{fmtMoney(state.pnl?.equity)}</span>
+            </div>
+            <div className="pp-stat">
+              <span className="rt-k">PnL do dia</span>
+              <span className="rt-v pp-stat-v">
+                <PnlCell value={state.pnl?.day_pnl ?? null} />
+              </span>
+            </div>
+            <div className="pp-stat">
+              <span className="rt-k">Realizado hoje</span>
+              <span className={`rt-v pp-stat-v ${pnlClass(state.pnl?.realized_pnl_today)}`}>
+                {fmtSigned(state.pnl?.realized_pnl_today)}
+              </span>
+            </div>
+            <div className="pp-stat">
+              <span className="rt-k">Fees hoje</span>
+              <span className="rt-v pp-stat-v">{fmtMoney(state.pnl?.fees_today)}</span>
+            </div>
+            <div className="pp-stat">
+              <span className="rt-k">Trades hoje</span>
+              <span className="rt-v pp-stat-v">{state.pnl?.trades_today ?? "—"}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div className="pp-grid">
         <section className="rt-card pp-panel">
           <div className="rt-card-h">
@@ -460,70 +503,91 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
           {state.positions.length === 0 ? (
             <p className="pp-muted">Sem posições abertas.</p>
           ) : (
-            <table className="pp-table">
-              <thead>
-                <tr>
-                  <th>Símbolo</th>
-                  <th>Qtd</th>
-                  <th>P. médio</th>
-                  <th>Último</th>
-                  <th>PnL n/ realizado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state.positions.map((position) => (
-                  <tr key={position.symbol}>
-                    <td>{position.symbol}</td>
-                    <td>{position.quantity.toLocaleString()}</td>
-                    <td>{fmtPrice(position.avg_entry_price)}</td>
-                    <td>{position.last_price !== null ? fmtPrice(position.last_price) : "—"}</td>
-                    <td className={pnlClass(position.unrealized_pnl)}>
-                      {fmtSigned(position.unrealized_pnl)}
+            <>
+              <table className="pp-table">
+                <thead>
+                  <tr>
+                    <th>Símbolo</th>
+                    <th>Qtd</th>
+                    <th>P. médio</th>
+                    <th>Último</th>
+                    <th>PnL n/ realizado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.positions.map((position) => (
+                    <tr key={position.symbol}>
+                      <td>{position.symbol}</td>
+                      <td>{position.quantity.toLocaleString()}</td>
+                      <td>{fmtPrice(position.avg_entry_price)}</td>
+                      <td>
+                        {position.last_price !== null ? fmtPrice(position.last_price) : "—"}
+                      </td>
+                      <td>
+                        <PnlCell value={position.unrealized_pnl} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={4}>Total</td>
+                    <td>
+                      <PnlCell value={totalUnrealized} />
                     </td>
                   </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td colSpan={4}>Total</td>
-                  <td className={pnlClass(totalUnrealized)}>{fmtSigned(totalUnrealized)}</td>
-                </tr>
-              </tfoot>
-            </table>
+                </tfoot>
+              </table>
+              {pnlBars(state.positions).length > 0 && (
+                <div className="pp-pnl-bars">
+                  {pnlBars(state.positions).map((bar) => (
+                    <div key={bar.symbol} className="pp-pnl-bar-row">
+                      <span className="pp-pnl-bar-symbol">{bar.symbol}</span>
+                      <div className="pp-pnl-bar-track">
+                        <div className="pp-pnl-bar-half pp-pnl-bar-neg">
+                          {!bar.positive && (
+                            <i style={{ width: `${bar.widthPct}%` }} />
+                          )}
+                        </div>
+                        <div className="pp-pnl-bar-half pp-pnl-bar-pos">
+                          {bar.positive && <i style={{ width: `${bar.widthPct}%` }} />}
+                        </div>
+                      </div>
+                      <span className={`pp-pnl-bar-value ${pnlClass(bar.value)}`}>
+                        {fmtSigned(bar.value)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </section>
 
         <section className="rt-card pp-panel">
           <div className="rt-card-h">
-            <span className="rt-card-t">Equity intraday</span>
+            <span className="rt-card-t">Utilização de risco</span>
           </div>
-          <EquitySparkline points={state.equitySeries} />
-          <div className="pp-stats">
-            <div className="pp-stat">
-              <span className="rt-k">Equity</span>
-              <span className="rt-v pp-stat-v">{fmtMoney(state.pnl?.equity)}</span>
+          {riskGauges.length === 0 ? (
+            <p className="pp-muted">Sem dados de equity ainda.</p>
+          ) : (
+            <div className="pp-gauges">
+              {riskGauges.map((gauge) => (
+                <div key={gauge.key} className="pp-gauge">
+                  <div className="pp-gauge-head">
+                    <span>{gauge.label}</span>
+                    <span className="pp-muted">{gauge.detail}</span>
+                  </div>
+                  <div className="pp-gauge-track">
+                    <i
+                      className={`pp-gauge-fill pp-gauge-${gauge.tone}`}
+                      style={{ width: `${gauge.ratio * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="pp-stat">
-              <span className="rt-k">PnL do dia</span>
-              <span className={`rt-v pp-stat-v ${pnlClass(state.pnl?.day_pnl)}`}>
-                {fmtSigned(state.pnl?.day_pnl)}
-              </span>
-            </div>
-            <div className="pp-stat">
-              <span className="rt-k">Realizado hoje</span>
-              <span className={`rt-v pp-stat-v ${pnlClass(state.pnl?.realized_pnl_today)}`}>
-                {fmtSigned(state.pnl?.realized_pnl_today)}
-              </span>
-            </div>
-            <div className="pp-stat">
-              <span className="rt-k">Fees hoje</span>
-              <span className="rt-v pp-stat-v">{fmtMoney(state.pnl?.fees_today)}</span>
-            </div>
-            <div className="pp-stat">
-              <span className="rt-k">Trades hoje</span>
-              <span className="rt-v pp-stat-v">{state.pnl?.trades_today ?? "—"}</span>
-            </div>
-          </div>
+          )}
         </section>
       </div>
     </div>

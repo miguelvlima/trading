@@ -10,6 +10,8 @@ from app.api.routes.backtests import router as backtests_router
 from app.api.routes.broker_connections import router as broker_connections_router
 from app.api.routes.market_data import router as market_data_router
 from app.api.routes.market_scanner import router as market_scanner_router
+from app.api.routes.paper_trading import router as paper_trading_router
+from app.api.routes.paper_ws import router as paper_ws_router
 from app.api.routes.realtime_data import router as realtime_data_router
 from app.api.routes.realtime_ws import router as realtime_ws_router
 from app.api.routes.signals import router as signals_router
@@ -46,3 +48,5 @@ app.include_router(signals_router)
 app.include_router(strategy_combinations_router)
 app.include_router(broker_connections_router)
 app.include_router(backtests_router)
+app.include_router(paper_trading_router)
+app.include_router(paper_ws_router)

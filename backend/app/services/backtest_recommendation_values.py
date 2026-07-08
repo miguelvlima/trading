@@ -58,10 +58,13 @@ def compute_suggested_values(
             for strategy in strategy_names:
                 current = _as_float(raw.get(strategy))
                 if current is None:
-                    current = _as_float(config.get("min_consensus_strength")) or 0.1
+                    consensus = _as_float(config.get("min_consensus_strength"))
+                    current = consensus if consensus is not None else 0.1
                 per_strategy[strategy] = min(100, int(round(current * 100)) + 10)
         else:
-            fallback = _as_float(config.get("min_consensus_strength")) or 0.1
+            fallback = _as_float(config.get("min_consensus_strength"))
+            if fallback is None:
+                fallback = 0.1
             for strategy in strategy_names:
                 per_strategy[strategy] = min(100, int(round(fallback * 100)) + 10)
         if per_strategy:

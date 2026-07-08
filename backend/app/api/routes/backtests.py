@@ -63,6 +63,15 @@ def _run_config(result_summary: object) -> dict[str, object]:
     return config if isinstance(config, dict) else {}
 
 
+def _config_int(config: dict[str, object], key: str, default: int) -> int:
+    value = config.get(key)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return int(value)
+    return default
+
+
 def _prepare_recommendations(
     db: Session,
     raw_recommendations: object,
@@ -75,6 +84,9 @@ def _prepare_recommendations(
     trades_count: int | None = None,
     net_pnl_pct: float | None = None,
     profit_factor: float | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    bars_cache: dict[tuple, list[BarInput]] | None = None,
 ) -> list[dict[str, object]]:
     if is_protected_winning_run(
         trades_count=trades_count,
@@ -92,7 +104,23 @@ def _prepare_recommendations(
         else dict_items
     )
     bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=["1d", "1w"])
-    bars = load_symbol_bars(db, symbol=symbol, timeframe=timeframe)
+    # Probe against the same bar set the run used (persisted window + limit), and reuse
+    # loaded bars across insights that share a (symbol, timeframe, window, limit).
+    run_limit = _config_int(config, "limit", 2000)
+    cache_key = (symbol, timeframe, window_start, window_end, run_limit)
+    if bars_cache is not None and cache_key in bars_cache:
+        bars = bars_cache[cache_key]
+    else:
+        bars = load_symbol_bars(
+            db,
+            symbol=symbol,
+            timeframe=timeframe,
+            start=window_start,
+            end=window_end,
+            limit=run_limit,
+        )
+        if bars_cache is not None:
+            bars_cache[cache_key] = bars
     return materialize_recommendations(
         filtered,
         config=config,
@@ -117,6 +145,9 @@ def _to_insight_response(
     trades_count: int | None = None,
     net_pnl_pct: float | None = None,
     profit_factor: float | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    bars_cache: dict[tuple, list[BarInput]] | None = None,
 ) -> BacktestRunInsightResponse:
     config = run_config if run_config is not None else {}
     recommendations = _prepare_recommendations(
@@ -130,6 +161,9 @@ def _to_insight_response(
         trades_count=trades_count,
         net_pnl_pct=net_pnl_pct,
         profit_factor=profit_factor,
+        window_start=window_start,
+        window_end=window_end,
+        bars_cache=bars_cache,
     )
     return BacktestRunInsightResponse(
         id=item.id,
@@ -183,6 +217,8 @@ def _to_run_detail(
             trades_count=run.trades_count,
             net_pnl_pct=float(run.net_pnl_pct),
             profit_factor=float(run.profit_factor),
+            window_start=run.start_at,
+            window_end=run.end_at,
         )
         if insight is not None
         else None,
@@ -269,7 +305,14 @@ def _persist_run_insight(
         exclude_run_id=run_model.id,
     )
     bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=["1d", "1w"])
-    bars = load_symbol_bars(db, symbol=run_model.symbol, timeframe=run_model.timeframe)
+    bars = load_symbol_bars(
+        db,
+        symbol=run_model.symbol,
+        timeframe=run_model.timeframe,
+        start=run_model.start_at,
+        end=run_model.end_at,
+        limit=_config_int(config, "limit", 2000),
+    )
     insight_payload = build_backtest_insight(
         symbol=run_model.symbol,
         timeframe=run_model.timeframe,
@@ -433,6 +476,7 @@ def list_backtest_recommendations(
     run_trades_count: dict[int, int] = {}
     run_net_pnl_pct: dict[int, float] = {}
     run_profit_factor: dict[int, float] = {}
+    run_window: dict[int, tuple[datetime | None, datetime | None]] = {}
     if run_ids:
         runs = db.execute(
             select(BacktestRun).where(
@@ -444,9 +488,11 @@ def list_backtest_recommendations(
         run_trades_count = {item.id: int(item.trades_count) for item in runs}
         run_net_pnl_pct = {item.id: float(item.net_pnl_pct) for item in runs}
         run_profit_factor = {item.id: float(item.profit_factor) for item in runs}
+        run_window = {item.id: (item.start_at, item.end_at) for item in runs}
 
     recommendations: list[BacktestRecommendationResponse] = []
     symbol_pnl_cache: dict[str, list[float]] = {}
+    bars_cache: dict[tuple, list[BarInput]] = {}
     for insight in insights:
         if insight.symbol not in symbol_pnl_cache:
             symbol_pnl_cache[insight.symbol] = _recent_symbol_pnls(
@@ -454,6 +500,7 @@ def list_backtest_recommendations(
                 owner_user_id=current_user.id,
                 symbol=insight.symbol,
             )
+        window_start, window_end = run_window.get(insight.run_id, (None, None))
         prepared_items = _prepare_recommendations(
             db,
             insight.recommendations,
@@ -465,6 +512,9 @@ def list_backtest_recommendations(
             trades_count=run_trades_count.get(insight.run_id),
             net_pnl_pct=run_net_pnl_pct.get(insight.run_id),
             profit_factor=run_profit_factor.get(insight.run_id),
+            window_start=window_start,
+            window_end=window_end,
+            bars_cache=bars_cache,
         )
         for item in prepared_items:
             area = item.get("area")

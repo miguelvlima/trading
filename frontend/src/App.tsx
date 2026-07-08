@@ -15,6 +15,7 @@ import {
 import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
 import { resolveFormingBar } from "./market/formingBar";
 import { findSignalsAtChartTime } from "./market/signalMarkers";
+import { PaperPage } from "./paper/PaperPage";
 import { RealtimePage } from "./realtime/RealtimePage";
 import { INDICATORS, type IndicatorId } from "./realtime/indicators";
 import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
@@ -65,7 +66,7 @@ type ApiBar = {
   volume: string;
 };
 
-type ViewTab = "market" | "signals" | "backtests";
+type ViewTab = "market" | "signals" | "backtests" | "paper";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type SignalsSourceMode = "historical" | "live";
 type ConfigTab = "data" | "signals" | "execution" | "alerts";
@@ -3340,6 +3341,13 @@ function App() {
           >
             Simulação
           </button>
+          <button
+            type="button"
+            className={activeTab === "paper" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
+            onClick={() => setActiveTab("paper")}
+          >
+            Paper
+          </button>
         </nav>
 
       <section className="panel app-panel-card">
@@ -3353,6 +3361,7 @@ function App() {
           />
         )}
 
+        {activeTab !== "paper" && (
         <GlobalMarketFilters
           activeTab={activeTab}
           chartMode={chartMode}
@@ -3388,6 +3397,7 @@ function App() {
           activeIndicators={activeIndicators}
           onToggleIndicator={toggleActiveIndicator}
         />
+        )}
 
         {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
         {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
@@ -3748,6 +3758,12 @@ function App() {
                 </>
               )}
             </div>
+          </div>
+
+          <div className={activeTab === "paper" ? "tab-pane tab-pane-active" : "tab-pane"}>
+            {activeTab === "paper" && (
+              <PaperPage apiBaseUrl={API_BASE_URL} authToken={authToken} />
+            )}
           </div>
 
           <div className={activeTab === "backtests" ? "tab-pane tab-pane-active" : "tab-pane"}>

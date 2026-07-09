@@ -109,6 +109,15 @@
   }
 }
 
+/* Independent panel stacks inside .pp-grid: each column flows on its own, so
+   a tall activity feed never opens holes next to short panels. */
+.pp-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
 .pp-panel {
   min-height: 120px;
 }
@@ -397,10 +406,17 @@
   border-top: 1px solid var(--rt-border);
 }
 
+/* Signal-history table is text-heavy: left-align everything (the generic
+   .pp-table right-aligns numeric columns, which reads badly for rationale). */
+.pp-table-signals th,
+.pp-table-signals td {
+  text-align: left;
+}
+
 /* Rationale column of the signal-history table: keep rows one line high; the
    full text lives in the cell's title tooltip. */
 .pp-signal-rationale {
-  max-width: 320px;
+  max-width: 420px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

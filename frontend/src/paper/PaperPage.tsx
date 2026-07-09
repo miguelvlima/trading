@@ -445,7 +445,7 @@ function MarketCarousel({
               indicators={[]}
               windowSeconds={intraday ? null : WINDOW_SECONDS[chartWindow]}
               markers={markers}
-              height={260}
+              height={320}
             />
           )}
         </div>
@@ -590,7 +590,7 @@ function SignalHistoryPanel({ signals }: { signals: PaperSignalWire[] }) {
         </p>
       ) : (
         <div className="pp-table-scroll pp-scroll-y">
-          <table className="pp-table">
+          <table className="pp-table pp-table-signals">
             <thead>
               <tr>
                 <th>Quando</th>
@@ -1173,6 +1173,22 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     [act, apiBaseUrl, authToken, dispatch, seedCockpit],
   );
 
+  // Each engine restart re-evaluates the same closed bar and re-records the
+  // same signal, flooding the history with repeats. Collapse to one row per
+  // (symbol, strategy, bar, direction), keeping the newest (list is newest
+  // first) — feeds BOTH the table and the chart markers.
+  const dedupedSignals = useMemo(() => {
+    const seen = new Set<string>();
+    const unique: PaperSignalWire[] = [];
+    for (const signal of signalHistory) {
+      const key = `${signal.symbol}|${signal.strategy}|${signal.bar_time ?? ""}|${signal.direction}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(signal);
+    }
+    return unique;
+  }, [signalHistory]);
+
   const totalUnrealized = useMemo(
     () =>
       state.positions.reduce(
@@ -1256,8 +1272,10 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         symbols={status?.tracked_symbols ?? []}
         positions={state.positions}
         signals={state.signals}
-        signalHistory={signalHistory}
+        signalHistory={dedupedSignals}
       />
+
+      <SignalHistoryPanel signals={dedupedSignals} />
 
       <section className="rt-card pp-panel pp-panel-wide">
         <div className="rt-card-h">
@@ -1302,7 +1320,10 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         </div>
       </section>
 
+      {/* Two INDEPENDENT column stacks (not grid rows): the activity feed's
+          height must never push "Posições abertas" down the page. */}
       <div className="pp-grid">
+        <div className="pp-col">
         <section className="rt-card pp-panel">
           <div className="rt-card-h">
             <span className="rt-card-t">Ordens pendentes</span>
@@ -1354,25 +1375,6 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
               ))}
             </div>
           )}
-        </section>
-
-        <section className="rt-card pp-panel pp-panel-feed">
-          <div className="rt-card-h">
-            <span className="rt-card-t">Atividade do engine</span>
-            <span className="rt-badge rt-badge-live">● AO VIVO</span>
-          </div>
-          <ul className="pp-feed-list">
-            {state.events.length === 0 && (
-              <li className="pp-muted">Sem eventos ainda.</li>
-            )}
-            {state.events.map((event) => (
-              <li key={event.id} className={`pp-event pp-event-${eventTone(event)}`}>
-                <span className="pp-event-time">{fmtTime(event.created_at)}</span>
-                {event.symbol && <span className="pp-event-symbol">{event.symbol}</span>}
-                <span className="pp-event-msg">{event.message}</span>
-              </li>
-            ))}
-          </ul>
         </section>
 
         <section className="rt-card pp-panel">
@@ -1472,6 +1474,27 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             </>
           )}
         </section>
+        </div>
+
+        <div className="pp-col">
+        <section className="rt-card pp-panel pp-panel-feed">
+          <div className="rt-card-h">
+            <span className="rt-card-t">Atividade do engine</span>
+            <span className="rt-badge rt-badge-live">● AO VIVO</span>
+          </div>
+          <ul className="pp-feed-list">
+            {state.events.length === 0 && (
+              <li className="pp-muted">Sem eventos ainda.</li>
+            )}
+            {state.events.map((event) => (
+              <li key={event.id} className={`pp-event pp-event-${eventTone(event)}`}>
+                <span className="pp-event-time">{fmtTime(event.created_at)}</span>
+                {event.symbol && <span className="pp-event-symbol">{event.symbol}</span>}
+                <span className="pp-event-msg">{event.message}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
 
         <section className="rt-card pp-panel">
           <div className="rt-card-h">
@@ -1515,9 +1538,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             </p>
           )}
         </section>
+        </div>
       </div>
-
-      <SignalHistoryPanel signals={signalHistory} />
 
       <section className="rt-card pp-panel pp-panel-wide">
         <div className="rt-card-h">

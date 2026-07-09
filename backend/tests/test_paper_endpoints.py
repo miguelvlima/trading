@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.api.dependencies.auth import get_current_user
 from app.db.base import Base
 from app.db.dependencies import get_db_session
-from app.db.models import PaperOrder, PaperPortfolio, User
+from app.db.models import PaperOrder, PaperPortfolio, PaperPosition, User
 from app.main import app
 
 RTH_NOW = datetime(2026, 7, 8, 15, 0, tzinfo=UTC)
@@ -212,6 +212,75 @@ def test_engine_status_and_kill_switch_reset(tmp_path: Path) -> None:
         reset = client.post("/paper/engine/kill-switch/reset")
         assert reset.status_code == 200
         assert reset.json()["kill_switch_active"] is False
+    finally:
+        teardown()
+
+
+def seed_open_position(
+    factory: sessionmaker[Session], user_id: int, symbol: str = "AAPL"
+) -> None:
+    """A filled BUY entry order plus the matching open position."""
+    with factory() as session:
+        portfolio = session.execute(
+            select(PaperPortfolio).where(PaperPortfolio.owner_user_id == user_id)
+        ).scalar_one()
+        session.add(
+            PaperOrder(
+                portfolio_id=portfolio.id,
+                symbol=symbol,
+                side="BUY",
+                quantity=Decimal("10"),
+                order_type="market",
+                status="filled",
+                signal_snapshot={"strategy": "bollinger_breakout", "rationale": "teste"},
+                risk_snapshot={},
+                data_liveness="DELAYED",
+                proposed_at=RTH_NOW,
+                decided_at=RTH_NOW,
+                filled_at=RTH_NOW,
+            )
+        )
+        session.add(
+            PaperPosition(
+                portfolio_id=portfolio.id,
+                symbol=symbol,
+                quantity=Decimal("10"),
+                avg_entry_price=Decimal("100"),
+            )
+        )
+        session.commit()
+
+
+def test_position_provenance_and_manual_close(tmp_path: Path) -> None:
+    client, factory, user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 100_000})
+
+        missing = client.post("/paper/positions/AAPL/close")
+        assert missing.status_code == 404
+
+        seed_open_position(factory, user_id)
+
+        positions = client.get("/paper/positions").json()
+        assert len(positions) == 1
+        assert positions[0]["strategy"] == "bollinger_breakout"
+        assert positions[0]["rationale"] == "teste"
+        assert positions[0]["opened_at"] is not None
+
+        # No runtime quotes here: the manual SELL parks approved and the
+        # runtime retries it on the next fresh quote.
+        closed = client.post("/paper/positions/AAPL/close")
+        assert closed.status_code == 200
+        body = closed.json()
+        assert body["side"] == "SELL"
+        assert body["quantity"] == 10
+        assert body["status"] == "approved"
+
+        again = client.post("/paper/positions/AAPL/close")
+        assert again.status_code == 409
+
+        events = client.get("/paper/events", params={"limit": 5}).json()
+        assert any("Venda manual" in event["message"] for event in events)
     finally:
         teardown()
 

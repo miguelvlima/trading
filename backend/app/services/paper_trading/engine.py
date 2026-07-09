@@ -395,6 +395,78 @@ class PaperEngine:
         )
         return order
 
+    def manual_close(
+        self, db: Session, portfolio: PaperPortfolio, position: PaperPosition
+    ) -> tuple[PaperOrder, PaperTrade | None, FillDeferral | None]:
+        """Close an open position on user request: SELL the whole quantity.
+
+        Mirrors the protective exit: the click IS the approval, so the order
+        is born ``approved`` and fills on the next credible quote (or waits,
+        retried by the runtime, if the feed cannot support a fill right now).
+        """
+        now = self._now_fn()
+        settings = self.settings_for(portfolio)
+        quote = self.quotes.get(position.symbol)
+        order = PaperOrder(
+            portfolio_id=self.portfolio_id,
+            symbol=position.symbol,
+            side="SELL",
+            quantity=position.quantity,
+            order_type="market",
+            status=STATUS_APPROVED,
+            signal_snapshot={
+                "origin": "manual",
+                "strategy": "manual",
+                "rationale": "Venda manual pelo utilizador.",
+            },
+            risk_snapshot={},
+            data_liveness=quote.data_liveness if quote else "UNKNOWN",
+            proposed_at=now,
+            decided_at=now,
+        )
+        db.add(order)
+        db.flush()
+        self._emit(
+            db,
+            ev.EVENT_ORDER_APPROVED,
+            f"Venda manual: SELL {float(position.quantity):g} {position.symbol} "
+            f"(ordem #{order.id}).",
+            symbol=position.symbol,
+            payload={"order_id": order.id, "origin": "manual"},
+        )
+        trade, deferral = self.try_fill_order(db, portfolio, order, settings=settings)
+        return order, trade, deferral
+
+    def entry_context(
+        self, db: Session, symbol: str
+    ) -> tuple[datetime | None, str | None, str | None]:
+        """(opened_at, strategy, rationale) of the entry that opened the position.
+
+        Sourced from the most recent filled BUY order — the position row itself
+        survives closes/reopens, so its ``created_at`` can lie about the entry.
+        """
+        entry = db.execute(
+            select(PaperOrder)
+            .where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.symbol == symbol.upper(),
+                PaperOrder.side == "BUY",
+                PaperOrder.status == STATUS_FILLED,
+            )
+            .order_by(PaperOrder.filled_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if entry is None:
+            return None, None, None
+        snapshot = entry.signal_snapshot or {}
+        strategy = snapshot.get("strategy")
+        rationale = snapshot.get("rationale")
+        return (
+            entry.filled_at,
+            str(strategy) if strategy else None,
+            str(rationale) if rationale else None,
+        )
+
     def cancel_order(
         self, db: Session, portfolio: PaperPortfolio, order: PaperOrder
     ) -> PaperOrder:

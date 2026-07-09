@@ -320,19 +320,24 @@ class PaperEngineRuntime:
             )
 
         pnl = self.engine.pnl_snapshot(db, portfolio)
-        positions = [
-            {
-                "symbol": pos.symbol,
-                "quantity": float(pos.quantity),
-                "avg_entry_price": float(pos.avg_entry_price),
-                "last_price": self.engine._mark_price(pos),
-                "unrealized_pnl": (
-                    (self.engine._mark_price(pos) - float(pos.avg_entry_price))
-                    * float(pos.quantity)
-                ),
-            }
-            for pos in self.engine._positions(db)
-        ]
+        positions = []
+        for pos in self.engine._positions(db):
+            opened_at, strategy, rationale = self.engine.entry_context(db, pos.symbol)
+            positions.append(
+                {
+                    "symbol": pos.symbol,
+                    "quantity": float(pos.quantity),
+                    "avg_entry_price": float(pos.avg_entry_price),
+                    "last_price": self.engine._mark_price(pos),
+                    "unrealized_pnl": (
+                        (self.engine._mark_price(pos) - float(pos.avg_entry_price))
+                        * float(pos.quantity)
+                    ),
+                    "opened_at": opened_at.isoformat() if opened_at else None,
+                    "strategy": strategy,
+                    "rationale": rationale,
+                }
+            )
         self._hub.publish(
             self.portfolio_id,
             {

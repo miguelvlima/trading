@@ -32,7 +32,7 @@ from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import hub, record_event
 from app.services.paper_trading.quotes import QuoteCache
 from app.services.paper_trading.runtime import registry
-from app.services.paper_trading.types import STATUS_PROPOSED, RiskSettings
+from app.services.paper_trading.types import OPEN_STATUSES, STATUS_PROPOSED, RiskSettings
 
 logger = structlog.get_logger(__name__)
 
@@ -270,6 +270,7 @@ def list_positions(
         )
     ).scalars()
 
+    engine = _engine_for(portfolio)
     responses: list[PaperPositionResponse] = []
     for pos in positions:
         last_price: float | None = None
@@ -282,6 +283,7 @@ def list_positions(
             if last_price is not None
             else None
         )
+        opened_at, strategy, rationale = engine.entry_context(db, pos.symbol)
         responses.append(
             PaperPositionResponse(
                 symbol=pos.symbol,
@@ -290,10 +292,54 @@ def list_positions(
                 realized_pnl=float(pos.realized_pnl),
                 last_price=last_price,
                 unrealized_pnl=unrealized,
+                opened_at=opened_at,
+                strategy=strategy,
+                rationale=rationale,
                 updated_at=pos.updated_at,
             )
         )
     return responses
+
+
+@router.post("/positions/{symbol}/close", response_model=PaperOrderResponse)
+def close_position(
+    symbol: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> PaperOrderResponse:
+    """Manually sell the whole open position for ``symbol`` at market."""
+    portfolio = _get_portfolio(db, current_user)
+    symbol = symbol.upper()
+    position = db.execute(
+        select(PaperPosition).where(
+            PaperPosition.portfolio_id == portfolio.id,
+            PaperPosition.symbol == symbol,
+            PaperPosition.quantity > 0,
+        )
+    ).scalar_one_or_none()
+    if position is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Sem posição aberta em {symbol}.",
+        )
+    open_order = db.execute(
+        select(PaperOrder).where(
+            PaperOrder.portfolio_id == portfolio.id,
+            PaperOrder.symbol == symbol,
+            PaperOrder.status.in_(OPEN_STATUSES),
+        )
+    ).scalar_one_or_none()
+    if open_order is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Já existe uma ordem aberta (#{open_order.id}) para {symbol} — "
+            "decide-a ou espera pelo fill antes de fechar manualmente.",
+        )
+    engine = _engine_for(portfolio)
+    order, _trade, _deferral = engine.manual_close(db, portfolio, position)
+    db.commit()
+    db.refresh(order)
+    return _order_response(order)
 
 
 @router.get("/trades", response_model=list[PaperTradeResponse])

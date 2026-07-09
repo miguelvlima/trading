@@ -16,6 +16,9 @@ export type LivePosition = {
   avg_entry_price: number;
   last_price: number | null;
   unrealized_pnl: number | null;
+  opened_at: string | null;
+  strategy: string | null;
+  rationale: string | null;
 };
 
 export type PaperStreamState = {

@@ -53,6 +53,9 @@ export type PaperPositionWire = {
   realized_pnl: number;
   last_price: number | null;
   unrealized_pnl: number | null;
+  opened_at: string | null;
+  strategy: string | null;
+  rationale: string | null;
   updated_at: string;
 };
 
@@ -89,6 +92,9 @@ export type PaperStreamMessage =
         avg_entry_price: number;
         last_price: number;
         unrealized_pnl: number;
+        opened_at: string | null;
+        strategy: string | null;
+        rationale: string | null;
       }>;
       at: string;
     }
@@ -170,6 +176,14 @@ export const rejectPaperOrder = (baseUrl: string, token: string, orderId: number
 
 export const getPaperPositions = (baseUrl: string, token: string) =>
   request<PaperPositionWire[]>(baseUrl, token, "GET", "/paper/positions");
+
+export const closePaperPosition = (baseUrl: string, token: string, symbol: string) =>
+  request<PaperOrder>(
+    baseUrl,
+    token,
+    "POST",
+    `/paper/positions/${encodeURIComponent(symbol)}/close`,
+  );
 
 export const getPaperPnl = (baseUrl: string, token: string) =>
   request<PaperPnl>(baseUrl, token, "GET", "/paper/pnl");

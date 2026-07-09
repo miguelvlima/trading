@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtPrice } from "../realtime/format";
 import {
   approvePaperOrder,
+  closePaperPosition,
   createPaperPortfolio,
   getEngineStatus,
   getPaperEvents,
@@ -39,6 +40,18 @@ function fmtTime(iso: string): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+// Local date+time, dropping the date when it is today ("16:57" vs "08/07 16:57").
+function fmtWhen(iso: string | null): string {
+  if (!iso) return "—";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  const time = parsed.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const today = new Date();
+  if (parsed.toDateString() === today.toDateString()) return time;
+  const day = parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+  return `${day} ${time}`;
 }
 
 function fmtMoney(value: number | null | undefined): string {
@@ -486,6 +499,9 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         avg_entry_price: position.avg_entry_price,
         last_price: position.last_price,
         unrealized_pnl: position.unrealized_pnl,
+        opened_at: position.opened_at,
+        strategy: position.strategy,
+        rationale: position.rationale,
       })),
     });
     await refreshPending();
@@ -724,6 +740,9 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                     <th>P. médio</th>
                     <th>Último</th>
                     <th>PnL n/ realizado</th>
+                    <th>Aberta</th>
+                    <th>Origem</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -738,6 +757,24 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                       <td>
                         <PnlCell value={position.unrealized_pnl} />
                       </td>
+                      <td className="pp-muted">{fmtWhen(position.opened_at)}</td>
+                      <td className="pp-muted" title={position.rationale ?? undefined}>
+                        {position.strategy ?? "—"}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="pp-btn pp-btn-reject pp-btn-sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void act(() =>
+                              closePaperPosition(apiBaseUrl, authToken, position.symbol),
+                            )
+                          }
+                        >
+                          Vender
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -747,6 +784,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                     <td>
                       <PnlCell value={totalUnrealized} />
                     </td>
+                    <td colSpan={3} />
                   </tr>
                 </tfoot>
               </table>

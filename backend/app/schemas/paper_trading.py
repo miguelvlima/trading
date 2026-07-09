@@ -54,6 +54,10 @@ class PaperPositionResponse(BaseModel):
     realized_pnl: float
     last_price: float | None
     unrealized_pnl: float | None
+    # Entry provenance so the cockpit can answer "why/when was this opened?".
+    opened_at: datetime | None
+    strategy: str | None
+    rationale: str | None
     updated_at: datetime
 
 

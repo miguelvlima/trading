@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import threading
 from datetime import UTC, datetime
 
@@ -40,6 +41,12 @@ def _feed_problem_message(status) -> str:
     return "Feed de dados indisponível — sem ticks recebidos; verifica o IB Gateway."
 
 
+# Rotating suffix per runtime start: a stop->start within seconds would reuse a
+# client id the Gateway still considers connected (error 326), like the WS
+# sessions in realtime_ws.py. Range base+300..base+499 stays clear of theirs.
+_engine_client_seq = itertools.count()
+
+
 def _build_streaming_provider(settings: Settings, portfolio_id: int) -> StreamingProvider | None:
     """IBKR streaming provider for one engine runtime; None without ib/Gateway.
 
@@ -56,7 +63,7 @@ def _build_streaming_provider(settings: Settings, portfolio_id: int) -> Streamin
     return IBKRStreamingProvider(
         host=settings.ibkr_gateway_host,
         port=settings.ibkr_gateway_port,
-        client_id=settings.ibkr_client_id + 300 + (portfolio_id % 100),
+        client_id=settings.ibkr_client_id + 300 + (next(_engine_client_seq) % 200),
         market_data_type=settings.ibkr_market_data_type,
     )
 

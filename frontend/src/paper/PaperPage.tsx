@@ -6,6 +6,7 @@ import { fmtPrice } from "../realtime/format";
 import { useBars } from "../realtime/useBars";
 import {
   fetchLimitFor,
+  suggestedCandle,
   WINDOW_SECONDS,
   type WindowCode,
 } from "../realtime/windowCandle";
@@ -291,10 +292,13 @@ function PendingOrderCard({
 
 // -- market carousel -------------------------------------------------------------
 
-const CAROUSEL_WINDOWS: Array<{ code: WindowCode; label: string }> = [
-  { code: "1mo", label: "1M" },
-  { code: "1y", label: "1A" },
-  { code: "all", label: "Tudo" },
+// Window -> candle pairs: the candle resolution follows the window so the
+// chart always shows a comparable number of bars ("velas ajustadas").
+const CAROUSEL_WINDOWS: Array<{ code: WindowCode; label: string; trendLabel: string }> = [
+  { code: "4h", label: "4H", trendLabel: "últimas 4 horas" },
+  { code: "1d", label: "1D", trendLabel: "último dia" },
+  { code: "1mo", label: "1M", trendLabel: "último mês" },
+  { code: "1y", label: "1A", trendLabel: "último ano" },
 ];
 
 function MarketCarousel({
@@ -309,29 +313,36 @@ function MarketCarousel({
   positions: LivePosition[];
 }) {
   const [index, setIndex] = useState(0);
-  const [chartWindow, setChartWindow] = useState<WindowCode>("1mo");
+  const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
   const count = symbols.length;
   const current = count > 0 ? symbols[((index % count) + count) % count] : null;
+  const candle = suggestedCandle(chartWindow); // 4h->5m, 1d->5m, 1mo/1y->1d
   const { bars, loading, error } = useBars(
     apiBaseUrl,
     authToken,
     current ?? "",
-    "1d",
+    candle,
     chartWindow,
-    fetchLimitFor(chartWindow, "1d"),
+    fetchLimitFor(chartWindow, candle),
     20000,
     current !== null,
   );
 
   const position = positions.find((item) => item.symbol === current) ?? null;
   const lastClose = bars.length > 0 ? Number(bars[bars.length - 1].close) : null;
-  const prevClose = bars.length > 1 ? Number(bars[bars.length - 2].close) : null;
-  // Live position price beats the (possibly day-old) last persisted candle.
+  const firstOpen = bars.length > 0 ? Number(bars[0].open) : null;
+  // Live position price beats the (possibly delayed) last candle close.
   const price = position?.last_price ?? lastClose;
-  const changePct =
-    price !== null && prevClose !== null && prevClose > 0
-      ? ((price - prevClose) / prevClose) * 100
+  const trend =
+    price !== null && firstOpen !== null && firstOpen > 0
+      ? ((price - firstOpen) / firstOpen) * 100
       : null;
+  const windowHigh =
+    bars.length > 0 ? Math.max(...bars.map((bar) => Number(bar.high))) : null;
+  const windowLow =
+    bars.length > 0 ? Math.min(...bars.map((bar) => Number(bar.low))) : null;
+  const trendLabel =
+    CAROUSEL_WINDOWS.find((option) => option.code === chartWindow)?.trendLabel ?? "";
 
   if (count === 0) return null;
   const step = (delta: number) => setIndex((value) => (value + delta + count) % count);
@@ -349,16 +360,7 @@ function MarketCarousel({
           ◀
         </button>
         <span className="rt-card-t pp-carousel-title">
-          {current}
-          {price !== null && <b> {fmtPrice(price)}</b>}
-          {changePct !== null && (
-            <span className={changePct >= 0 ? "rt-up" : "rt-down"}>
-              {" "}
-              {changePct >= 0 ? "+" : ""}
-              {changePct.toFixed(2)}%
-            </span>
-          )}
-          {changePct !== null && <span className="pp-muted"> vs fecho anterior</span>}
+          {current} <span className="pp-muted">velas {candle}</span>
         </span>
         <span className="pp-carousel-windows">
           {CAROUSEL_WINDOWS.map((option) => (
@@ -385,38 +387,75 @@ function MarketCarousel({
           ▶
         </button>
       </div>
-      {error ? (
-        <p className="pp-error">{error}</p>
-      ) : loading && bars.length === 0 ? (
-        <p className="pp-muted">a carregar velas de {current}…</p>
-      ) : bars.length === 0 ? (
-        <p className="pp-muted">Sem barras para {current} ainda.</p>
-      ) : (
-        <CandleChart
-          bars={bars}
-          forming={null}
-          indicators={[]}
-          windowSeconds={WINDOW_SECONDS[chartWindow]}
-        />
-      )}
-      <div className="pp-carousel-foot">
-        {position ? (
-          <>
+      <div className="pp-carousel-body">
+        <div className="pp-carousel-chart">
+          {error ? (
+            <p className="pp-error">{error}</p>
+          ) : loading && bars.length === 0 ? (
+            <p className="pp-muted">a carregar velas de {current}…</p>
+          ) : bars.length === 0 ? (
+            <p className="pp-muted">
+              Sem velas {candle} para {current} — o histórico intraday vem do
+              Gateway; confirma que está ligado.
+            </p>
+          ) : (
+            <CandleChart
+              bars={bars}
+              forming={null}
+              indicators={[]}
+              windowSeconds={WINDOW_SECONDS[chartWindow]}
+              height={260}
+            />
+          )}
+        </div>
+        <aside className="pp-carousel-side">
+          <div className="pp-side-price">
+            <span className="rt-k">Preço</span>
+            <span className="pp-side-price-v">{price !== null ? fmtPrice(price) : "—"}</span>
+            {trend !== null && (
+              <span className={trend >= 0 ? "rt-up" : "rt-down"}>
+                {trend >= 0 ? "+" : ""}
+                {trend.toFixed(2)}% <span className="pp-muted">{trendLabel}</span>
+              </span>
+            )}
+          </div>
+          <div className="pp-side-row">
+            <span className="rt-k">Máx / mín ({trendLabel})</span>
             <span>
-              Posição: <b>{position.quantity.toLocaleString()}</b> @{" "}
-              {fmtPrice(position.avg_entry_price)}
+              {windowHigh !== null ? fmtPrice(windowHigh) : "—"}
+              {" / "}
+              {windowLow !== null ? fmtPrice(windowLow) : "—"}
             </span>
-            {position.stop_price !== null && (
-              <span className="pp-muted">stop {fmtPrice(position.stop_price)}</span>
-            )}
-            {position.take_profit_price !== null && (
-              <span className="pp-muted">TP {fmtPrice(position.take_profit_price)}</span>
-            )}
-            <PnlCell value={position.unrealized_pnl} />
-          </>
-        ) : (
-          <span className="pp-muted">Sem posição aberta neste símbolo.</span>
-        )}
+          </div>
+          <div className="pp-side-divider" />
+          {position ? (
+            <>
+              <div className="pp-side-row">
+                <span className="rt-k">Posição</span>
+                <span>
+                  <b>{position.quantity.toLocaleString()}</b> @{" "}
+                  {fmtPrice(position.avg_entry_price)}
+                </span>
+              </div>
+              <div className="pp-side-row">
+                <span className="rt-k">Stop / TP</span>
+                <span>
+                  {position.stop_price !== null ? fmtPrice(position.stop_price) : "—"}
+                  {" / "}
+                  {position.take_profit_price !== null
+                    ? fmtPrice(position.take_profit_price)
+                    : "—"}
+                </span>
+              </div>
+              <div className="pp-side-row">
+                <span className="rt-k">PnL n/ realizado</span>
+                <PnlCell value={position.unrealized_pnl} />
+              </div>
+            </>
+          ) : (
+            <span className="pp-muted">Sem posição aberta neste símbolo.</span>
+          )}
+        </aside>
       </div>
     </section>
   );

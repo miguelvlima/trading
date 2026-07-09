@@ -243,6 +243,12 @@ class PaperEngineRuntime:
 
         strategies = list(risk.strategies) or get_available_strategies()
         for symbol in self.tracked_symbols:
+            quote = self.quotes.get(symbol)
+            if quote is None or quote.last is None or float(quote.last) <= 0:
+                # No reference quote yet (startup gap / feed down). Do NOT mark
+                # the bar as handled: on a 1d timeframe that would burn the
+                # signal until tomorrow over a few missing ticks. Retry next poll.
+                continue
             bars = load_strategy_bars(
                 db, symbol, risk.timeframe, self._settings.paper_engine_bars_limit
             )

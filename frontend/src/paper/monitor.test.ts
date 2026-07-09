@@ -13,6 +13,8 @@ function makePosition(overrides: Partial<LivePosition> = {}): LivePosition {
     opened_at: "2026-07-08T15:00:00+00:00",
     strategy: "bollinger_breakout",
     rationale: "teste",
+    stop_price: 98,
+    take_profit_price: 104,
     ...overrides,
   };
 }

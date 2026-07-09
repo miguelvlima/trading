@@ -17,6 +17,7 @@ from app.services.paper_trading.quotes import QuoteCache, market_session
 from app.services.paper_trading.risk import (
     ProposalContext,
     RiskManager,
+    consecutive_losses,
     cooldown_until_from_trades,
     daily_loss_breached,
 )
@@ -437,15 +438,14 @@ class PaperEngine:
         trade, deferral = self.try_fill_order(db, portfolio, order, settings=settings)
         return order, trade, deferral
 
-    def entry_context(
-        self, db: Session, symbol: str
-    ) -> tuple[datetime | None, str | None, str | None]:
-        """(opened_at, strategy, rationale) of the entry that opened the position.
+    def entry_context(self, db: Session, symbol: str) -> PaperOrder | None:
+        """The filled BUY order that opened the current position, if any.
 
-        Sourced from the most recent filled BUY order — the position row itself
+        Sourced from the most recent filled BUY — the position row itself
         survives closes/reopens, so its ``created_at`` can lie about the entry.
+        Callers read opened-at, strategy/rationale and stop/TP levels from it.
         """
-        entry = db.execute(
+        return db.execute(
             select(PaperOrder)
             .where(
                 PaperOrder.portfolio_id == self.portfolio_id,
@@ -456,16 +456,31 @@ class PaperEngine:
             .order_by(PaperOrder.filled_at.desc())
             .limit(1)
         ).scalar_one_or_none()
+
+    def position_provenance(self, db: Session, position: PaperPosition) -> dict[str, object]:
+        """Cockpit fields answering "why/when was this opened, where does it exit?"."""
+        entry = self.entry_context(db, position.symbol)
         if entry is None:
-            return None, None, None
+            return {
+                "opened_at": None,
+                "strategy": None,
+                "rationale": None,
+                "stop_price": None,
+                "take_profit_price": None,
+            }
         snapshot = entry.signal_snapshot or {}
+        entry_price = float(position.avg_entry_price)
+        stop = float(entry.stop_loss_pct) if entry.stop_loss_pct is not None else None
+        tp = float(entry.take_profit_pct) if entry.take_profit_pct is not None else None
         strategy = snapshot.get("strategy")
         rationale = snapshot.get("rationale")
-        return (
-            entry.filled_at,
-            str(strategy) if strategy else None,
-            str(rationale) if rationale else None,
-        )
+        return {
+            "opened_at": entry.filled_at,
+            "strategy": str(strategy) if strategy else None,
+            "rationale": str(rationale) if rationale else None,
+            "stop_price": entry_price * (1.0 - stop / 100.0) if stop else None,
+            "take_profit_price": entry_price * (1.0 + tp / 100.0) if tp else None,
+        }
 
     def cancel_order(
         self, db: Session, portfolio: PaperPortfolio, order: PaperOrder
@@ -828,4 +843,6 @@ class PaperEngine:
             tracked_symbols=tracked_symbols,
             pending_orders=len(list(pending)),
             cooldown_until=cooldown.isoformat() if cooldown else None,
+            consecutive_losses=consecutive_losses(self._trades_today(db)),
+            max_consecutive_losses=settings.max_consecutive_losses,
         )

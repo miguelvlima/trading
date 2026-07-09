@@ -13,6 +13,29 @@ export type EngineStatusWire = {
   tracked_symbols: string[];
   pending_orders: number;
   cooldown_until: string | null;
+  consecutive_losses: number;
+  max_consecutive_losses: number;
+  last_evaluation: EvaluationSummary | null;
+  poll_seconds: number | null;
+};
+
+// What the engine's last strategy sweep did (explains cockpit "silence").
+export type EvaluationSummary = {
+  at: string;
+  symbols_total: number;
+  strategies: number;
+  timeframe: string;
+  no_quote: number;
+  no_bars: number;
+  evaluated: number;
+  signals: number;
+  proposals: number;
+};
+
+export type PaperEquityPoint = {
+  at: string;
+  equity: number;
+  cash: number;
 };
 
 export type PaperPortfolio = {
@@ -56,6 +79,8 @@ export type PaperPositionWire = {
   opened_at: string | null;
   strategy: string | null;
   rationale: string | null;
+  stop_price: number | null;
+  take_profit_price: number | null;
   updated_at: string;
 };
 
@@ -67,6 +92,21 @@ export type PaperPnl = {
   fees_today: number;
   day_pnl: number;
   trades_today: number;
+};
+
+export type PaperTradeWire = {
+  id: number;
+  order_id: number;
+  symbol: string;
+  side: "BUY" | "SELL";
+  quantity: number;
+  price: number;
+  fee_paid: number;
+  fill_basis: string;
+  quote_age_seconds: number | null;
+  data_liveness: string;
+  realized_pnl: number | null;
+  executed_at: string;
 };
 
 export type PaperEventWire = {
@@ -95,6 +135,8 @@ export type PaperStreamMessage =
         opened_at: string | null;
         strategy: string | null;
         rationale: string | null;
+        stop_price: number | null;
+        take_profit_price: number | null;
       }>;
       at: string;
     }
@@ -187,6 +229,18 @@ export const closePaperPosition = (baseUrl: string, token: string, symbol: strin
 
 export const getPaperPnl = (baseUrl: string, token: string) =>
   request<PaperPnl>(baseUrl, token, "GET", "/paper/pnl");
+
+export const getPaperTrades = (baseUrl: string, token: string, limit = 100) =>
+  request<PaperTradeWire[]>(baseUrl, token, "GET", `/paper/trades?limit=${limit}`);
+
+export const getPaperEquity = (baseUrl: string, token: string, limit = 2000) =>
+  request<PaperEquityPoint[]>(baseUrl, token, "GET", `/paper/equity?limit=${limit}`);
+
+export const cancelPaperOrder = (baseUrl: string, token: string, orderId: number) =>
+  request<PaperOrder>(baseUrl, token, "POST", `/paper/orders/${orderId}/cancel`);
+
+export const getStrategies = (baseUrl: string, token: string) =>
+  request<string[]>(baseUrl, token, "GET", "/signals/strategies");
 
 export const getPaperEvents = (baseUrl: string, token: string, limit = 50) =>
   request<PaperEventWire[]>(baseUrl, token, "GET", `/paper/events?limit=${limit}`);

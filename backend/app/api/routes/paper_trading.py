@@ -10,6 +10,7 @@ from app.core.config import Settings, get_settings
 from app.db.dependencies import get_db_session
 from app.db.models import (
     PaperEngineEvent,
+    PaperEquityPoint,
     PaperOrder,
     PaperPortfolio,
     PaperPosition,
@@ -18,6 +19,7 @@ from app.db.models import (
 )
 from app.schemas.paper_trading import (
     EngineStatusResponse,
+    PaperEquityPointResponse,
     PaperEventResponse,
     PaperOrderResponse,
     PaperPnlResponse,
@@ -32,7 +34,12 @@ from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import hub, record_event
 from app.services.paper_trading.quotes import QuoteCache
 from app.services.paper_trading.runtime import registry
-from app.services.paper_trading.types import OPEN_STATUSES, STATUS_PROPOSED, RiskSettings
+from app.services.paper_trading.types import (
+    OPEN_STATUSES,
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    RiskSettings,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -127,6 +134,13 @@ def create_portfolio(
         message=f"Portfolio paper criado com ${payload.initial_cash:,.2f}.",
         broadcast=hub,
     )
+    db.add(
+        PaperEquityPoint(
+            portfolio_id=portfolio.id,
+            equity=payload.initial_cash,
+            cash=payload.initial_cash,
+        )
+    )
     db.commit()
     db.refresh(portfolio)
     return _portfolio_response(portfolio)
@@ -146,7 +160,7 @@ async def reset_portfolio(
     portfolio = _get_portfolio(db, current_user)
     await registry.stop(portfolio.id)
 
-    for model in (PaperOrder, PaperTrade, PaperPosition):
+    for model in (PaperOrder, PaperTrade, PaperPosition, PaperEquityPoint):
         for row in db.execute(
             select(model).where(model.portfolio_id == portfolio.id)
         ).scalars():
@@ -167,6 +181,13 @@ async def reset_portfolio(
         event_type=ev.EVENT_PORTFOLIO_RESET,
         message=f"Portfolio paper reiniciado com ${payload.initial_cash:,.2f}.",
         broadcast=hub,
+    )
+    db.add(
+        PaperEquityPoint(
+            portfolio_id=portfolio.id,
+            equity=payload.initial_cash,
+            cash=payload.initial_cash,
+        )
     )
     db.commit()
     db.refresh(portfolio)
@@ -257,6 +278,33 @@ def reject_order(
     return _order_response(order)
 
 
+@router.post("/orders/{order_id}/cancel", response_model=PaperOrderResponse)
+def cancel_order(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> PaperOrderResponse:
+    """Cancel an approved order still waiting for a credible quote to fill."""
+    portfolio = _get_portfolio(db, current_user)
+    order = db.execute(
+        select(PaperOrder).where(
+            PaperOrder.id == order_id, PaperOrder.portfolio_id == portfolio.id
+        )
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+    if order.status != STATUS_APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Order is '{order.status}', only 'approved' orders can be cancelled.",
+        )
+    engine = _engine_for(portfolio)
+    engine.cancel_order(db, portfolio, order)
+    db.commit()
+    db.refresh(order)
+    return _order_response(order)
+
+
 @router.get("/positions", response_model=list[PaperPositionResponse])
 def list_positions(
     current_user: User = Depends(get_current_user),
@@ -283,7 +331,7 @@ def list_positions(
             if last_price is not None
             else None
         )
-        opened_at, strategy, rationale = engine.entry_context(db, pos.symbol)
+        provenance = engine.position_provenance(db, pos)
         responses.append(
             PaperPositionResponse(
                 symbol=pos.symbol,
@@ -292,13 +340,37 @@ def list_positions(
                 realized_pnl=float(pos.realized_pnl),
                 last_price=last_price,
                 unrealized_pnl=unrealized,
-                opened_at=opened_at,
-                strategy=strategy,
-                rationale=rationale,
+                opened_at=provenance["opened_at"],
+                strategy=provenance["strategy"],
+                rationale=provenance["rationale"],
+                stop_price=provenance["stop_price"],
+                take_profit_price=provenance["take_profit_price"],
                 updated_at=pos.updated_at,
             )
         )
     return responses
+
+
+@router.get("/equity", response_model=list[PaperEquityPointResponse])
+def equity_history(
+    limit: int = Query(default=2000, ge=1, le=10000),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> list[PaperEquityPointResponse]:
+    """Persisted equity snapshots, oldest first — seeds the cockpit curve."""
+    portfolio = _get_portfolio(db, current_user)
+    points = list(
+        db.execute(
+            select(PaperEquityPoint)
+            .where(PaperEquityPoint.portfolio_id == portfolio.id)
+            .order_by(PaperEquityPoint.at.desc())
+            .limit(limit)
+        ).scalars()
+    )
+    return [
+        PaperEquityPointResponse(at=p.at, equity=float(p.equity), cash=float(p.cash))
+        for p in reversed(points)
+    ]
 
 
 @router.post("/positions/{symbol}/close", response_model=PaperOrderResponse)
@@ -438,7 +510,9 @@ async def start_engine(
             portfolio,
             tracked_symbols=runtime.tracked_symbols,
             has_provider=runtime.has_provider,
-        ).__dict__
+        ).__dict__,
+        last_evaluation=runtime.last_evaluation,
+        poll_seconds=runtime.poll_seconds,
     )
 
 
@@ -468,18 +542,27 @@ async def stop_engine(
 def engine_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
 ) -> EngineStatusResponse:
     portfolio = _get_portfolio(db, current_user)
     runtime = registry.get(portfolio.id)
     engine = _engine_for(portfolio)
-    tracked = runtime.tracked_symbols if runtime is not None else []
+    if runtime is not None:
+        tracked = runtime.tracked_symbols
+    else:
+        # Engine stopped: still show WHAT would be tracked, so the cockpit can
+        # display the symbol list at all times.
+        risk = RiskSettings.from_json(portfolio.risk_settings)
+        tracked = list(risk.symbols or settings.realtime_feed_symbol_list)
     return EngineStatusResponse(
         **engine.status(
             db,
             portfolio,
             tracked_symbols=tracked,
             has_provider=runtime.has_provider if runtime is not None else False,
-        ).__dict__
+        ).__dict__,
+        last_evaluation=runtime.last_evaluation if runtime is not None else None,
+        poll_seconds=runtime.poll_seconds if runtime is not None else None,
     )
 
 

@@ -35,6 +35,10 @@ function makeStatus(overrides: Partial<EngineStatusWire> = {}): EngineStatusWire
     tracked_symbols: ["AAPL"],
     pending_orders: 0,
     cooldown_until: null,
+    consecutive_losses: 0,
+    max_consecutive_losses: 3,
+    last_evaluation: null,
+    poll_seconds: 15,
     ...overrides,
   };
 }
@@ -104,6 +108,8 @@ describe("reduceStream", () => {
             opened_at: "2026-07-08T15:00:00+00:00",
             strategy: "bollinger_breakout",
             rationale: "teste",
+            stop_price: 98.05,
+            take_profit_price: 104.05,
           },
         ],
         at: "2026-07-08T15:00:15+00:00",

@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { fetchInstruments } from "../realtime/api";
 import { fmtPrice } from "../realtime/format";
 import {
   approvePaperOrder,
+  cancelPaperOrder,
   closePaperPosition,
   createPaperPortfolio,
   getEngineStatus,
+  getPaperEquity,
   getPaperEvents,
   getPaperOrders,
   getPaperPnl,
   getPaperPortfolio,
   getPaperPositions,
+  getPaperTrades,
+  getStrategies,
   rejectPaperOrder,
   resetKillSwitch,
   resetPaperPortfolio,
@@ -21,10 +26,11 @@ import {
   type EngineStatusWire,
   type PaperOrder,
   type PaperPortfolio,
+  type PaperTradeWire,
 } from "./api";
 import { EquityChart } from "./EquityChart";
 import { computeRiskGauges, pnlBars } from "./monitor";
-import { affectsPendingOrders, eventTone } from "./streamReducer";
+import { affectsPendingOrders, eventTone, type LivePosition } from "./streamReducer";
 import { usePaperStream } from "./usePaperStream";
 
 type PaperPageProps = {
@@ -52,6 +58,22 @@ function fmtWhen(iso: string | null): string {
   if (parsed.toDateString() === today.toDateString()) return time;
   const day = parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
   return `${day} ${time}`;
+}
+
+// Tooltip for the Stop/TP cell: how far each exit sits from the last price.
+function exitDistances(position: LivePosition): string | undefined {
+  const last = position.last_price;
+  if (last === null || last <= 0) return undefined;
+  const parts: string[] = [];
+  if (position.stop_price !== null) {
+    parts.push(`stop a ${(((last - position.stop_price) / last) * 100).toFixed(1)}% abaixo`);
+  }
+  if (position.take_profit_price !== null) {
+    parts.push(
+      `TP a ${(((position.take_profit_price - last) / last) * 100).toFixed(1)}% acima`,
+    );
+  }
+  return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
 function fmtMoney(value: number | null | undefined): string {
@@ -108,6 +130,29 @@ function FeedDot({ status }: { status: EngineStatusWire | null }) {
   );
 }
 
+// One line that explains what the last strategy sweep did — the cockpit's
+// answer to "why is nothing happening?".
+function evaluationText(status: EngineStatusWire | null): string | null {
+  const summary = status?.last_evaluation;
+  if (!summary) return null;
+  const parts: string[] = [
+    `${summary.symbols_total} símbolos × ${summary.strategies} estratégias (${summary.timeframe})`,
+  ];
+  if (summary.proposals > 0) {
+    parts.push(`${summary.proposals} proposta${summary.proposals > 1 ? "s" : ""}`);
+  } else if (summary.signals > 0) {
+    parts.push(`${summary.signals} sinais, nenhum virou proposta (ver atividade)`);
+  } else {
+    parts.push("sem sinal novo na barra atual");
+  }
+  if (summary.no_quote > 0) parts.push(`${summary.no_quote} à espera de cotação`);
+  if (summary.no_bars > 0) parts.push(`${summary.no_bars} sem histórico de barras`);
+  const cadence = status?.poll_seconds
+    ? ` Reavalia a cada ${Math.round(status.poll_seconds)}s.`
+    : "";
+  return `Última avaliação ${fmtTime(summary.at)} — ${parts.join("; ")}.${cadence}`;
+}
+
 function StatusBar({
   status,
   wsStatus,
@@ -129,6 +174,15 @@ function StatusBar({
       <span className={running ? "pp-engine pp-engine-on" : "pp-engine pp-engine-off"}>
         <i className="rt-dot" /> Engine {running ? "LIGADO" : "PARADO"}
       </span>
+      {(status?.tracked_symbols?.length ?? 0) > 0 && (
+        <span className="pp-symbols" title="Símbolos seguidos pelo engine">
+          {status!.tracked_symbols.map((symbol) => (
+            <span key={symbol} className="pp-symbol-chip">
+              {symbol}
+            </span>
+          ))}
+        </span>
+      )}
       <button
         type="button"
         className="pp-btn"
@@ -235,11 +289,20 @@ function num(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function parseSymbols(text: string): string[] {
+  return text
+    .split(/[\s,;]+/)
+    .map((symbol) => symbol.trim().toUpperCase())
+    .filter(Boolean);
+}
+
 type SettingsPanelProps = {
   portfolio: PaperPortfolio;
   equity: number | null;
   busy: boolean;
   engineRunning: boolean;
+  instruments: string[];
+  strategies: string[];
   onSave: (settings: Record<string, unknown>) => void;
   onReset: (initialCash: number) => void;
 };
@@ -249,6 +312,8 @@ function SettingsPanel({
   equity,
   busy,
   engineRunning,
+  instruments,
+  strategies,
   onSave,
   onReset,
 }: SettingsPanelProps) {
@@ -261,8 +326,27 @@ function SettingsPanel({
     stopLossPct: String(num(rs.default_stop_loss_pct, 2)),
     takeProfitPct: String(num(rs.default_take_profit_pct, 4)),
     symbols: Array.isArray(rs.symbols) ? (rs.symbols as string[]).join(", ") : "",
+    strategies: Array.isArray(rs.strategies) ? (rs.strategies as string[]) : [],
+    timeframe: typeof rs.timeframe === "string" ? rs.timeframe : "1d",
     rthOnly: rs.rth_only !== false,
   }));
+
+  const selectedSymbols = parseSymbols(form.symbols);
+  const toggleSymbol = (symbol: string) =>
+    setForm((current) => {
+      const list = parseSymbols(current.symbols);
+      const next = list.includes(symbol)
+        ? list.filter((item) => item !== symbol)
+        : [...list, symbol];
+      return { ...current, symbols: next.join(", ") };
+    });
+  const toggleStrategy = (strategy: string) =>
+    setForm((current) => ({
+      ...current,
+      strategies: current.strategies.includes(strategy)
+        ? current.strategies.filter((item) => item !== strategy)
+        : [...current.strategies, strategy],
+    }));
   const [resetCash, setResetCash] = useState("100000");
   const [confirmReset, setConfirmReset] = useState(false);
 
@@ -285,10 +369,9 @@ function SettingsPanel({
       daily_loss_limit_pct: num(form.dailyLossPct, num(rs.daily_loss_limit_pct, 3)),
       default_stop_loss_pct: num(form.stopLossPct, num(rs.default_stop_loss_pct, 2)),
       default_take_profit_pct: num(form.takeProfitPct, num(rs.default_take_profit_pct, 4)),
-      symbols: form.symbols
-        .split(/[\s,;]+/)
-        .map((symbol) => symbol.trim().toUpperCase())
-        .filter(Boolean),
+      symbols: selectedSymbols,
+      strategies: form.strategies,
+      timeframe: form.timeframe,
       rth_only: form.rthOnly,
     });
 
@@ -326,22 +409,18 @@ function SettingsPanel({
           <span className="pp-field-label">Take-profit por defeito (%)</span>
           <input {...field("takeProfitPct")} min={0.5} max={100} step={0.5} />
         </label>
-        <label className="pp-field pp-field-wide">
-          <span className="pp-field-label">Símbolos a seguir</span>
-          <input
-            className="pp-input"
-            type="text"
-            placeholder="AAPL, MSFT, NVDA, SPY (vazio = lista por defeito)"
-            value={form.symbols}
+        <label className="pp-field">
+          <span className="pp-field-label">Timeframe das estratégias</span>
+          <select
+            className="pp-input pp-input-sm"
+            value={form.timeframe}
             onChange={(event) =>
-              setForm((current) => ({ ...current, symbols: event.target.value }))
+              setForm((current) => ({ ...current, timeframe: event.target.value }))
             }
-          />
-          {engineRunning && (
-            <span className="pp-field-hint">
-              alterar símbolos exige parar e voltar a iniciar o engine
-            </span>
-          )}
+          >
+            <option value="1d">Diário (1d)</option>
+            <option value="1w">Semanal (1w)</option>
+          </select>
         </label>
         <label className="pp-field pp-field-check">
           <input
@@ -353,6 +432,64 @@ function SettingsPanel({
           />
           <span>Operar apenas com o mercado aberto (RTH)</span>
         </label>
+        <div className="pp-field pp-field-wide">
+          <span className="pp-field-label">Símbolos a seguir</span>
+          {instruments.length > 0 && (
+            <div className="pp-chips">
+              {instruments.map((symbol) => (
+                <button
+                  key={symbol}
+                  type="button"
+                  className={`pp-chip ${selectedSymbols.includes(symbol) ? "pp-chip-on" : ""}`}
+                  onClick={() => toggleSymbol(symbol)}
+                >
+                  {symbol}
+                </button>
+              ))}
+            </div>
+          )}
+          <input
+            className="pp-input"
+            type="text"
+            placeholder="AAPL, MSFT, NVDA, SPY (vazio = lista por defeito)"
+            value={form.symbols}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, symbols: event.target.value }))
+            }
+          />
+          <span className="pp-field-hint">
+            clica nos símbolos conhecidos ou escreve novos separados por vírgula
+            {engineRunning ? " — alterar exige parar e voltar a iniciar o engine" : ""}
+          </span>
+        </div>
+        <div className="pp-field pp-field-wide">
+          <span className="pp-field-label">Estratégias ativas</span>
+          {strategies.length > 0 ? (
+            <div className="pp-chips">
+              {strategies.map((strategy) => (
+                <button
+                  key={strategy}
+                  type="button"
+                  className={`pp-chip ${
+                    form.strategies.length === 0 || form.strategies.includes(strategy)
+                      ? "pp-chip-on"
+                      : ""
+                  }`}
+                  onClick={() => toggleStrategy(strategy)}
+                >
+                  {strategy}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="pp-muted">a carregar estratégias…</span>
+          )}
+          <span className="pp-field-hint">
+            {form.strategies.length === 0
+              ? "nenhuma selecionada = todas ativas"
+              : `${form.strategies.length} selecionada(s)`}
+          </span>
+        </div>
       </div>
       <div className="pp-settings-actions">
         <button type="button" className="pp-btn pp-btn-approve" disabled={busy} onClick={save}>
@@ -438,6 +575,10 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   const [portfolioMissing, setPortfolioMissing] = useState(false);
   const [initialCash, setInitialCash] = useState("100000");
   const [pending, setPending] = useState<PaperOrder[]>([]);
+  const [waiting, setWaiting] = useState<PaperOrder[]>([]); // approved, fill pendente
+  const [trades, setTrades] = useState<PaperTradeWire[]>([]);
+  const [instruments, setInstruments] = useState<string[]>([]);
+  const [strategies, setStrategies] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restStatus, setRestStatus] = useState<EngineStatusWire | null>(null);
@@ -470,7 +611,20 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
 
   const refreshPending = useCallback(async () => {
     try {
-      setPending(await getPaperOrders(apiBaseUrl, authToken, "proposed"));
+      const [proposed, approved] = await Promise.all([
+        getPaperOrders(apiBaseUrl, authToken, "proposed"),
+        getPaperOrders(apiBaseUrl, authToken, "approved"),
+      ]);
+      setPending(proposed);
+      setWaiting(approved);
+    } catch (err) {
+      fail(err);
+    }
+  }, [apiBaseUrl, authToken, fail]);
+
+  const refreshTrades = useCallback(async () => {
+    try {
+      setTrades(await getPaperTrades(apiBaseUrl, authToken, 100));
     } catch (err) {
       fail(err);
     }
@@ -482,11 +636,12 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   }, [loadPortfolio]);
 
   const seedCockpit = useCallback(async () => {
-    const [events, engineStatus, pnl, positions] = await Promise.all([
+    const [events, engineStatus, pnl, positions, equity] = await Promise.all([
       getPaperEvents(apiBaseUrl, authToken, 50),
       getEngineStatus(apiBaseUrl, authToken),
       getPaperPnl(apiBaseUrl, authToken),
       getPaperPositions(apiBaseUrl, authToken),
+      getPaperEquity(apiBaseUrl, authToken),
     ]);
     dispatch({ kind: "seed_events", events });
     setRestStatus(engineStatus);
@@ -502,24 +657,42 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         opened_at: position.opened_at,
         strategy: position.strategy,
         rationale: position.rationale,
+        stop_price: position.stop_price,
+        take_profit_price: position.take_profit_price,
       })),
     });
-    await refreshPending();
-  }, [apiBaseUrl, authToken, dispatch, refreshPending]);
+    dispatch({
+      kind: "seed_equity",
+      points: equity.map((point) => ({ at: point.at, equity: point.equity })),
+    });
+    await Promise.all([refreshPending(), refreshTrades()]);
+  }, [apiBaseUrl, authToken, dispatch, refreshPending, refreshTrades]);
 
   useEffect(() => {
     if (!hasPortfolio) return;
     seedCockpit().catch(fail);
   }, [hasPortfolio, seedCockpit, fail]);
 
-  // Refetch the pending panel when an order-lifecycle event streams in.
+  // Catalogs for the settings pickers, fetched once per session.
+  useEffect(() => {
+    if (!hasPortfolio) return;
+    fetchInstruments(apiBaseUrl, authToken)
+      .then((items) => setInstruments(items.map((item) => item.symbol)))
+      .catch(() => setInstruments([]));
+    getStrategies(apiBaseUrl, authToken)
+      .then(setStrategies)
+      .catch(() => setStrategies([]));
+  }, [hasPortfolio, apiBaseUrl, authToken]);
+
+  // Refetch panels when order-lifecycle events stream in.
   const lastHandledEvent = useRef<number | null>(null);
   useEffect(() => {
     const newest = state.events[0];
     if (!newest || newest.id === lastHandledEvent.current) return;
     lastHandledEvent.current = newest.id;
     if (affectsPendingOrders(newest.event_type)) void refreshPending();
-  }, [state.events, refreshPending]);
+    if (newest.event_type === "order_filled") void refreshTrades();
+  }, [state.events, refreshPending, refreshTrades]);
 
   const act = useCallback(
     async (action: () => Promise<unknown>, refresh = true) => {
@@ -642,7 +815,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
           <span className="rt-card-t">Equity intraday</span>
           <span className="pp-muted">
             {state.equitySeries.length < 2
-              ? "a curva desenha-se com o engine ligado"
+              ? "a curva acumula-se com o engine ligado e sobrevive a reloads"
               : `${state.equitySeries.length} amostras`}
           </span>
         </div>
@@ -687,11 +860,16 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             <span className="rt-badge">{pending.length}</span>
           </div>
           {pending.length === 0 ? (
-            <p className="pp-muted">
-              {status?.running
-                ? "Sem propostas por decidir. O engine propõe quando houver sinal."
-                : "Engine parado — liga-o para receber propostas de ordens."}
-            </p>
+            <>
+              <p className="pp-muted">
+                {status?.running
+                  ? "Sem propostas por decidir. O engine propõe quando houver sinal."
+                  : "Engine parado — liga-o para receber propostas de ordens."}
+              </p>
+              {status?.running && evaluationText(status) && (
+                <p className="pp-eval">{evaluationText(status)}</p>
+              )}
+            </>
           ) : (
             pending.map((order) => (
               <PendingOrderCard
@@ -702,6 +880,30 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                 onReject={(id) => void act(() => rejectPaperOrder(apiBaseUrl, authToken, id))}
               />
             ))
+          )}
+          {waiting.length > 0 && (
+            <div className="pp-waiting">
+              <span className="pp-field-label">Aprovadas, à espera de fill</span>
+              {waiting.map((order) => (
+                <div key={order.id} className="pp-waiting-row">
+                  <span>
+                    <b className={order.side === "BUY" ? "rt-up" : "rt-down"}>{order.side}</b>{" "}
+                    {order.quantity.toLocaleString()} {order.symbol}
+                  </span>
+                  <span className="pp-muted">desde {fmtTime(order.decided_at ?? order.proposed_at)}</span>
+                  <button
+                    type="button"
+                    className="pp-btn pp-btn-sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(() => cancelPaperOrder(apiBaseUrl, authToken, order.id))
+                    }
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
         </section>
 
@@ -740,6 +942,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                     <th>P. médio</th>
                     <th>Último</th>
                     <th>PnL n/ realizado</th>
+                    <th>Stop / TP</th>
                     <th>Aberta</th>
                     <th>Origem</th>
                     <th />
@@ -756,6 +959,13 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                       </td>
                       <td>
                         <PnlCell value={position.unrealized_pnl} />
+                      </td>
+                      <td className="pp-muted" title={exitDistances(position)}>
+                        {position.stop_price !== null ? fmtPrice(position.stop_price) : "—"}
+                        {" / "}
+                        {position.take_profit_price !== null
+                          ? fmtPrice(position.take_profit_price)
+                          : "—"}
                       </td>
                       <td className="pp-muted">{fmtWhen(position.opened_at)}</td>
                       <td className="pp-muted" title={position.rationale ?? undefined}>
@@ -784,7 +994,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                     <td>
                       <PnlCell value={totalUnrealized} />
                     </td>
-                    <td colSpan={3} />
+                    <td colSpan={4} />
                   </tr>
                 </tfoot>
               </table>
@@ -838,8 +1048,78 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
               ))}
             </div>
           )}
+          {status && status.max_consecutive_losses > 0 && (
+            <p
+              className={
+                status.consecutive_losses >= status.max_consecutive_losses - 1 &&
+                status.consecutive_losses > 0
+                  ? "pp-losses pp-losses-warn"
+                  : "pp-losses"
+              }
+            >
+              Perdas consecutivas hoje: {status.consecutive_losses} de{" "}
+              {status.max_consecutive_losses}
+              {status.cooldown_until
+                ? ` — em cooldown até ${fmtTime(status.cooldown_until)}`
+                : " até entrar em cooldown"}
+              .
+            </p>
+          )}
         </section>
       </div>
+
+      <section className="rt-card pp-panel pp-panel-wide">
+        <div className="rt-card-h">
+          <span className="rt-card-t">Histórico de trades</span>
+          <span className="pp-muted">{trades.length} fills</span>
+        </div>
+        {trades.length === 0 ? (
+          <p className="pp-muted">Sem trades ainda — os fills aparecem aqui.</p>
+        ) : (
+          <div className="pp-table-scroll">
+            <table className="pp-table">
+              <thead>
+                <tr>
+                  <th>Quando</th>
+                  <th>Lado</th>
+                  <th>Qtd</th>
+                  <th>Símbolo</th>
+                  <th>Preço</th>
+                  <th>Fee</th>
+                  <th>PnL realizado</th>
+                  <th>Base</th>
+                  <th>Idade cotação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map((trade) => (
+                  <tr key={trade.id}>
+                    <td className="pp-muted">{fmtWhen(trade.executed_at)}</td>
+                    <td className={trade.side === "BUY" ? "rt-up" : "rt-down"}>
+                      {trade.side}
+                    </td>
+                    <td>{trade.quantity.toLocaleString()}</td>
+                    <td>{trade.symbol}</td>
+                    <td>{fmtPrice(trade.price)}</td>
+                    <td className="pp-muted">{fmtMoney(trade.fee_paid)}</td>
+                    <td className={pnlClass(trade.realized_pnl)}>
+                      {trade.realized_pnl !== null ? fmtSigned(trade.realized_pnl) : "—"}
+                    </td>
+                    <td className="pp-muted">
+                      {trade.fill_basis === "bid_ask" ? "bid/ask" : "last+slippage"}
+                    </td>
+                    <td className="pp-muted">
+                      {trade.quote_age_seconds !== null
+                        ? `${trade.quote_age_seconds.toFixed(1)}s`
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {portfolio && (
         <SettingsPanel
@@ -848,6 +1128,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
           equity={state.pnl?.equity ?? portfolio.equity}
           busy={busy}
           engineRunning={status?.running ?? false}
+          instruments={instruments}
+          strategies={strategies}
           onSave={saveSettings}
           onReset={resetPortfolio}
         />

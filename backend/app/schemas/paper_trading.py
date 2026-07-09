@@ -58,6 +58,8 @@ class PaperPositionResponse(BaseModel):
     opened_at: datetime | None
     strategy: str | None
     rationale: str | None
+    stop_price: float | None
+    take_profit_price: float | None
     updated_at: datetime
 
 
@@ -108,3 +110,15 @@ class EngineStatusResponse(BaseModel):
     tracked_symbols: list[str]
     pending_orders: int
     cooldown_until: str | None
+    consecutive_losses: int = 0
+    max_consecutive_losses: int = 0
+    # Runtime-only extras (None when the engine is stopped): what the last
+    # strategy sweep did, and the poll cadence for the cockpit countdown.
+    last_evaluation: dict[str, object] | None = None
+    poll_seconds: float | None = None
+
+
+class PaperEquityPointResponse(BaseModel):
+    at: datetime
+    equity: float
+    cash: float

@@ -156,3 +156,5 @@ class EngineStatus:
     tracked_symbols: list[str] = field(default_factory=list)
     pending_orders: int = 0
     cooldown_until: str | None = None
+    consecutive_losses: int = 0
+    max_consecutive_losses: int = 0

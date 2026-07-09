@@ -421,6 +421,22 @@ class PaperEngineEvent(Base):
     portfolio: Mapped[PaperPortfolio] = relationship(back_populates="events")
 
 
+class PaperEquityPoint(Base):
+    """Periodic equity snapshot so the cockpit curve survives page reloads."""
+
+    __tablename__ = "paper_equity_points"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    equity: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class BacktestTrade(Base):
     __tablename__ = "backtest_trades"
 

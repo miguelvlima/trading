@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import threading
 from datetime import UTC, datetime
 
@@ -10,13 +9,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.db.models import Instrument, MarketBar, PaperOrder, PaperPortfolio
+from app.db.models import (
+    Instrument,
+    MarketBar,
+    PaperEquityPoint,
+    PaperOrder,
+    PaperPortfolio,
+)
 from app.db.session import SessionLocal
+from app.services.data_feed.client_ids import next_engine_client_id
 from app.services.data_feed.types import IndexQuote, StreamingProvider, Tick
 from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import EventHub, hub as global_hub
 from app.services.paper_trading.quotes import QuoteCache
-from app.services.paper_trading.types import STATUS_APPROVED, RiskSettings
+from app.services.paper_trading.types import (
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    RiskSettings,
+)
 from app.services.strategy_engine import BarInput, run_strategy
 
 logger = structlog.get_logger(__name__)
@@ -41,17 +51,13 @@ def _feed_problem_message(status) -> str:
     return "Feed de dados indisponível — sem ticks recebidos; verifica o IB Gateway."
 
 
-# Rotating suffix per runtime start: a stop->start within seconds would reuse a
-# client id the Gateway still considers connected (error 326), like the WS
-# sessions in realtime_ws.py. Range base+300..base+499 stays clear of theirs.
-_engine_client_seq = itertools.count()
-
-
 def _build_streaming_provider(settings: Settings, portfolio_id: int) -> StreamingProvider | None:
     """IBKR streaming provider for one engine runtime; None without ib/Gateway.
 
     Mirrors the realtime WS factory but with its own client-id range (base+300+)
     so engine sessions never collide with the worker or browser WS sessions.
+    Ids are pid-seeded (client_ids.py) so a second backend process or a
+    --reload restart never reuses an id the Gateway still holds (error 326).
     """
     if settings.realtime_feed_provider.strip().lower() not in {"ibkr", "ib"}:
         return None
@@ -63,7 +69,7 @@ def _build_streaming_provider(settings: Settings, portfolio_id: int) -> Streamin
     return IBKRStreamingProvider(
         host=settings.ibkr_gateway_host,
         port=settings.ibkr_gateway_port,
-        client_id=settings.ibkr_client_id + 300 + (next(_engine_client_seq) % 200),
+        client_id=next_engine_client_id(settings.ibkr_client_id),
         market_data_type=settings.ibkr_market_data_type,
     )
 
@@ -136,10 +142,18 @@ class PaperEngineRuntime:
         # prevents re-proposing the same signal every poll.
         self._last_signal_bar: dict[tuple[str, str], datetime] = {}
         self._feed_was_stale = False
+        # Summary of the latest strategy sweep, surfaced so the cockpit can
+        # explain WHY there are no proposals instead of just looking idle.
+        self.last_evaluation: dict[str, object] | None = None
+        self._last_equity_point_at: datetime | None = None
 
     @property
     def has_provider(self) -> bool:
         return self._provider is not None
+
+    @property
+    def poll_seconds(self) -> float:
+        return self._poll_seconds
 
     # -- provider sinks (provider thread; must stay non-blocking, no DB) ---------
 
@@ -249,18 +263,22 @@ class PaperEngineRuntime:
         from app.services.strategy_engine import get_available_strategies
 
         strategies = list(risk.strategies) or get_available_strategies()
+        counts = {"no_quote": 0, "no_bars": 0, "evaluated": 0, "signals": 0, "proposals": 0}
         for symbol in self.tracked_symbols:
             quote = self.quotes.get(symbol)
             if quote is None or quote.last is None or float(quote.last) <= 0:
                 # No reference quote yet (startup gap / feed down). Do NOT mark
                 # the bar as handled: on a 1d timeframe that would burn the
                 # signal until tomorrow over a few missing ticks. Retry next poll.
+                counts["no_quote"] += 1
                 continue
             bars = load_strategy_bars(
                 db, symbol, risk.timeframe, self._settings.paper_engine_bars_limit
             )
             if len(bars) < 30:
+                counts["no_bars"] += 1
                 continue
+            counts["evaluated"] += 1
             last_ts = bars[-1].timestamp
             for strategy in strategies:
                 key = (symbol, strategy)
@@ -274,8 +292,9 @@ class PaperEngineRuntime:
                 self._last_signal_bar[key] = last_ts
                 if not latest:
                     continue
+                counts["signals"] += 1
                 best = max(latest, key=lambda s: s.strength)
-                self.engine.propose_from_signal(
+                order = self.engine.propose_from_signal(
                     db,
                     portfolio,
                     symbol=symbol,
@@ -285,6 +304,15 @@ class PaperEngineRuntime:
                     rationale=best.rationale,
                     signal_timestamp=best.timestamp,
                 )
+                if order is not None and order.status == STATUS_PROPOSED:
+                    counts["proposals"] += 1
+        self.last_evaluation = {
+            "at": datetime.now(UTC).isoformat(),
+            "symbols_total": len(self.tracked_symbols),
+            "strategies": len(strategies),
+            "timeframe": risk.timeframe,
+            **counts,
+        }
 
     def _broadcast_state(
         self, db: Session, portfolio: PaperPortfolio, risk: RiskSettings
@@ -322,7 +350,8 @@ class PaperEngineRuntime:
         pnl = self.engine.pnl_snapshot(db, portfolio)
         positions = []
         for pos in self.engine._positions(db):
-            opened_at, strategy, rationale = self.engine.entry_context(db, pos.symbol)
+            provenance = self.engine.position_provenance(db, pos)
+            opened_at = provenance["opened_at"]
             positions.append(
                 {
                     "symbol": pos.symbol,
@@ -334,19 +363,47 @@ class PaperEngineRuntime:
                         * float(pos.quantity)
                     ),
                     "opened_at": opened_at.isoformat() if opened_at else None,
-                    "strategy": strategy,
-                    "rationale": rationale,
+                    "strategy": provenance["strategy"],
+                    "rationale": provenance["rationale"],
+                    "stop_price": provenance["stop_price"],
+                    "take_profit_price": provenance["take_profit_price"],
                 }
             )
+
+        now = datetime.now(UTC)
+        self._persist_equity_point(db, pnl, now)
         self._hub.publish(
             self.portfolio_id,
             {
                 "type": "engine_state",
-                "status": status.__dict__,
+                "status": {
+                    **status.__dict__,
+                    "last_evaluation": self.last_evaluation,
+                    "poll_seconds": self._poll_seconds,
+                },
                 "pnl": pnl,
                 "positions": positions,
-                "at": datetime.now(UTC).isoformat(),
+                "at": now.isoformat(),
             },
+        )
+
+    _EQUITY_POINT_INTERVAL_SECONDS = 60.0
+
+    def _persist_equity_point(
+        self, db: Session, pnl: dict[str, float], now: datetime
+    ) -> None:
+        """At most one snapshot per minute — enough resolution for the curve."""
+        last = self._last_equity_point_at
+        if last is not None and (now - last).total_seconds() < self._EQUITY_POINT_INTERVAL_SECONDS:
+            return
+        self._last_equity_point_at = now
+        db.add(
+            PaperEquityPoint(
+                portfolio_id=self.portfolio_id,
+                equity=pnl["equity"],
+                cash=pnl["cash"],
+                at=now,
+            )
         )
 
 
@@ -360,6 +417,10 @@ class RuntimeRegistry:
     def get(self, portfolio_id: int) -> PaperEngineRuntime | None:
         with self._lock:
             return self._runtimes.get(portfolio_id)
+
+    def running_ids(self) -> list[int]:
+        with self._lock:
+            return list(self._runtimes)
 
     async def start(self, portfolio_id: int, settings: Settings) -> PaperEngineRuntime:
         with self._lock:
@@ -376,5 +437,67 @@ class RuntimeRegistry:
         if runtime is not None:
             await runtime.stop()
 
+    async def stop_all(self) -> None:
+        with self._lock:
+            runtimes = list(self._runtimes.values())
+            self._runtimes.clear()
+        for runtime in runtimes:
+            await runtime.stop()
+
 
 registry = RuntimeRegistry()
+
+
+async def resume_running_engines(settings: Settings) -> list[int]:
+    """Recreate runtimes for portfolios still flagged ``engine_running``.
+
+    The registry lives in process memory: a backend restart loses every
+    runtime while the DB flag stays True, so the cockpit shows "Engine LIGADO"
+    with feed ``no_provider`` until the user clicks stop/start. Called from
+    the app lifespan so engines survive restarts without manual intervention.
+    """
+    try:
+        session = SessionLocal()
+        try:
+            portfolio_ids = list(
+                session.execute(
+                    select(PaperPortfolio.id).where(PaperPortfolio.engine_running.is_(True))
+                ).scalars()
+            )
+        finally:
+            session.close()
+    except Exception as exc:  # noqa: BLE001 - startup must survive a missing DB
+        logger.warning("paper_engine_resume_scan_failed", error=str(exc))
+        return []
+
+    resumed: list[int] = []
+    for portfolio_id in portfolio_ids:
+        try:
+            await registry.start(portfolio_id, settings)
+        except Exception as exc:  # noqa: BLE001 - one bad portfolio must not block the rest
+            logger.error(
+                "paper_engine_resume_failed", portfolio_id=portfolio_id, error=str(exc)
+            )
+            continue
+        resumed.append(portfolio_id)
+        logger.info("paper_engine_resumed", portfolio_id=portfolio_id)
+        try:
+            session = SessionLocal()
+            try:
+                from app.services.paper_trading import events as ev
+
+                ev.record_event(
+                    session,
+                    portfolio_id=portfolio_id,
+                    event_type=ev.EVENT_ENGINE_STARTED,
+                    message="Engine retomado automaticamente após restart do backend.",
+                    broadcast=global_hub,
+                )
+                session.commit()
+            finally:
+                session.close()
+        except Exception as exc:  # noqa: BLE001 - ledger is best-effort here
+            logger.warning(
+                "paper_engine_resume_event_failed", portfolio_id=portfolio_id, error=str(exc)
+            )
+    return resumed

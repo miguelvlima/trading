@@ -114,6 +114,19 @@ def daily_loss_breached(
     return day_pnl <= -(limit_pct / 100.0) * day_start_equity
 
 
+def consecutive_losses(trades_today: list[PaperTrade]) -> int:
+    """Current streak of consecutive losing closes today (most-recent-first)."""
+    streak = 0
+    for trade in trades_today:
+        if trade.realized_pnl is None:
+            continue
+        if Decimal(trade.realized_pnl) < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def cooldown_until_from_trades(
     trades_today: list[PaperTrade], settings: RiskSettings
 ) -> datetime | None:

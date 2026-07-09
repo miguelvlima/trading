@@ -232,6 +232,8 @@ def seed_open_position(
                 quantity=Decimal("10"),
                 order_type="market",
                 status="filled",
+                stop_loss_pct=Decimal("2"),
+                take_profit_pct=Decimal("4"),
                 signal_snapshot={"strategy": "bollinger_breakout", "rationale": "teste"},
                 risk_snapshot={},
                 data_liveness="DELAYED",
@@ -266,6 +268,9 @@ def test_position_provenance_and_manual_close(tmp_path: Path) -> None:
         assert positions[0]["strategy"] == "bollinger_breakout"
         assert positions[0]["rationale"] == "teste"
         assert positions[0]["opened_at"] is not None
+        # Exit levels derived from the entry order: 100 -2% / +4%.
+        assert positions[0]["stop_price"] == 98.0
+        assert positions[0]["take_profit_price"] == 104.0
 
         # No runtime quotes here: the manual SELL parks approved and the
         # runtime retries it on the next fresh quote.
@@ -311,6 +316,42 @@ def test_portfolio_reset_wipes_state_and_keeps_ledger(tmp_path: Path) -> None:
 
         too_small = client.post("/paper/portfolio/reset", json={"initial_cash": 10})
         assert too_small.status_code == 422
+
+        # Equity history restarts with a single baseline point at the new cash.
+        equity = client.get("/paper/equity").json()
+        assert len(equity) == 1
+        assert equity[0]["equity"] == 50_000
+    finally:
+        teardown()
+
+
+def test_equity_history_and_cancel_approved_order(tmp_path: Path) -> None:
+    client, factory, user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 100_000})
+
+        # Creation seeds the curve's first point.
+        equity = client.get("/paper/equity").json()
+        assert len(equity) == 1
+        assert equity[0]["equity"] == 100_000
+
+        # An approved order waiting for a quote can be cancelled...
+        order_id = seed_proposed_order(factory, user_id)
+        client.post(f"/paper/orders/{order_id}/approve")
+        cancelled = client.post(f"/paper/orders/{order_id}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+
+        # ...but a merely proposed one cannot (approve/reject it instead).
+        second = seed_proposed_order(factory, user_id)
+        conflict = client.post(f"/paper/orders/{second}/cancel")
+        assert conflict.status_code == 409
+
+        status_body = client.get("/paper/engine/status").json()
+        assert status_body["consecutive_losses"] == 0
+        assert status_body["max_consecutive_losses"] == 3
+        # Engine stopped still reports what WOULD be tracked.
+        assert status_body["tracked_symbols"]
     finally:
         teardown()
 

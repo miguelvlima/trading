@@ -446,3 +446,83 @@
   padding: 2px 8px;
   font-size: 11px;
 }
+
+/* -- tracked symbols, evaluation summary, waiting orders --------------------- */
+
+.pp-symbols {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pp-symbol-chip {
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--rt-text);
+}
+
+.pp-eval {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 12px;
+  border-top: 1px dashed var(--rt-border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.pp-waiting {
+  border-top: 1px dashed var(--rt-border);
+  margin-top: 10px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pp-waiting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+/* -- settings chips ----------------------------------------------------------- */
+
+.pp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pp-chip {
+  background: transparent;
+  border: 1px solid var(--rt-border);
+  border-radius: 12px;
+  color: var(--rt-muted, #8a8f98);
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-chip-on {
+  border-color: var(--rt-up, #22c55e);
+  color: var(--rt-text);
+}
+
+/* -- risk footer + trades table ------------------------------------------------ */
+
+.pp-losses {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.pp-losses-warn {
+  color: var(--rt-warn, #f59e0b);
+}
+
+.pp-table-scroll {
+  overflow-x: auto;
+}

@@ -8,7 +8,8 @@ import type {
 } from "./api";
 
 export const MAX_EVENTS = 200;
-export const MAX_EQUITY_POINTS = 600;
+// Server persists ~1 point/min while the engine runs; 3000 covers days of RTH.
+export const MAX_EQUITY_POINTS = 3000;
 
 export type LivePosition = {
   symbol: string;
@@ -19,6 +20,8 @@ export type LivePosition = {
   opened_at: string | null;
   strategy: string | null;
   rationale: string | null;
+  stop_price: number | null;
+  take_profit_price: number | null;
 };
 
 export type PaperStreamState = {
@@ -34,6 +37,7 @@ export type PaperStreamAction =
   | { kind: "message"; message: PaperStreamMessage }
   | { kind: "seed_events"; events: PaperEventWire[] }
   | { kind: "seed_state"; status?: EngineStatusWire; pnl?: PaperPnl; positions?: LivePosition[] }
+  | { kind: "seed_equity"; points: Array<{ at: string; equity: number }> }
   | { kind: "reset" };
 
 export const initialStreamState: PaperStreamState = {
@@ -76,6 +80,16 @@ export function reduceStream(
         pnl: action.pnl ?? state.pnl,
         positions: action.positions ?? state.positions,
       };
+
+    case "seed_equity": {
+      // Server history is authoritative; live points accumulated before the
+      // seed arrived are folded in after it (dedup by timestamp happens at
+      // render time in toEquitySeries).
+      const equitySeries = [...action.points, ...state.equitySeries].slice(
+        -MAX_EQUITY_POINTS,
+      );
+      return { ...state, equitySeries };
+    }
 
     case "message": {
       const message = action.message;

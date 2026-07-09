@@ -15,3 +15,7 @@ frontend/dist/
 Thumbs.db
 /*.pdf
 .vercel
+
+# Build artifacts (regenerated on every install/build)
+backend/*.egg-info/
+frontend/*.tsbuildinfo

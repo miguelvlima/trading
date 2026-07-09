@@ -3,7 +3,9 @@
 // *window* = visible time span on the chart; *candle* = bar resolution.
 // Bar fetch limit is derived — never exposed as a primary user control.
 
-export type WindowCode = "1h" | "4h" | "1d" | "1w" | "1mo" | "1y" | "all";
+// "30m" exists for the Paper cockpit carousel; it is deliberately NOT in
+// WINDOWS so the Mercado/Realtime window pickers stay unchanged.
+export type WindowCode = "30m" | "1h" | "4h" | "1d" | "1w" | "1mo" | "1y" | "all";
 export type CandleCode = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d" | "1w";
 export type PeriodMode = "window" | "date" | "bars";
 
@@ -31,6 +33,7 @@ export const CANDLES: readonly CandleCode[] = [
 ];
 
 export const SUGGESTED_CANDLE: Record<WindowCode, CandleCode> = {
+  "30m": "1m",
   "1h": "1m",
   "4h": "5m",
   "1d": "5m",
@@ -41,6 +44,7 @@ export const SUGGESTED_CANDLE: Record<WindowCode, CandleCode> = {
 };
 
 export const IBKR_DURATION: Record<WindowCode, string> = {
+  "30m": "1800 S",
   "1h": "3600 S",
   "4h": "14400 S",
   "1d": "1 D",
@@ -51,6 +55,7 @@ export const IBKR_DURATION: Record<WindowCode, string> = {
 };
 
 export const WINDOW_SECONDS: Record<WindowCode, number | null> = {
+  "30m": 1800,
   "1h": 3600,
   "4h": 14400,
   "1d": 86400,

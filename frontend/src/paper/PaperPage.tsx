@@ -299,6 +299,8 @@ function PendingOrderCard({
 // Window -> candle pairs: the candle resolution follows the window so the
 // chart always shows a comparable number of bars ("velas ajustadas").
 const CAROUSEL_WINDOWS: Array<{ code: WindowCode; label: string; trendLabel: string }> = [
+  { code: "30m", label: "30M", trendLabel: "últimos 30 min" },
+  { code: "1h", label: "1H", trendLabel: "última hora" },
   { code: "4h", label: "4H", trendLabel: "últimas 4 horas" },
   { code: "1d", label: "1D", trendLabel: "último dia" },
   { code: "1mo", label: "1M", trendLabel: "último mês" },
@@ -333,17 +335,30 @@ function MarketCarousel({
   const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
   const count = symbols.length;
   const current = count > 0 ? symbols[((index % count) + count) % count] : null;
-  const candle = suggestedCandle(chartWindow); // 4h->5m, 1d->5m, 1mo/1y->1d
-  const { bars, loading, error } = useBars(
+  const candle = suggestedCandle(chartWindow); // 30m/1h->1m, 4h/1d->5m, 1mo/1y->1d
+  // IBKR second-based durations (30m/1h/4h) count wall-clock time, so outside
+  // RTH they return ZERO bars. Fetch the whole last trading day instead and
+  // slice the window tail locally — during RTH it is identical, after hours it
+  // shows the end of the last session instead of an empty chart.
+  const intraday = chartWindow === "30m" || chartWindow === "1h" || chartWindow === "4h";
+  const fetchWindow: WindowCode = intraday ? "1d" : chartWindow;
+  const { bars: fetched, loading, error } = useBars(
     apiBaseUrl,
     authToken,
     current ?? "",
     candle,
-    chartWindow,
-    fetchLimitFor(chartWindow, candle),
+    fetchWindow,
+    fetchLimitFor(fetchWindow, candle),
     20000,
     current !== null,
   );
+  const bars = useMemo(() => {
+    if (!intraday || fetched.length === 0) return fetched;
+    const spanSeconds = WINDOW_SECONDS[chartWindow] ?? 0;
+    const lastSeconds = Date.parse(fetched[fetched.length - 1].timestamp) / 1000;
+    const cutoff = lastSeconds - spanSeconds;
+    return fetched.filter((bar) => Date.parse(bar.timestamp) / 1000 > cutoff);
+  }, [fetched, intraday, chartWindow]);
 
   // Every signal the engine saw on this symbol — weak ones dimmed — anchored
   // to the loaded candles (see signalMarkers.ts for the snapping rules).
@@ -428,7 +443,7 @@ function MarketCarousel({
               bars={bars}
               forming={null}
               indicators={[]}
-              windowSeconds={WINDOW_SECONDS[chartWindow]}
+              windowSeconds={intraday ? null : WINDOW_SECONDS[chartWindow]}
               markers={markers}
               height={260}
             />

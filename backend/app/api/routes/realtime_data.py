@@ -30,6 +30,7 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 # most windows are a single throttled request; "all" pages back over years.
 # Keys mirror the frontend window codes (see ChartControls / windowCandle.ts).
 _WINDOW_PLAN: dict[str, tuple[str, int]] = {
+    "30m": ("1800 S", 1),
     "1h": ("3600 S", 1),
     "4h": ("14400 S", 1),
     "1d": ("1 D", 1),

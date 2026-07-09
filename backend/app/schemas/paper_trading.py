@@ -88,6 +88,29 @@ class PaperEventResponse(BaseModel):
     created_at: datetime
 
 
+class PaperSignalResponse(BaseModel):
+    """One strategy signal seen by the engine, whatever its fate.
+
+    Sourced from the ``signal_received`` ledger events, whose payload carries
+    the outcome stamped by the engine (proposed / skipped / vetoed) — weak
+    signals included, so the cockpit can plot everything the engine saw.
+    """
+
+    id: int
+    at: datetime
+    symbol: str
+    strategy: str
+    direction: str
+    strength: float | None
+    min_strength: float | None
+    rationale: str | None
+    # ISO timestamp of the CLOSED bar that generated the signal (chart anchor).
+    bar_time: str | None
+    outcome: str
+    reason: str | None
+    order_id: int | None
+
+
 class PaperPnlResponse(BaseModel):
     equity: float
     cash: float

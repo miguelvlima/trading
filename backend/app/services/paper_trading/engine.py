@@ -77,8 +77,8 @@ class PaperEngine:
         symbol: str | None = None,
         severity: str = "info",
         payload: dict[str, object] | None = None,
-    ) -> None:
-        record_event(
+    ):
+        return record_event(
             db,
             portfolio_id=self.portfolio_id,
             event_type=event_type,
@@ -167,15 +167,42 @@ class PaperEngine:
         now = self._now_fn()
         symbol = symbol.upper()
 
-        self._emit(
+        # The signal_received event doubles as the signal-history record for the
+        # cockpit (/paper/signals): the payload starts complete except for the
+        # outcome, which each exit path stamps below — one row per signal, weak
+        # ones included, so the chart/table can show what the engine saw and why
+        # it did (or did not) act.
+        received = self._emit(
             db,
             ev.EVENT_SIGNAL_RECEIVED,
             f"Sinal {direction} {symbol} ({strategy}, força {strength:.2f}): {rationale}",
             symbol=symbol,
-            payload={"strategy": strategy, "direction": direction, "strength": strength},
+            payload={
+                "strategy": strategy,
+                "direction": direction,
+                "strength": strength,
+                "rationale": rationale,
+                "signal_timestamp": (
+                    signal_timestamp.isoformat() if signal_timestamp else None
+                ),
+                "min_strength": settings.min_signal_strength,
+                "outcome": "pending",
+            },
         )
 
+        def stamp_outcome(
+            outcome: str, reason: str | None = None, order_id: int | None = None
+        ) -> None:
+            # Reassign (never mutate in place) so SQLAlchemy detects the JSON change.
+            extra: dict[str, object] = {"outcome": outcome}
+            if reason is not None:
+                extra["reason"] = reason
+            if order_id is not None:
+                extra["order_id"] = order_id
+            received.payload = {**received.payload, **extra}
+
         if strength < settings.min_signal_strength:
+            stamp_outcome("skipped", "below_min_strength")
             self._emit(
                 db,
                 ev.EVENT_SIGNAL_SKIPPED,
@@ -194,6 +221,7 @@ class PaperEngine:
             )
         ).scalar_one_or_none()
         if open_order is not None:
+            stamp_outcome("skipped", "open_order")
             self._emit(
                 db,
                 ev.EVENT_SIGNAL_SKIPPED,
@@ -205,6 +233,7 @@ class PaperEngine:
         quote = self.quotes.get(symbol)
         reference_price = float(quote.last) if quote and quote.last is not None else None
         if reference_price is None or reference_price <= 0:
+            stamp_outcome("skipped", "no_quote")
             self._emit(
                 db,
                 ev.EVENT_SIGNAL_SKIPPED,
@@ -218,6 +247,7 @@ class PaperEngine:
         has_position = position is not None and float(position.quantity) > 0
 
         if direction == "SELL" and not has_position:
+            stamp_outcome("skipped", "no_position")
             self._emit(
                 db,
                 ev.EVENT_SIGNAL_SKIPPED,
@@ -226,6 +256,7 @@ class PaperEngine:
             )
             return None
         if direction == "BUY" and has_position:
+            stamp_outcome("skipped", "position_open")
             self._emit(
                 db,
                 ev.EVENT_SIGNAL_SKIPPED,
@@ -254,6 +285,7 @@ class PaperEngine:
             )
             quantity = float(int(quantity))  # whole shares for US equities
             if quantity <= 0:
+                stamp_outcome("skipped", "zero_size")
                 self._emit(
                     db,
                     ev.EVENT_SIGNAL_SKIPPED,
@@ -316,6 +348,7 @@ class PaperEngine:
         db.flush()
 
         if veto:
+            stamp_outcome("vetoed", veto.code, order.id)
             self._emit(
                 db,
                 ev.EVENT_RISK_VETO,
@@ -325,6 +358,7 @@ class PaperEngine:
                 payload={"order_id": order.id, "code": veto.code},
             )
         else:
+            stamp_outcome("proposed", None, order.id)
             stop_text = f", stop {stop_loss_pct:.1f}%" if stop_loss_pct else ""
             tp_text = f", TP {take_profit_pct:.1f}%" if take_profit_pct else ""
             self._emit(

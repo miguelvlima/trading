@@ -306,7 +306,7 @@ const toUserFetchError = (error: unknown, fallback: string): string => {
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
-  (import.meta.env.DEV ? "" : "http://localhost:8000");
+  (import.meta.env.DEV ? "" : "http://127.0.0.1:8100");
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
 const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";

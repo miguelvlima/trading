@@ -1,18 +1,18 @@
-# App Trading
+﻿# App Trading
 
-Plataforma de análise e decisão de trading em modo **PAPER** (sem execução de ordens reais): mercado, sinais, simulação histórica e memória institucional entre runs.
+Plataforma de anÃ¡lise e decisÃ£o de trading em modo **PAPER** (sem execuÃ§Ã£o de ordens reais): mercado, sinais, simulaÃ§Ã£o histÃ³rica e memÃ³ria institucional entre runs.
 
 ## Estado actual (Jun 2026)
 
-| Área | Disponível |
+| Ãrea | DisponÃ­vel |
 |------|------------|
-| Mercado | Histórico + tempo real (gráfico, indicadores, IBKR stream) |
-| Sinais | Histórico + live (`POST /signals/evaluate-live`), overlay no gráfico |
-| Simulação | Backtest realista, walk-forward, export CSV, análise crítica por run |
-| Memória | Lições e recomendações entre simulações, botão **Aplicar sugestão** |
-| Auth | JWT multi-utilizador, combinações de estratégias partilhadas |
+| Mercado | HistÃ³rico + tempo real (grÃ¡fico, indicadores, IBKR stream) |
+| Sinais | HistÃ³rico + live (`POST /signals/evaluate-live`), overlay no grÃ¡fico |
+| SimulaÃ§Ã£o | Backtest realista, walk-forward, export CSV, anÃ¡lise crÃ­tica por run |
+| MemÃ³ria | LiÃ§Ãµes e recomendaÃ§Ãµes entre simulaÃ§Ãµes, botÃ£o **Aplicar sugestÃ£o** |
+| Auth | JWT multi-utilizador, combinaÃ§Ãµes de estratÃ©gias partilhadas |
 
-Documentação de estado: `docs/status-2026-06-30.md`
+DocumentaÃ§Ã£o de estado: `docs/status-2026-06-30.md`
 
 ## Desenvolvimento em paralelo (prompt-first)
 
@@ -21,13 +21,13 @@ Guia operacional completo:
 
 Specs de frentes paralelas (AI agents):
 - Real-time data feed: `docs/realtime-data-feed-spec.md`
-- Plano Backtesting/Simulação: `docs/backtesting-phase-plan.md`
+- Plano Backtesting/SimulaÃ§Ã£o: `docs/backtesting-phase-plan.md`
 
-Convenção de branches:
-- `main`: produção
-- `develop`: integração/staging
+ConvenÃ§Ã£o de branches:
+- `main`: produÃ§Ã£o
+- `develop`: integraÃ§Ã£o/staging
 - `feature/<tema>`: trabalho por tarefa
-- `hotfix/<tema>`: correções urgentes de produção
+- `hotfix/<tema>`: correÃ§Ãµes urgentes de produÃ§Ã£o
 
 Ambientes e templates:
 - Backend local: `backend/.env.example`
@@ -56,47 +56,47 @@ CI:
 
 - `GET /health` devolve estado da API
 - `GET /mode` devolve modo atual (`PAPER`)
-- `GET /version` devolve a versão da API
+- `GET /version` devolve a versÃ£o da API
 - `GET /market-data/instruments` lista instrumentos
-- `GET /market-data/bars` consulta candles por símbolo/timeframe
+- `GET /market-data/bars` consulta candles por sÃ­mbolo/timeframe
 - `POST /market-data/import-csv` importa CSV OHLCV para PostgreSQL
-- `GET /market-data/indicators` calcula indicadores técnicos
-- `GET /signals/strategies` lista estratégias disponíveis
-- `POST /signals/generate` gera e persiste sinais por estratégia
+- `GET /market-data/indicators` calcula indicadores tÃ©cnicos
+- `GET /signals/strategies` lista estratÃ©gias disponÃ­veis
+- `POST /signals/generate` gera e persiste sinais por estratÃ©gia
 - `GET /signals` lista sinais persistidos
-- `POST /backtests/run` corre simulação histórica e persiste resultado
+- `POST /backtests/run` corre simulaÃ§Ã£o histÃ³rica e persiste resultado
 - `GET /backtests` lista backtests do utilizador autenticado (com resumo de insight)
-- `GET /backtests/lessons` e `GET /backtests/recommendations` — memória institucional
-- `POST /signals/evaluate-live` — sinais na vela em formação
-- Dashboard com gráfico, overlays, simulação e sinais explicados
+- `GET /backtests/lessons` e `GET /backtests/recommendations` â€” memÃ³ria institucional
+- `POST /signals/evaluate-live` â€” sinais na vela em formaÃ§Ã£o
+- Dashboard com grÃ¡fico, overlays, simulaÃ§Ã£o e sinais explicados
 
-## Próxima fase prioritária
+## PrÃ³xima fase prioritÃ¡ria
 
-**Paper trading em tempo real** — ordens simuladas com base em sinais/consenso, portfolio virtual e PnL intraday. O modo `PAPER` e o motor de backtest já existem; falta a camada de execução simulada live.
+**Paper trading em tempo real** â€” ordens simuladas com base em sinais/consenso, portfolio virtual e PnL intraday. O modo `PAPER` e o motor de backtest jÃ¡ existem; falta a camada de execuÃ§Ã£o simulada live.
 
-Melhorias em curso (memória v2 + UX):
-- valores sugeridos exactos nas recomendações (em vez de deltas heurísticos),
+Melhorias em curso (memÃ³ria v2 + UX):
+- valores sugeridos exactos nas recomendaÃ§Ãµes (em vez de deltas heurÃ­sticos),
 - resumo de insight na lista de runs,
-- aviso quando dados de mercado estão obsoletos nos sinais live.
+- aviso quando dados de mercado estÃ£o obsoletos nos sinais live.
 
-Histórico do plano de backtesting (já entregue): `docs/backtesting-phase-plan.md`
+HistÃ³rico do plano de backtesting (jÃ¡ entregue): `docs/backtesting-phase-plan.md`
 
 ## Como arrancar
 
-### Opção rápida (recomendado)
+### OpÃ§Ã£o rÃ¡pida (recomendado)
 
-Na raiz do projeto, arranca DB + backend + frontend com um único comando:
+Na raiz do projeto, arranca DB + backend + frontend com um Ãºnico comando:
 
 ```powershell
 npm install
 npm run dev:all
 ```
 
-O arranque local automático também cria (se não existir) um utilizador dev no backend:
+O arranque local automÃ¡tico tambÃ©m cria (se nÃ£o existir) um utilizador dev no backend:
 - email: `dev@tradingapp.dev`
 - password: `DevPass123!`
 
-Estas credenciais são apenas para `ENV=dev` e podem ser alteradas em `backend/.env` via:
+Estas credenciais sÃ£o apenas para `ENV=dev` e podem ser alteradas em `backend/.env` via:
 - `DEV_DEFAULT_USER_EMAIL`
 - `DEV_DEFAULT_USER_PASSWORD`
 - `DEV_DEFAULT_USER_DISPLAY_NAME`
@@ -117,22 +117,22 @@ python -m venv .venv
 pip install -e .[dev]
 copy .env.example .env
 alembic upgrade head
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8100
 ```
 
-Variáveis relevantes no `backend/.env`:
+VariÃ¡veis relevantes no `backend/.env`:
 
 - `CORS_ALLOW_ORIGINS` (ex: `http://localhost:5173,https://trading-kappa-dusky.vercel.app`)
-- `JWT_SECRET_KEY` (obrigatório para assinatura dos tokens)
+- `JWT_SECRET_KEY` (obrigatÃ³rio para assinatura dos tokens)
 
-Criação de utilizador interno (registo público desativado):
+CriaÃ§Ã£o de utilizador interno (registo pÃºblico desativado):
 
 ```powershell
 cd backend
 .\.venv\Scripts\python -m app.scripts.create_user --email admin@empresa.com --password "StrongPass123" --display-name "Admin"
 ```
 
-Nota: em desenvolvimento local via `npm run dev:all`, o bootstrap automático já cria o user dev default.
+Nota: em desenvolvimento local via `npm run dev:all`, o bootstrap automÃ¡tico jÃ¡ cria o user dev default.
 
 ### 2.1) Importar CSV OHLCV
 
@@ -152,30 +152,30 @@ copy .env.example .env
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
-Variáveis relevantes no `frontend/.env`:
+VariÃ¡veis relevantes no `frontend/.env`:
 
-- `VITE_API_BASE_URL` (URL pública do backend)
+- `VITE_API_BASE_URL` (URL pÃºblica do backend)
 
-## Validação manual rápida
+## ValidaÃ§Ã£o manual rÃ¡pida
 
-1. API em `http://localhost:8000/health` deve devolver `{"status":"ok"}`
-2. API em `http://localhost:8000/mode` deve devolver `{"mode":"PAPER"}`
-3. API em `http://localhost:8000/version` deve devolver `{"version":"0.1.0"}`
+1. API em `http://127.0.0.1:8100/health` deve devolver `{"status":"ok"}`
+2. API em `http://127.0.0.1:8100/mode` deve devolver `{"mode":"PAPER"}`
+3. API em `http://127.0.0.1:8100/version` deve devolver `{"version":"0.1.0"}`
 4. Importar um CSV e validar resposta com linhas importadas
-5. API em `http://localhost:8000/market-data/instruments` deve listar o símbolo importado
-6. API em `http://localhost:8000/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
-7. API em `http://localhost:8000/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
-8. API em `http://localhost:8000/signals/strategies` deve listar estratégias
-9. API em `http://localhost:8000/signals/generate` deve gerar sinais explicados
+5. API em `http://127.0.0.1:8100/market-data/instruments` deve listar o sÃ­mbolo importado
+6. API em `http://127.0.0.1:8100/market-data/bars?symbol=AAPL&timeframe=1d` deve devolver candles
+7. API em `http://127.0.0.1:8100/market-data/indicators?symbol=AAPL&timeframe=1d` deve devolver indicadores
+8. API em `http://127.0.0.1:8100/signals/strategies` deve listar estratÃ©gias
+9. API em `http://127.0.0.1:8100/signals/generate` deve gerar sinais explicados
 10. Frontend em `http://localhost:5173` deve mostrar badge `PAPER`, overlays, painel OHLC e sinais
 
-## Próximas frentes (em paralelo)
+## PrÃ³ximas frentes (em paralelo)
 
-- **Paper trading** — próximo salto de produto (execução simulada live)
-- **Feed IBKR robusto** — spec em `docs/realtime-data-feed-spec.md` (Nuno)
-- **Onboarding Mac/Linux** — scripts cross-platform para `npm run dev:all` (só Postgres em Docker)
+- **Paper trading** â€” prÃ³ximo salto de produto (execuÃ§Ã£o simulada live)
+- **Feed IBKR robusto** â€” spec em `docs/realtime-data-feed-spec.md` (Nuno)
+- **Onboarding Mac/Linux** â€” scripts cross-platform para `npm run dev:all` (sÃ³ Postgres em Docker)
 
 ## Fora de escopo (ainda)
 
-- Execução de ordens reais (live trading)
-- IBKR adapter (opcional numa fase futura; não bloqueia o feed v1)
+- ExecuÃ§Ã£o de ordens reais (live trading)
+- IBKR adapter (opcional numa fase futura; nÃ£o bloqueia o feed v1)

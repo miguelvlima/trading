@@ -22,6 +22,7 @@ import {
   getPaperPnl,
   getPaperPortfolio,
   getPaperPositions,
+  getPaperSignals,
   getPaperTrades,
   getStrategies,
   rejectPaperOrder,
@@ -34,11 +35,13 @@ import {
   type EngineStatusWire,
   type PaperOrder,
   type PaperPortfolio,
+  type PaperSignalWire,
   type PaperTradeWire,
   type SymbolSignals,
 } from "./api";
 import { EquityChart } from "./EquityChart";
 import { computeRiskGauges, pnlBars } from "./monitor";
+import { isoSec, signalMarkers } from "./signalMarkers";
 import { affectsPendingOrders, eventTone, type LivePosition } from "./streamReducer";
 import { usePaperStream } from "./usePaperStream";
 
@@ -317,12 +320,14 @@ function MarketCarousel({
   symbols,
   positions,
   signals,
+  signalHistory,
 }: {
   apiBaseUrl: string;
   authToken: string;
   symbols: string[];
   positions: LivePosition[];
   signals: Record<string, SymbolSignals>;
+  signalHistory: PaperSignalWire[];
 }) {
   const [index, setIndex] = useState(0);
   const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
@@ -339,6 +344,14 @@ function MarketCarousel({
     20000,
     current !== null,
   );
+
+  // Every signal the engine saw on this symbol — weak ones dimmed — anchored
+  // to the loaded candles (see signalMarkers.ts for the snapping rules).
+  const markers = useMemo(() => {
+    if (current === null || bars.length === 0) return [];
+    const barTimes = bars.map((bar) => isoSec(bar.timestamp)).sort((a, b) => a - b);
+    return signalMarkers(signalHistory, current, barTimes);
+  }, [signalHistory, current, bars]);
 
   const position = positions.find((item) => item.symbol === current) ?? null;
   const lastClose = bars.length > 0 ? Number(bars[bars.length - 1].close) : null;
@@ -416,6 +429,7 @@ function MarketCarousel({
               forming={null}
               indicators={[]}
               windowSeconds={WINDOW_SECONDS[chartWindow]}
+              markers={markers}
               height={260}
             />
           )}
@@ -516,6 +530,99 @@ function MarketCarousel({
   );
 }
 
+// -- signal history ---------------------------------------------------------------
+
+const SIGNAL_REASON_LABEL: Record<string, string> = {
+  below_min_strength: "força insuficiente",
+  open_order: "ordem já aberta",
+  no_quote: "sem cotação",
+  no_position: "sem posição (short desativado)",
+  position_open: "posição já aberta",
+  zero_size: "sizing deu 0 ações",
+};
+
+function signalOutcome(signal: PaperSignalWire): { text: string; className: string } {
+  if (signal.outcome === "proposed") return { text: "proposta criada", className: "rt-up" };
+  if (signal.outcome === "vetoed") {
+    return {
+      text: `veto de risco${signal.reason ? ` · ${signal.reason}` : ""}`,
+      className: "rt-down",
+    };
+  }
+  if (signal.outcome === "skipped") {
+    return {
+      text: SIGNAL_REASON_LABEL[signal.reason ?? ""] ?? "descartado",
+      className: "pp-muted",
+    };
+  }
+  return { text: "—", className: "pp-muted" };
+}
+
+function SignalHistoryPanel({ signals }: { signals: PaperSignalWire[] }) {
+  return (
+    <section className="rt-card pp-panel pp-panel-wide">
+      <div className="rt-card-h">
+        <span className="rt-card-t">Sinais das estratégias</span>
+        <span className="pp-muted">
+          tudo o que o engine viu — incluindo sinais fracos que não viraram ordem;
+          também marcados no gráfico acima
+        </span>
+      </div>
+      {signals.length === 0 ? (
+        <p className="pp-muted">
+          Ainda sem sinais — aparecem aqui (e no gráfico) assim que uma estratégia
+          disparar, mesmo abaixo da força mínima.
+        </p>
+      ) : (
+        <div className="pp-table-scroll pp-scroll-y">
+          <table className="pp-table">
+            <thead>
+              <tr>
+                <th>Quando</th>
+                <th>Símbolo</th>
+                <th>Sinal</th>
+                <th>Força / mín.</th>
+                <th>Estratégia</th>
+                <th>Resultado</th>
+                <th>Racional</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signals.map((signal) => {
+                const outcome = signalOutcome(signal);
+                const weak =
+                  signal.strength !== null &&
+                  signal.min_strength !== null &&
+                  signal.strength < signal.min_strength;
+                return (
+                  <tr key={signal.id}>
+                    <td className="pp-muted">{fmtWhen(signal.bar_time ?? signal.at)}</td>
+                    <td>{signal.symbol}</td>
+                    <td className={signal.direction === "SELL" ? "rt-down" : "rt-up"}>
+                      {signal.direction}
+                    </td>
+                    <td className={weak ? "pp-muted" : ""}>
+                      {signal.strength !== null ? signal.strength.toFixed(2) : "—"}
+                      {signal.min_strength !== null
+                        ? ` / ${signal.min_strength.toFixed(2)}`
+                        : ""}
+                    </td>
+                    <td className="pp-muted">{signal.strategy}</td>
+                    <td className={outcome.className}>{outcome.text}</td>
+                    <td className="pp-muted pp-signal-rationale" title={signal.rationale ?? undefined}>
+                      {signal.rationale ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // -- settings ------------------------------------------------------------------
 
 function num(value: unknown, fallback: number): number {
@@ -563,6 +670,14 @@ function SettingsPanel({
     strategies: Array.isArray(rs.strategies) ? (rs.strategies as string[]) : [],
     timeframe: typeof rs.timeframe === "string" ? rs.timeframe : "1d",
     rthOnly: rs.rth_only !== false,
+    // Execução: quando um sinal vira ordem e como o fill simulado se comporta.
+    minSignalStrength: String(num(rs.min_signal_strength, 0.3)),
+    quoteMaxAgeSeconds: String(num(rs.quote_max_age_seconds, 120)),
+    maxSpreadBps: String(num(rs.max_spread_bps, 50)),
+    slippageBps: String(num(rs.slippage_bps, 5)),
+    orderExpiryMinutes: String(num(rs.order_expiry_minutes, 30)),
+    cooldownMinutes: String(num(rs.cooldown_minutes, 60)),
+    maxConsecutiveLosses: String(num(rs.max_consecutive_losses, 3)),
   }));
 
   const selectedSymbols = parseSymbols(form.symbols);
@@ -607,6 +722,19 @@ function SettingsPanel({
       strategies: form.strategies,
       timeframe: form.timeframe,
       rth_only: form.rthOnly,
+      min_signal_strength: Math.max(
+        0,
+        Math.min(1, num(form.minSignalStrength, num(rs.min_signal_strength, 0.3))),
+      ),
+      quote_max_age_seconds: num(form.quoteMaxAgeSeconds, num(rs.quote_max_age_seconds, 120)),
+      max_spread_bps: num(form.maxSpreadBps, num(rs.max_spread_bps, 50)),
+      slippage_bps: num(form.slippageBps, num(rs.slippage_bps, 5)),
+      order_expiry_minutes: num(form.orderExpiryMinutes, num(rs.order_expiry_minutes, 30)),
+      cooldown_minutes: num(form.cooldownMinutes, num(rs.cooldown_minutes, 60)),
+      max_consecutive_losses: num(
+        form.maxConsecutiveLosses,
+        num(rs.max_consecutive_losses, 3),
+      ),
     });
 
   return (
@@ -726,6 +854,49 @@ function SettingsPanel({
           </span>
         </div>
       </div>
+
+      <div className="rt-card-h pp-settings-subhead">
+        <span className="rt-card-t">Definições de execução</span>
+        <span className="pp-muted">
+          quando um sinal vira ordem e como o fill simulado se comporta
+        </span>
+      </div>
+      <div className="pp-settings-grid">
+        <label className="pp-field">
+          <span className="pp-field-label">Força mínima do sinal (0–1)</span>
+          <input {...field("minSignalStrength")} min={0} max={1} step={0.05} />
+          <span className="pp-field-hint">
+            sinais abaixo deste valor ficam no gráfico/tabela mas não geram ordem
+          </span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Idade máx. da cotação (s)</span>
+          <input {...field("quoteMaxAgeSeconds")} min={5} max={3600} step={5} />
+          <span className="pp-field-hint">acima disto o fill é adiado</span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Spread máx. (bps)</span>
+          <input {...field("maxSpreadBps")} min={1} max={500} step={1} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Slippage (bps)</span>
+          <input {...field("slippageBps")} min={0} max={100} step={1} />
+          <span className="pp-field-hint">usado quando não há bid/ask</span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Expiração de propostas (min)</span>
+          <input {...field("orderExpiryMinutes")} min={1} max={1440} step={5} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Cooldown após perdas (min)</span>
+          <input {...field("cooldownMinutes")} min={0} max={1440} step={15} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Perdas consecutivas p/ cooldown</span>
+          <input {...field("maxConsecutiveLosses")} min={1} max={20} step={1} />
+        </label>
+      </div>
+
       <div className="pp-settings-actions">
         <button type="button" className="pp-btn pp-btn-approve" disabled={busy} onClick={save}>
           Guardar definições
@@ -812,6 +983,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   const [pending, setPending] = useState<PaperOrder[]>([]);
   const [waiting, setWaiting] = useState<PaperOrder[]>([]); // approved, fill pendente
   const [trades, setTrades] = useState<PaperTradeWire[]>([]);
+  const [signalHistory, setSignalHistory] = useState<PaperSignalWire[]>([]);
   const [instruments, setInstruments] = useState<string[]>([]);
   const [strategies, setStrategies] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -865,6 +1037,14 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     }
   }, [apiBaseUrl, authToken, fail]);
 
+  const refreshSignals = useCallback(async () => {
+    try {
+      setSignalHistory(await getPaperSignals(apiBaseUrl, authToken, 200));
+    } catch (err) {
+      fail(err);
+    }
+  }, [apiBaseUrl, authToken, fail]);
+
   // Initial load: portfolio, then seed the cockpit from REST.
   useEffect(() => {
     void loadPortfolio();
@@ -901,8 +1081,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
       kind: "seed_equity",
       points: equity.map((point) => ({ at: point.at, equity: point.equity })),
     });
-    await Promise.all([refreshPending(), refreshTrades()]);
-  }, [apiBaseUrl, authToken, dispatch, refreshPending, refreshTrades]);
+    await Promise.all([refreshPending(), refreshTrades(), refreshSignals()]);
+  }, [apiBaseUrl, authToken, dispatch, refreshPending, refreshTrades, refreshSignals]);
 
   useEffect(() => {
     if (!hasPortfolio) return;
@@ -928,7 +1108,16 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     lastHandledEvent.current = newest.id;
     if (affectsPendingOrders(newest.event_type)) void refreshPending();
     if (newest.event_type === "order_filled") void refreshTrades();
-  }, [state.events, refreshPending, refreshTrades]);
+    // The outcome is stamped on the signal_received row AFTER the follow-up
+    // event (skip/veto/proposal), so any of them warrants a refresh.
+    if (
+      newest.event_type.startsWith("signal_") ||
+      newest.event_type === "order_proposed" ||
+      newest.event_type === "risk_veto"
+    ) {
+      void refreshSignals();
+    }
+  }, [state.events, refreshPending, refreshTrades, refreshSignals]);
 
   const act = useCallback(
     async (action: () => Promise<unknown>, refresh = true) => {
@@ -1052,6 +1241,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         symbols={status?.tracked_symbols ?? []}
         positions={state.positions}
         signals={state.signals}
+        signalHistory={signalHistory}
       />
 
       <section className="rt-card pp-panel pp-panel-wide">
@@ -1311,6 +1501,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
           )}
         </section>
       </div>
+
+      <SignalHistoryPanel signals={signalHistory} />
 
       <section className="rt-card pp-panel pp-panel-wide">
         <div className="rt-card-h">

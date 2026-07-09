@@ -126,6 +126,23 @@ export type PaperTradeWire = {
   executed_at: string;
 };
 
+// One signal the engine saw — weak ones included — with the outcome stamped
+// by the backend (see /paper/signals).
+export type PaperSignalWire = {
+  id: number;
+  at: string;
+  symbol: string;
+  strategy: string;
+  direction: "BUY" | "SELL" | "?";
+  strength: number | null;
+  min_strength: number | null;
+  rationale: string | null;
+  bar_time: string | null;
+  outcome: "proposed" | "vetoed" | "skipped" | "pending" | "unknown";
+  reason: string | null;
+  order_id: number | null;
+};
+
 export type PaperEventWire = {
   id: number;
   event_type: string;
@@ -260,6 +277,9 @@ export const cancelPaperOrder = (baseUrl: string, token: string, orderId: number
 export const getStrategies = (baseUrl: string, token: string) =>
   request<string[]>(baseUrl, token, "GET", "/signals/strategies");
 
+export const getPaperSignals = (baseUrl: string, token: string, limit = 200) =>
+  request<PaperSignalWire[]>(baseUrl, token, "GET", `/paper/signals?limit=${limit}`);
+
 export const getPaperEvents = (baseUrl: string, token: string, limit = 50) =>
   request<PaperEventWire[]>(baseUrl, token, "GET", `/paper/events?limit=${limit}`);
 
@@ -281,7 +301,7 @@ export function paperWsUrl(baseUrl: string, token: string): string {
       ? baseUrl
       : typeof window !== "undefined"
         ? window.location.origin
-        : "http://localhost:8000";
+        : "http://127.0.0.1:8100";
   const wsOrigin = origin.replace(/^http/, "ws");
   return `${wsOrigin}/paper/ws?token=${encodeURIComponent(token)}`;
 }

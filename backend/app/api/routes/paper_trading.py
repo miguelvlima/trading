@@ -26,6 +26,7 @@ from app.schemas.paper_trading import (
     PaperPortfolioCreateRequest,
     PaperPortfolioResponse,
     PaperPositionResponse,
+    PaperSignalResponse,
     PaperTradeResponse,
     RiskSettingsUpdateRequest,
 )
@@ -483,6 +484,59 @@ def list_events(
         )
         for event in events
     ]
+
+
+def _signal_response(event: PaperEngineEvent) -> PaperSignalResponse:
+    """Map a signal_received event to the cockpit's signal-history row.
+
+    Old rows may predate the enriched payload, so every field degrades
+    gracefully (outcome "unknown", missing strength as None).
+    """
+    payload = event.payload or {}
+
+    def _num(key: str) -> float | None:
+        value = payload.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def _text(key: str) -> str | None:
+        value = payload.get(key)
+        return str(value) if value else None
+
+    order_id = payload.get("order_id")
+    return PaperSignalResponse(
+        id=event.id,
+        at=event.created_at,
+        symbol=event.symbol or "",
+        strategy=_text("strategy") or "?",
+        direction=_text("direction") or "?",
+        strength=_num("strength"),
+        min_strength=_num("min_strength"),
+        rationale=_text("rationale"),
+        bar_time=_text("signal_timestamp"),
+        outcome=_text("outcome") or "unknown",
+        reason=_text("reason"),
+        order_id=order_id if isinstance(order_id, int) else None,
+    )
+
+
+@router.get("/signals", response_model=list[PaperSignalResponse])
+def list_signals(
+    symbol: str | None = Query(default=None, min_length=1, max_length=32),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> list[PaperSignalResponse]:
+    """Signal history, newest first — every signal the engine saw, including
+    the weak ones it never turned into a proposal."""
+    portfolio = _get_portfolio(db, current_user)
+    query = select(PaperEngineEvent).where(
+        PaperEngineEvent.portfolio_id == portfolio.id,
+        PaperEngineEvent.event_type == ev.EVENT_SIGNAL_RECEIVED,
+    )
+    if symbol:
+        query = query.where(PaperEngineEvent.symbol == symbol.upper().strip())
+    events = db.execute(query.order_by(PaperEngineEvent.id.desc()).limit(limit)).scalars()
+    return [_signal_response(event) for event in events]
 
 
 @router.post("/engine/start", response_model=EngineStatusResponse)

@@ -391,6 +391,21 @@
   margin-top: 10px;
 }
 
+.pp-settings-subhead {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+}
+
+/* Rationale column of the signal-history table: keep rows one line high; the
+   full text lives in the cell's title tooltip. */
+.pp-signal-rationale {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pp-field {
   display: flex;
   flex-direction: column;
@@ -634,4 +649,24 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* -- vertical scroll for signal tables ----------------------------------------- */
+
+.pp-scroll-y {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pp-scroll-y thead th {
+  position: sticky;
+  top: 0;
+  background: var(--rt-panel, #0f1522);
+  z-index: 1;
+}
+
+.pp-signal-list {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 4px;
 }

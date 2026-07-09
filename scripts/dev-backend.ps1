@@ -18,4 +18,6 @@ if ((-not (Test-Path ".env")) -and (Test-Path ".env.example")) {
 
 & $pythonExe -m alembic upgrade head
 & $pythonExe -m app.scripts.bootstrap_dev_user
-& $pythonExe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Porta 8100: a 8000 colide com o Docker Desktop (containers de outros projetos
+# publicam 0.0.0.0:8000 e o relay WSL segura ::1:8000, apanhando "localhost").
+& $pythonExe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8100

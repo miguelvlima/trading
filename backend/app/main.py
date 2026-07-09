@@ -17,6 +17,7 @@ from app.api.routes.realtime_ws import router as realtime_ws_router
 from app.api.routes.signals import router as signals_router
 from app.api.routes.strategy_combinations import router as strategy_combinations_router
 from app.api.routes.system import router as system_router
+from app.api.routes.system_status import router as system_status_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -39,6 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(system_router)
+app.include_router(system_status_router)
 app.include_router(auth_router)
 app.include_router(market_data_router)
 app.include_router(market_scanner_router)

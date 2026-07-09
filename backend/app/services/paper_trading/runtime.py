@@ -361,6 +361,10 @@ class RuntimeRegistry:
         with self._lock:
             return self._runtimes.get(portfolio_id)
 
+    def running_ids(self) -> list[int]:
+        with self._lock:
+            return list(self._runtimes)
+
     async def start(self, portfolio_id: int, settings: Settings) -> PaperEngineRuntime:
         with self._lock:
             runtime = self._runtimes.get(portfolio_id)

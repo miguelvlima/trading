@@ -837,3 +837,101 @@
     border-top-left-radius: var(--rt-radius);
   }
 }
+
+/* ---- Configuração → Sistema: diagnóstico ---- */
+
+.sys-status {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sys-status-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sys-status-toolbar button {
+  margin-left: auto;
+}
+
+.sys-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.sys-status-badge.sys-status-ok {
+  color: var(--rt-up);
+  border-color: var(--rt-up);
+}
+
+.sys-status-badge.sys-status-warn {
+  color: #d4a017;
+  border-color: #d4a017;
+}
+
+.sys-status-badge.sys-status-fail {
+  color: var(--rt-down);
+  border-color: var(--rt-down);
+}
+
+.sys-status-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sys-status-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.sys-status-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 4px;
+}
+
+.sys-status-dot.sys-status-ok {
+  background: var(--rt-up);
+}
+
+.sys-status-dot.sys-status-warn {
+  background: #d4a017;
+}
+
+.sys-status-dot.sys-status-fail {
+  background: var(--rt-down);
+}
+
+.sys-status-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sys-status-label {
+  font-weight: 600;
+}
+
+.sys-status-detail {
+  color: var(--rt-muted);
+  font-size: 12px;
+}
+
+.sys-status-hint {
+  color: #d4a017;
+  font-size: 12px;
+}
+

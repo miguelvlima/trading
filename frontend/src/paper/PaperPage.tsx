@@ -35,6 +35,7 @@ import {
   type PaperOrder,
   type PaperPortfolio,
   type PaperTradeWire,
+  type SymbolSignals,
 } from "./api";
 import { EquityChart } from "./EquityChart";
 import { computeRiskGauges, pnlBars } from "./monitor";
@@ -301,16 +302,27 @@ const CAROUSEL_WINDOWS: Array<{ code: WindowCode; label: string; trendLabel: str
   { code: "1y", label: "1A", trendLabel: "último ano" },
 ];
 
+const SIGNAL_OUTCOME_LABEL: Record<string, { text: string; tone: string }> = {
+  proposed: { text: "proposta", tone: "rt-up" },
+  vetoed: { text: "veto de risco", tone: "rt-down" },
+  skipped: { text: "descartado", tone: "pp-muted" },
+  none: { text: "sem sinal", tone: "pp-muted" },
+  error: { text: "erro", tone: "rt-down" },
+  pending: { text: "por avaliar", tone: "pp-muted" },
+};
+
 function MarketCarousel({
   apiBaseUrl,
   authToken,
   symbols,
   positions,
+  signals,
 }: {
   apiBaseUrl: string;
   authToken: string;
   symbols: string[];
   positions: LivePosition[];
+  signals: Record<string, SymbolSignals>;
 }) {
   const [index, setIndex] = useState(0);
   const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
@@ -455,6 +467,49 @@ function MarketCarousel({
           ) : (
             <span className="pp-muted">Sem posição aberta neste símbolo.</span>
           )}
+          <div className="pp-side-divider" />
+          {(() => {
+            const monitor = current !== null ? signals[current] : undefined;
+            if (!monitor) {
+              return (
+                <div className="pp-side-row">
+                  <span className="rt-k">Sinais</span>
+                  <span className="pp-muted">
+                    liga o engine para veres a análise ao vivo
+                  </span>
+                </div>
+              );
+            }
+            return (
+              <div className="pp-side-row">
+                <span className="rt-k">
+                  Sinais · analisado às {fmtTime(monitor.checked_at)}
+                </span>
+                <ul className="pp-signal-list">
+                  {monitor.signals.map((entry) => {
+                    const label =
+                      SIGNAL_OUTCOME_LABEL[entry.outcome] ??
+                      SIGNAL_OUTCOME_LABEL.pending;
+                    return (
+                      <li key={entry.strategy} className="pp-signal-row">
+                        <span className="pp-signal-name">{entry.strategy}</span>
+                        <span className={label.tone}>
+                          {entry.direction && entry.strength !== undefined
+                            ? `${entry.direction} ${entry.strength.toFixed(2)} · ${label.text}`
+                            : label.text}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <span className="pp-field-hint">
+                  {monitor.no_quote
+                    ? "à espera de cotação (mercado fechado ou feed em baixo) — retenta a cada ciclo"
+                    : `barra de ${fmtWhen(monitor.bar_time)} — novo veredicto quando fechar a próxima barra`}
+                </span>
+              </div>
+            );
+          })()}
         </aside>
       </div>
     </section>
@@ -637,8 +692,9 @@ function SettingsPanel({
             }
           />
           <span className="pp-field-hint">
-            clica nos símbolos conhecidos ou escreve novos separados por vírgula
-            {engineRunning ? " — alterar exige parar e voltar a iniciar o engine" : ""}
+            por defeito o engine segue: posições/ordens abertas + símbolos com
+            histórico positivo + seguidos na aba Mercado. O que escolheres aqui
+            soma-se a esses; as mudanças aplicam-se no ciclo seguinte.
           </span>
         </div>
         <div className="pp-field pp-field-wide">
@@ -839,6 +895,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         stop_price: position.stop_price,
         take_profit_price: position.take_profit_price,
       })),
+      signals: engineStatus.last_signals ?? undefined,
     });
     dispatch({
       kind: "seed_equity",
@@ -994,6 +1051,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         authToken={authToken}
         symbols={status?.tracked_symbols ?? []}
         positions={state.positions}
+        signals={state.signals}
       />
 
       <section className="rt-card pp-panel pp-panel-wide">

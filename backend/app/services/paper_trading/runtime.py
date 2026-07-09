@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -15,6 +15,8 @@ from app.db.models import (
     PaperEquityPoint,
     PaperOrder,
     PaperPortfolio,
+    PaperPosition,
+    PaperTrade,
 )
 from app.db.session import SessionLocal
 from app.services.data_feed.client_ids import next_engine_client_id
@@ -23,6 +25,7 @@ from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import EventHub, hub as global_hub
 from app.services.paper_trading.quotes import QuoteCache
 from app.services.paper_trading.types import (
+    OPEN_STATUSES,
     STATUS_APPROVED,
     STATUS_PROPOSED,
     RiskSettings,
@@ -72,6 +75,77 @@ def _build_streaming_provider(settings: Settings, portfolio_id: int) -> Streamin
         client_id=next_engine_client_id(settings.ibkr_client_id),
         market_data_type=settings.ibkr_market_data_type,
     )
+
+
+# IBKR delayed market-data lines are a finite resource (~100); keep a margin
+# for the realtime tab and worker. Priority order below decides who survives.
+MAX_TRACKED_SYMBOLS = 24
+
+
+def compute_tracked_symbols(
+    db: Session, risk: RiskSettings, settings: Settings, portfolio_id: int
+) -> list[str]:
+    """Default follow list for the paper engine.
+
+    Union, in priority order: symbols with something OPEN (positions or
+    proposed/approved orders — these NEED quotes), the user's manual picks,
+    symbols with positive realized-PnL history, and everything followed in the
+    Mercado tab. Manual picks ADD to the defaults, they don't replace them.
+    """
+    open_symbols = set(
+        db.execute(
+            select(PaperPosition.symbol).where(
+                PaperPosition.portfolio_id == portfolio_id,
+                PaperPosition.quantity > 0,
+            )
+        ).scalars()
+    ) | set(
+        db.execute(
+            select(PaperOrder.symbol).where(
+                PaperOrder.portfolio_id == portfolio_id,
+                PaperOrder.status.in_(OPEN_STATUSES),
+            )
+        ).scalars()
+    )
+    positive_history = {
+        symbol
+        for symbol, total in db.execute(
+            select(PaperTrade.symbol, func.sum(PaperTrade.realized_pnl))
+            .where(
+                PaperTrade.portfolio_id == portfolio_id,
+                PaperTrade.realized_pnl.is_not(None),
+            )
+            .group_by(PaperTrade.symbol)
+        )
+        if total is not None and float(total) > 0
+    }
+    followed = set(
+        db.execute(select(Instrument.symbol).where(Instrument.followed.is_(True))).scalars()
+    )
+
+    ordered: list[str] = []
+    for group in (
+        sorted(open_symbols),
+        [s.upper() for s in risk.symbols],
+        sorted(positive_history),
+        sorted(followed),
+    ):
+        for symbol in group:
+            normalized = symbol.upper()
+            if normalized not in ordered:
+                ordered.append(normalized)
+
+    if not ordered:
+        ordered = [s.upper() for s in settings.realtime_feed_symbol_list]
+    if len(ordered) > MAX_TRACKED_SYMBOLS:
+        logger.warning(
+            "paper_tracked_symbols_capped",
+            portfolio_id=portfolio_id,
+            kept=MAX_TRACKED_SYMBOLS,
+            dropped=ordered[MAX_TRACKED_SYMBOLS:],
+        )
+        ordered = ordered[:MAX_TRACKED_SYMBOLS]
+    return ordered
 
 
 def load_strategy_bars(
@@ -145,6 +219,10 @@ class PaperEngineRuntime:
         # Summary of the latest strategy sweep, surfaced so the cockpit can
         # explain WHY there are no proposals instead of just looking idle.
         self.last_evaluation: dict[str, object] | None = None
+        # Last outcome per (symbol, strategy) plus a per-symbol view refreshed
+        # every poll — feeds the live signal monitor in the cockpit sidebar.
+        self._signal_results: dict[tuple[str, str], dict[str, object]] = {}
+        self.last_signals: dict[str, dict[str, object]] = {}
         self._last_equity_point_at: datetime | None = None
 
     @property
@@ -172,9 +250,7 @@ class PaperEngineRuntime:
         try:
             portfolio = session.get(PaperPortfolio, self.portfolio_id)
             risk = RiskSettings.from_json(portfolio.risk_settings if portfolio else None)
-            self.tracked_symbols = list(
-                risk.symbols or self._settings.realtime_feed_symbol_list
-            )
+            self.tracked_symbols = self._desired_symbols(session, risk)
         finally:
             session.close()
 
@@ -225,6 +301,55 @@ class PaperEngineRuntime:
             except TimeoutError:
                 continue
 
+    def _desired_symbols(self, db: Session, risk: RiskSettings) -> list[str]:
+        return compute_tracked_symbols(db, risk, self._settings, self.portfolio_id)
+
+    def _sync_tracked_symbols(self, db: Session, risk: RiskSettings) -> None:
+        """Apply cockpit edits to the followed symbols without a backend restart.
+
+        ``tracked_symbols`` is captured at start() while risk-settings edits only
+        touch the DB row, so the runtime reconciles the diff every poll: new
+        symbols get a live market-data line, removed ones free theirs and drop
+        their cached signal state so the sidebar stops showing them.
+        """
+        desired = self._desired_symbols(db, risk)
+        if desired == self.tracked_symbols:
+            return
+        current = set(self.tracked_symbols)
+        added = [s for s in desired if s not in current]
+        removed = [s for s in current if s not in desired]
+        if self._provider is not None:
+            for symbol in added:
+                self._provider.subscribe(symbol)
+            for symbol in removed:
+                self._provider.unsubscribe(symbol)
+        for symbol in removed:
+            self.last_signals.pop(symbol, None)
+        self._last_signal_bar = {
+            k: v for k, v in self._last_signal_bar.items() if k[0] not in removed
+        }
+        self._signal_results = {
+            k: v for k, v in self._signal_results.items() if k[0] not in removed
+        }
+        self.tracked_symbols = desired
+        logger.info(
+            "paper_engine_symbols_updated",
+            portfolio_id=self.portfolio_id,
+            symbols=desired,
+            added=added,
+            removed=removed,
+        )
+        from app.services.paper_trading import events as ev
+
+        ev.record_event(
+            db,
+            portfolio_id=self.portfolio_id,
+            event_type=ev.EVENT_SYMBOLS_UPDATED,
+            message=f"Símbolos seguidos atualizados: {', '.join(desired)}.",
+            payload={"symbols": desired, "added": added, "removed": removed},
+            broadcast=self._hub,
+        )
+
     def _poll_once(self) -> None:
         db = SessionLocal()
         try:
@@ -232,6 +357,7 @@ class PaperEngineRuntime:
             if portfolio is None or not portfolio.engine_running:
                 return
             risk = RiskSettings.from_json(portfolio.risk_settings)
+            self._sync_tracked_symbols(db, risk)
 
             self.engine.check_protective_exits(db, portfolio)
             self._retry_approved_orders(db, portfolio)
@@ -271,6 +397,20 @@ class PaperEngineRuntime:
                 # the bar as handled: on a 1d timeframe that would burn the
                 # signal until tomorrow over a few missing ticks. Retry next poll.
                 counts["no_quote"] += 1
+                # Still publish the monitor view so the cockpit shows the
+                # engine IS checking this symbol, just waiting for a quote.
+                self.last_signals[symbol] = {
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "bar_time": None,
+                    "no_quote": True,
+                    "signals": [
+                        self._signal_results.get(
+                            (symbol, strategy),
+                            {"strategy": strategy, "outcome": "pending"},
+                        )
+                        for strategy in strategies
+                    ],
+                }
                 continue
             bars = load_strategy_bars(
                 db, symbol, risk.timeframe, self._settings.paper_engine_bars_limit
@@ -283,14 +423,16 @@ class PaperEngineRuntime:
             for strategy in strategies:
                 key = (symbol, strategy)
                 if self._last_signal_bar.get(key) == last_ts:
-                    continue
+                    continue  # bar unchanged: the stored result still stands
                 try:
                     signals = run_strategy(strategy, symbol, bars)
                 except ValueError:
+                    self._signal_results[key] = {"strategy": strategy, "outcome": "error"}
                     continue
                 latest = [s for s in signals if s.timestamp == last_ts]
                 self._last_signal_bar[key] = last_ts
                 if not latest:
+                    self._signal_results[key] = {"strategy": strategy, "outcome": "none"}
                     continue
                 counts["signals"] += 1
                 best = max(latest, key=lambda s: s.strength)
@@ -306,6 +448,29 @@ class PaperEngineRuntime:
                 )
                 if order is not None and order.status == STATUS_PROPOSED:
                     counts["proposals"] += 1
+                    outcome = "proposed"
+                elif order is not None:
+                    outcome = "vetoed"
+                else:
+                    outcome = "skipped"
+                self._signal_results[key] = {
+                    "strategy": strategy,
+                    "direction": best.direction,
+                    "strength": best.strength,
+                    "outcome": outcome,
+                }
+            # Per-symbol view refreshed EVERY poll (checked_at advances even
+            # when the bar is unchanged) so the cockpit shows the true cadence.
+            self.last_signals[symbol] = {
+                "checked_at": datetime.now(UTC).isoformat(),
+                "bar_time": last_ts.isoformat(),
+                "signals": [
+                    self._signal_results.get(
+                        (symbol, strategy), {"strategy": strategy, "outcome": "pending"}
+                    )
+                    for strategy in strategies
+                ],
+            }
         self.last_evaluation = {
             "at": datetime.now(UTC).isoformat(),
             "symbols_total": len(self.tracked_symbols),
@@ -383,6 +548,7 @@ class PaperEngineRuntime:
                 },
                 "pnl": pnl,
                 "positions": positions,
+                "signals": self.last_signals,
                 "at": now.isoformat(),
             },
         )

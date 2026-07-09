@@ -5,6 +5,7 @@ import type {
   PaperEventWire,
   PaperPnl,
   PaperStreamMessage,
+  SymbolSignals,
 } from "./api";
 
 export const MAX_EVENTS = 200;
@@ -29,6 +30,7 @@ export type PaperStreamState = {
   status: EngineStatusWire | null;
   pnl: PaperPnl | null;
   positions: LivePosition[];
+  signals: Record<string, SymbolSignals>;
   equitySeries: Array<{ at: string; equity: number }>;
   lastEventId: number | null;
 };
@@ -36,7 +38,13 @@ export type PaperStreamState = {
 export type PaperStreamAction =
   | { kind: "message"; message: PaperStreamMessage }
   | { kind: "seed_events"; events: PaperEventWire[] }
-  | { kind: "seed_state"; status?: EngineStatusWire; pnl?: PaperPnl; positions?: LivePosition[] }
+  | {
+      kind: "seed_state";
+      status?: EngineStatusWire;
+      pnl?: PaperPnl;
+      positions?: LivePosition[];
+      signals?: Record<string, SymbolSignals>;
+    }
   | { kind: "seed_equity"; points: Array<{ at: string; equity: number }> }
   | { kind: "reset" };
 
@@ -45,6 +53,7 @@ export const initialStreamState: PaperStreamState = {
   status: null,
   pnl: null,
   positions: [],
+  signals: {},
   equitySeries: [],
   lastEventId: null,
 };
@@ -79,6 +88,7 @@ export function reduceStream(
         status: action.status ?? state.status,
         pnl: action.pnl ?? state.pnl,
         positions: action.positions ?? state.positions,
+        signals: action.signals ?? state.signals,
       };
 
     case "seed_equity": {
@@ -108,6 +118,7 @@ export function reduceStream(
           status: message.status,
           pnl: message.pnl,
           positions: message.positions,
+          signals: message.signals ?? state.signals,
           equitySeries,
         };
       }

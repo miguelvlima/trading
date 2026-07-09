@@ -17,6 +17,23 @@ export type EngineStatusWire = {
   max_consecutive_losses: number;
   last_evaluation: EvaluationSummary | null;
   poll_seconds: number | null;
+  last_signals: Record<string, SymbolSignals> | null;
+};
+
+// Live signal monitor per symbol: the engine's latest verdict per strategy on
+// the current bar, plus WHEN it last checked (advances every poll).
+export type SignalMonitorEntry = {
+  strategy: string;
+  outcome: "proposed" | "vetoed" | "skipped" | "none" | "error" | "pending";
+  direction?: "BUY" | "SELL";
+  strength?: number;
+};
+
+export type SymbolSignals = {
+  checked_at: string;
+  bar_time: string | null;
+  no_quote?: boolean;
+  signals: SignalMonitorEntry[];
 };
 
 // What the engine's last strategy sweep did (explains cockpit "silence").
@@ -138,6 +155,7 @@ export type PaperStreamMessage =
         stop_price: number | null;
         take_profit_price: number | null;
       }>;
+      signals?: Record<string, SymbolSignals>;
       at: string;
     }
   | { type: "pong" }

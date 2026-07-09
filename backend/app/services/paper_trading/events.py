@@ -34,6 +34,7 @@ EVENT_KILL_SWITCH_OFF = "kill_switch_off"
 EVENT_COOLDOWN_STARTED = "cooldown_started"
 EVENT_FEED_STALE = "feed_stale"
 EVENT_FEED_RECOVERED = "feed_recovered"
+EVENT_SYMBOLS_UPDATED = "symbols_updated"
 
 
 def event_to_message(event: PaperEngineEvent) -> dict[str, object]:

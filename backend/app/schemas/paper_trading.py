@@ -116,6 +116,8 @@ class EngineStatusResponse(BaseModel):
     # strategy sweep did, and the poll cadence for the cockpit countdown.
     last_evaluation: dict[str, object] | None = None
     poll_seconds: float | None = None
+    # Live per-symbol signal monitor: {symbol: {checked_at, bar_time, signals: [...]}}.
+    last_signals: dict[str, object] | None = None
 
 
 class PaperEquityPointResponse(BaseModel):

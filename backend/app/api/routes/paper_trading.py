@@ -513,6 +513,7 @@ async def start_engine(
         ).__dict__,
         last_evaluation=runtime.last_evaluation,
         poll_seconds=runtime.poll_seconds,
+        last_signals=runtime.last_signals,
     )
 
 
@@ -552,8 +553,10 @@ def engine_status(
     else:
         # Engine stopped: still show WHAT would be tracked, so the cockpit can
         # display the symbol list at all times.
+        from app.services.paper_trading.runtime import compute_tracked_symbols
+
         risk = RiskSettings.from_json(portfolio.risk_settings)
-        tracked = list(risk.symbols or settings.realtime_feed_symbol_list)
+        tracked = compute_tracked_symbols(db, risk, settings, portfolio.id)
     return EngineStatusResponse(
         **engine.status(
             db,
@@ -563,6 +566,7 @@ def engine_status(
         ).__dict__,
         last_evaluation=runtime.last_evaluation if runtime is not None else None,
         poll_seconds=runtime.poll_seconds if runtime is not None else None,
+        last_signals=runtime.last_signals if runtime is not None else None,
     )
 
 

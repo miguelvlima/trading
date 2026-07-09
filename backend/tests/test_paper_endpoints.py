@@ -384,6 +384,89 @@ def test_engine_stop_is_idempotent_in_the_ledger(tmp_path: Path) -> None:
         teardown()
 
 
+def test_tracked_symbols_default_composition(tmp_path: Path) -> None:
+    """Defaults = open positions/orders + manual picks + positive history + Mercado follows."""
+    from app.db.models import Instrument, PaperPosition, PaperTrade
+
+    client, factory, user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 100_000})
+        client.put(
+            "/paper/portfolio/risk-settings", json={"risk_settings": {"symbols": ["NVDA"]}}
+        )
+
+        with factory() as session:
+            portfolio = session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.owner_user_id == user_id)
+            ).scalar_one()
+            session.add(Instrument(symbol="SPY", currency="USD", followed=True))
+            session.add(Instrument(symbol="XYZ", currency="USD", followed=False))
+            session.add(
+                PaperPosition(
+                    portfolio_id=portfolio.id,
+                    symbol="TSLA",
+                    quantity=Decimal("5"),
+                    avg_entry_price=Decimal("100"),
+                )
+            )
+            entry = PaperOrder(
+                portfolio_id=portfolio.id,
+                symbol="GOOG",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type="market",
+                status="filled",
+                signal_snapshot={},
+                risk_snapshot={},
+                data_liveness="DELAYED",
+                proposed_at=RTH_NOW,
+                filled_at=RTH_NOW,
+            )
+            session.add(entry)
+            session.flush()
+            session.add(
+                PaperTrade(
+                    portfolio_id=portfolio.id,
+                    order_id=entry.id,
+                    symbol="GOOG",
+                    side="SELL",
+                    quantity=Decimal("1"),
+                    price=Decimal("110"),
+                    fee_paid=Decimal("0.35"),
+                    fill_basis="bid_ask",
+                    data_liveness="DELAYED",
+                    realized_pnl=Decimal("9.65"),
+                    executed_at=RTH_NOW,
+                )
+            )
+            session.add(
+                PaperTrade(
+                    portfolio_id=portfolio.id,
+                    order_id=entry.id,
+                    symbol="LOSER",
+                    side="SELL",
+                    quantity=Decimal("1"),
+                    price=Decimal("90"),
+                    fee_paid=Decimal("0.35"),
+                    fill_basis="bid_ask",
+                    data_liveness="DELAYED",
+                    realized_pnl=Decimal("-10"),
+                    executed_at=RTH_NOW,
+                )
+            )
+            session.commit()
+
+        tracked = client.get("/paper/engine/status").json()["tracked_symbols"]
+        assert "TSLA" in tracked  # posição aberta
+        assert "NVDA" in tracked  # escolha manual
+        assert "GOOG" in tracked  # histórico positivo
+        assert "SPY" in tracked  # seguido na aba Mercado
+        assert "XYZ" not in tracked  # não seguido
+        assert "LOSER" not in tracked  # histórico negativo
+    finally:
+        teardown()
+
+
 def test_user_scoping_hides_other_users_data(tmp_path: Path) -> None:
     client, factory, _user_id = setup_client(tmp_path)
     try:

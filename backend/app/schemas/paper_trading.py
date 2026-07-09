@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 
 
 class PaperPortfolioCreateRequest(BaseModel):
-    initial_cash: float = Field(default=100_000.0, gt=0, le=1_000_000_000)
+    # Minimum keeps the portfolio tradeable: below ~$1k the position sizing
+    # rounds every proposal down to 0 shares and the cockpit looks dead.
+    initial_cash: float = Field(default=100_000.0, ge=1_000, le=1_000_000_000)
     risk_settings: dict[str, object] | None = None
 
 
@@ -95,6 +97,7 @@ class EngineStatusResponse(BaseModel):
     kill_switch_active: bool
     kill_switch_reason: str | None
     feed_status: str
+    feed_reason: str | None
     feed_age_seconds: float | None
     data_liveness: str
     market_session: str

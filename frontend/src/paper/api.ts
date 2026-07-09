@@ -6,6 +6,7 @@ export type EngineStatusWire = {
   kill_switch_active: boolean;
   kill_switch_reason: string | null;
   feed_status: "fresh" | "stale" | "unavailable";
+  feed_reason: "engine_stopped" | "no_provider" | "market_closed" | "no_ticks" | null;
   feed_age_seconds: number | null;
   data_liveness: string;
   market_session: "rth" | "closed";
@@ -137,6 +138,20 @@ export const getPaperPortfolio = (baseUrl: string, token: string) =>
 export const createPaperPortfolio = (baseUrl: string, token: string, initialCash: number) =>
   request<PaperPortfolio>(baseUrl, token, "POST", "/paper/portfolio", {
     initial_cash: initialCash,
+  });
+
+export const resetPaperPortfolio = (baseUrl: string, token: string, initialCash: number) =>
+  request<PaperPortfolio>(baseUrl, token, "POST", "/paper/portfolio/reset", {
+    initial_cash: initialCash,
+  });
+
+export const updatePaperRiskSettings = (
+  baseUrl: string,
+  token: string,
+  settings: Record<string, unknown>,
+) =>
+  request<PaperPortfolio>(baseUrl, token, "PUT", "/paper/portfolio/risk-settings", {
+    risk_settings: settings,
   });
 
 export const getPaperOrders = (baseUrl: string, token: string, status?: string) =>

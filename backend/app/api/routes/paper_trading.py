@@ -123,8 +123,49 @@ def create_portfolio(
     record_event(
         db,
         portfolio_id=portfolio.id,
-        event_type=ev.EVENT_ENGINE_STOPPED,
+        event_type=ev.EVENT_PORTFOLIO_CREATED,
         message=f"Portfolio paper criado com ${payload.initial_cash:,.2f}.",
+        broadcast=hub,
+    )
+    db.commit()
+    db.refresh(portfolio)
+    return _portfolio_response(portfolio)
+
+
+@router.post("/portfolio/reset", response_model=PaperPortfolioResponse)
+async def reset_portfolio(
+    payload: PaperPortfolioCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> PaperPortfolioResponse:
+    """Wipe orders/positions/trades and restart the portfolio with new cash.
+
+    The ledger is kept: the reset itself becomes an auditable event on top of
+    the old history instead of silently erasing it.
+    """
+    portfolio = _get_portfolio(db, current_user)
+    await registry.stop(portfolio.id)
+
+    for model in (PaperOrder, PaperTrade, PaperPosition):
+        for row in db.execute(
+            select(model).where(model.portfolio_id == portfolio.id)
+        ).scalars():
+            db.delete(row)
+
+    portfolio.initial_cash = payload.initial_cash
+    portfolio.cash = payload.initial_cash
+    portfolio.equity = payload.initial_cash
+    portfolio.engine_running = False
+    portfolio.kill_switch_active = False
+    portfolio.kill_switch_reason = None
+    if payload.risk_settings is not None:
+        portfolio.risk_settings = RiskSettings.from_json(payload.risk_settings).to_json()
+
+    record_event(
+        db,
+        portfolio_id=portfolio.id,
+        event_type=ev.EVENT_PORTFOLIO_RESET,
+        message=f"Portfolio paper reiniciado com ${payload.initial_cash:,.2f}.",
         broadcast=hub,
     )
     db.commit()
@@ -333,19 +374,24 @@ async def start_engine(
     settings: Settings = Depends(get_settings),
 ) -> EngineStatusResponse:
     portfolio = _get_portfolio(db, current_user)
-    portfolio.engine_running = True
-    record_event(
-        db,
-        portfolio_id=portfolio.id,
-        event_type=ev.EVENT_ENGINE_STARTED,
-        message="Engine de paper trading iniciado (modo semi-automático).",
-        broadcast=hub,
-    )
-    db.commit()
+    # Idempotent: repeated clicks must not spam the ledger with duplicates.
+    if not portfolio.engine_running:
+        portfolio.engine_running = True
+        record_event(
+            db,
+            portfolio_id=portfolio.id,
+            event_type=ev.EVENT_ENGINE_STARTED,
+            message="Engine de paper trading iniciado (modo semi-automático).",
+            broadcast=hub,
+        )
+        db.commit()
     runtime = await registry.start(portfolio.id, settings)
     return EngineStatusResponse(
         **runtime.engine.status(
-            db, portfolio, tracked_symbols=runtime.tracked_symbols
+            db,
+            portfolio,
+            tracked_symbols=runtime.tracked_symbols,
+            has_provider=runtime.has_provider,
         ).__dict__
     )
 
@@ -356,15 +402,17 @@ async def stop_engine(
     db: Session = Depends(get_db_session),
 ) -> EngineStatusResponse:
     portfolio = _get_portfolio(db, current_user)
-    portfolio.engine_running = False
-    record_event(
-        db,
-        portfolio_id=portfolio.id,
-        event_type=ev.EVENT_ENGINE_STOPPED,
-        message="Engine de paper trading parado.",
-        broadcast=hub,
-    )
-    db.commit()
+    # Idempotent: only record the transition once, even if the runtime is gone.
+    if portfolio.engine_running:
+        portfolio.engine_running = False
+        record_event(
+            db,
+            portfolio_id=portfolio.id,
+            event_type=ev.EVENT_ENGINE_STOPPED,
+            message="Engine de paper trading parado.",
+            broadcast=hub,
+        )
+        db.commit()
     await registry.stop(portfolio.id)
     engine = _engine_for(portfolio)
     return EngineStatusResponse(**engine.status(db, portfolio, tracked_symbols=[]).__dict__)
@@ -380,7 +428,12 @@ def engine_status(
     engine = _engine_for(portfolio)
     tracked = runtime.tracked_symbols if runtime is not None else []
     return EngineStatusResponse(
-        **engine.status(db, portfolio, tracked_symbols=tracked).__dict__
+        **engine.status(
+            db,
+            portfolio,
+            tracked_symbols=tracked,
+            has_provider=runtime.has_provider if runtime is not None else False,
+        ).__dict__
     )
 
 

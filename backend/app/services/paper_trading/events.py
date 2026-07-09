@@ -15,6 +15,8 @@ logger = structlog.get_logger(__name__)
 # Event types (PaperEngineEvent.event_type). The cockpit colours by these.
 EVENT_ENGINE_STARTED = "engine_started"
 EVENT_ENGINE_STOPPED = "engine_stopped"
+EVENT_PORTFOLIO_CREATED = "portfolio_created"
+EVENT_PORTFOLIO_RESET = "portfolio_reset"
 EVENT_SIGNAL_RECEIVED = "signal_received"
 EVENT_SIGNAL_SKIPPED = "signal_skipped"
 EVENT_ORDER_PROPOSED = "order_proposed"

@@ -699,10 +699,16 @@ class PaperEngine:
     # -- status -----------------------------------------------------------------------
 
     def status(
-        self, db: Session, portfolio: PaperPortfolio, *, tracked_symbols: list[str]
+        self,
+        db: Session,
+        portfolio: PaperPortfolio,
+        *,
+        tracked_symbols: list[str],
+        has_provider: bool = False,
     ) -> EngineStatus:
         settings = self.settings_for(portfolio)
         now = self._now_fn()
+        session_now = market_session(now)
         age = self.quotes.freshest_age_seconds(tracked_symbols or None)
         if age is None:
             feed_status = "unavailable"
@@ -710,6 +716,18 @@ class PaperEngine:
             feed_status = "stale"
         else:
             feed_status = "fresh"
+
+        # Best-effort diagnosis so the cockpit can tell "broken" from "expected".
+        feed_reason: str | None = None
+        if feed_status != "fresh":
+            if not portfolio.engine_running:
+                feed_reason = "engine_stopped"
+            elif not has_provider:
+                feed_reason = "no_provider"
+            elif session_now == "closed":
+                feed_reason = "market_closed"
+            else:
+                feed_reason = "no_ticks"
 
         liveness = "UNKNOWN"
         for symbol in tracked_symbols:
@@ -731,9 +749,10 @@ class PaperEngine:
             kill_switch_active=portfolio.kill_switch_active,
             kill_switch_reason=portfolio.kill_switch_reason,
             feed_status=feed_status,
+            feed_reason=feed_reason,
             feed_age_seconds=age,
             data_liveness=liveness,
-            market_session=market_session(now),
+            market_session=session_now,
             tracked_symbols=tracked_symbols,
             pending_orders=len(list(pending)),
             cooldown_until=cooldown.isoformat() if cooldown else None,

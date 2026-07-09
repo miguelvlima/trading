@@ -28,6 +28,7 @@ function makeStatus(overrides: Partial<EngineStatusWire> = {}): EngineStatusWire
     kill_switch_active: false,
     kill_switch_reason: null,
     feed_status: "fresh",
+    feed_reason: null,
     feed_age_seconds: 2.5,
     data_liveness: "DELAYED",
     market_session: "rth",

@@ -83,8 +83,13 @@ def test_portfolio_create_get_conflict_and_settings(tmp_path: Path) -> None:
         assert body["risk_settings"]["max_position_pct"] == 10.0  # defaults filled in
         assert body["engine_running"] is False
 
-        conflict = client.post("/paper/portfolio", json={"initial_cash": 1})
+        conflict = client.post("/paper/portfolio", json={"initial_cash": 25_000})
         assert conflict.status_code == 409
+
+        # Below the tradeable minimum the API refuses outright (sizing would
+        # round every proposal to 0 shares and the cockpit would look dead).
+        too_small = client.post("/paper/portfolio", json={"initial_cash": 10})
+        assert too_small.status_code == 422
 
         updated = client.put(
             "/paper/portfolio/risk-settings",
@@ -191,6 +196,7 @@ def test_engine_status_and_kill_switch_reset(tmp_path: Path) -> None:
         body = status.json()
         assert body["running"] is False
         assert body["feed_status"] == "unavailable"
+        assert body["feed_reason"] == "engine_stopped"
 
         not_active = client.post("/paper/engine/kill-switch/reset")
         assert not_active.status_code == 409
@@ -206,6 +212,64 @@ def test_engine_status_and_kill_switch_reset(tmp_path: Path) -> None:
         reset = client.post("/paper/engine/kill-switch/reset")
         assert reset.status_code == 200
         assert reset.json()["kill_switch_active"] is False
+    finally:
+        teardown()
+
+
+def test_portfolio_reset_wipes_state_and_keeps_ledger(tmp_path: Path) -> None:
+    client, factory, user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 100_000})
+        seed_proposed_order(factory, user_id)
+
+        reset = client.post("/paper/portfolio/reset", json={"initial_cash": 50_000})
+        assert reset.status_code == 200
+        body = reset.json()
+        assert body["initial_cash"] == 50_000
+        assert body["cash"] == 50_000
+        assert body["equity"] == 50_000
+        assert body["engine_running"] is False
+        assert body["kill_switch_active"] is False
+
+        assert client.get("/paper/orders").json() == []
+        assert client.get("/paper/positions").json() == []
+        assert client.get("/paper/trades").json() == []
+
+        # The old ledger survives, with the reset appended on top.
+        events = client.get("/paper/events", params={"limit": 10}).json()
+        assert "Portfolio paper reiniciado" in events[0]["message"]
+        assert any("Portfolio paper criado" in event["message"] for event in events)
+
+        too_small = client.post("/paper/portfolio/reset", json={"initial_cash": 10})
+        assert too_small.status_code == 422
+    finally:
+        teardown()
+
+
+def test_engine_stop_is_idempotent_in_the_ledger(tmp_path: Path) -> None:
+    client, factory, user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 100_000})
+
+        with factory() as session:
+            portfolio = session.execute(
+                select(PaperPortfolio).where(PaperPortfolio.owner_user_id == user_id)
+            ).scalar_one()
+            portfolio.engine_running = True
+            session.commit()
+
+        first = client.post("/paper/engine/stop")
+        assert first.status_code == 200
+        assert first.json()["running"] is False
+
+        # Repeated stops answer OK but must not append duplicate ledger rows.
+        for _ in range(2):
+            again = client.post("/paper/engine/stop")
+            assert again.status_code == 200
+
+        events = client.get("/paper/events", params={"limit": 50}).json()
+        stopped = [e for e in events if e["event_type"] == "engine_stopped"]
+        assert len(stopped) == 1
     finally:
         teardown()
 

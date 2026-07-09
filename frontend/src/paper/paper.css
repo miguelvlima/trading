@@ -381,3 +381,63 @@
   color: var(--rt-down);
   font-size: 12px;
 }
+
+/* -- settings panel ---------------------------------------------------------- */
+
+.pp-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.pp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pp-field-wide {
+  grid-column: 1 / -1;
+}
+
+.pp-field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  color: var(--rt-text);
+}
+
+.pp-field-label {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pp-field-hint {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 11px;
+}
+
+.pp-input-sm {
+  width: 120px;
+}
+
+.pp-settings-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pp-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+}

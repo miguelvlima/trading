@@ -23,6 +23,23 @@ logger = structlog.get_logger(__name__)
 _LIVENESS_BY_MD_TYPE = {1: "REAL-TIME", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED-FROZEN"}
 
 
+def _feed_problem_message(status) -> str:
+    """Ledger message that tells the user WHY the feed is not fresh."""
+    if status.feed_reason == "no_provider":
+        return (
+            "Sem ligação ao IB Gateway — o engine não recebe cotações. "
+            "Confirma que o Gateway está aberto e o provider configurado."
+        )
+    if status.feed_reason == "market_closed":
+        return (
+            "Mercado fechado — sem cotações novas (normal fora do horário 13:30–20:00 UTC). "
+            "O engine retoma quando o mercado abrir."
+        )
+    if status.feed_age_seconds is not None:
+        return f"Feed de dados {status.feed_status} (idade {status.feed_age_seconds:.0f}s)."
+    return "Feed de dados indisponível — sem ticks recebidos; verifica o IB Gateway."
+
+
 def _build_streaming_provider(settings: Settings, portfolio_id: int) -> StreamingProvider | None:
     """IBKR streaming provider for one engine runtime; None without ib/Gateway.
 
@@ -112,6 +129,10 @@ class PaperEngineRuntime:
         # prevents re-proposing the same signal every poll.
         self._last_signal_bar: dict[tuple[str, str], datetime] = {}
         self._feed_was_stale = False
+
+    @property
+    def has_provider(self) -> bool:
+        return self._provider is not None
 
     # -- provider sinks (provider thread; must stay non-blocking, no DB) ---------
 
@@ -255,7 +276,12 @@ class PaperEngineRuntime:
     def _broadcast_state(
         self, db: Session, portfolio: PaperPortfolio, risk: RiskSettings
     ) -> None:
-        status = self.engine.status(db, portfolio, tracked_symbols=self.tracked_symbols)
+        status = self.engine.status(
+            db,
+            portfolio,
+            tracked_symbols=self.tracked_symbols,
+            has_provider=self.has_provider,
+        )
         if status.feed_status != "fresh" and not self._feed_was_stale:
             self._feed_was_stale = True
             from app.services.paper_trading import events as ev
@@ -264,10 +290,7 @@ class PaperEngineRuntime:
                 db,
                 portfolio_id=self.portfolio_id,
                 event_type=ev.EVENT_FEED_STALE,
-                message=f"Feed de dados {status.feed_status} "
-                f"(idade {status.feed_age_seconds:.0f}s)."
-                if status.feed_age_seconds is not None
-                else "Feed de dados indisponível.",
+                message=_feed_problem_message(status),
                 severity="warn",
                 broadcast=self._hub,
             )

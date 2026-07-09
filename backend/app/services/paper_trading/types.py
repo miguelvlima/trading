@@ -147,6 +147,9 @@ class EngineStatus:
     kill_switch_active: bool
     kill_switch_reason: str | None
     feed_status: str  # fresh | stale | unavailable
+    # Why the feed is not fresh, when diagnosable:
+    # engine_stopped | no_provider | market_closed | no_ticks
+    feed_reason: str | None
     feed_age_seconds: float | None
     data_liveness: str
     market_session: str  # rth | closed

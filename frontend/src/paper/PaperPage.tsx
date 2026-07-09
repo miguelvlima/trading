@@ -12,8 +12,10 @@ import {
   getPaperPositions,
   rejectPaperOrder,
   resetKillSwitch,
+  resetPaperPortfolio,
   startEngine,
   stopEngine,
+  updatePaperRiskSettings,
   PaperApiError,
   type EngineStatusWire,
   type PaperOrder,
@@ -61,21 +63,31 @@ function pnlClass(value: number | null | undefined): string {
 
 // -- status bar ---------------------------------------------------------------
 
+const FEED_REASON_LABEL: Record<string, string> = {
+  engine_stopped: "engine parado",
+  no_provider: "sem ligação ao IB Gateway",
+  market_closed: "mercado fechado — normal a esta hora",
+  no_ticks: "sem ticks — verifica o IB Gateway",
+};
+
 function FeedDot({ status }: { status: EngineStatusWire | null }) {
+  // "market closed" is expected, not a failure — colour it as a warning, not red.
+  const expectedOutage = status?.feed_reason === "market_closed";
   const level =
-    status === null || status.feed_status === "unavailable"
+    status === null || (status.feed_status === "unavailable" && !expectedOutage)
       ? "down"
-      : status.feed_status === "stale"
+      : status.feed_status !== "fresh"
         ? "warn"
         : "up";
+  const reason = status?.feed_reason ? FEED_REASON_LABEL[status.feed_reason] : null;
   const label =
     status === null
       ? "sem estado"
       : status.feed_status === "fresh"
         ? `fresco (${status.feed_age_seconds?.toFixed(0) ?? "?"}s)`
         : status.feed_status === "stale"
-          ? `obsoleto (${status.feed_age_seconds?.toFixed(0) ?? "?"}s)`
-          : "indisponível";
+          ? `obsoleto (${status.feed_age_seconds?.toFixed(0) ?? "?"}s)${reason ? ` · ${reason}` : ""}`
+          : `indisponível${reason ? ` · ${reason}` : ""}`;
   return (
     <span className={`pp-feed pp-feed-${level}`}>
       <i className="rt-dot" /> Feed {label}
@@ -203,6 +215,188 @@ function PendingOrderCard({
   );
 }
 
+// -- settings ------------------------------------------------------------------
+
+function num(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+type SettingsPanelProps = {
+  portfolio: PaperPortfolio;
+  equity: number | null;
+  busy: boolean;
+  engineRunning: boolean;
+  onSave: (settings: Record<string, unknown>) => void;
+  onReset: (initialCash: number) => void;
+};
+
+function SettingsPanel({
+  portfolio,
+  equity,
+  busy,
+  engineRunning,
+  onSave,
+  onReset,
+}: SettingsPanelProps) {
+  const rs = portfolio.risk_settings;
+  const [form, setForm] = useState(() => ({
+    positionSizePct: String(num(rs.position_size_pct, 10)),
+    maxPositionPct: String(num(rs.max_position_pct, 10)),
+    maxExposurePct: String(num(rs.max_total_exposure_pct, 50)),
+    dailyLossPct: String(num(rs.daily_loss_limit_pct, 3)),
+    stopLossPct: String(num(rs.default_stop_loss_pct, 2)),
+    takeProfitPct: String(num(rs.default_take_profit_pct, 4)),
+    symbols: Array.isArray(rs.symbols) ? (rs.symbols as string[]).join(", ") : "",
+    rthOnly: rs.rth_only !== false,
+  }));
+  const [resetCash, setResetCash] = useState("100000");
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const field = (key: keyof typeof form) => ({
+    className: "pp-input pp-input-sm",
+    type: "number" as const,
+    value: form[key] as string,
+    onChange: (event: { target: { value: string } }) =>
+      setForm((current) => ({ ...current, [key]: event.target.value })),
+  });
+
+  const perTradeAmount =
+    equity !== null ? (equity * num(form.positionSizePct, 0)) / 100 : null;
+
+  const save = () =>
+    onSave({
+      position_size_pct: num(form.positionSizePct, num(rs.position_size_pct, 10)),
+      max_position_pct: num(form.maxPositionPct, num(rs.max_position_pct, 10)),
+      max_total_exposure_pct: num(form.maxExposurePct, num(rs.max_total_exposure_pct, 50)),
+      daily_loss_limit_pct: num(form.dailyLossPct, num(rs.daily_loss_limit_pct, 3)),
+      default_stop_loss_pct: num(form.stopLossPct, num(rs.default_stop_loss_pct, 2)),
+      default_take_profit_pct: num(form.takeProfitPct, num(rs.default_take_profit_pct, 4)),
+      symbols: form.symbols
+        .split(/[\s,;]+/)
+        .map((symbol) => symbol.trim().toUpperCase())
+        .filter(Boolean),
+      rth_only: form.rthOnly,
+    });
+
+  return (
+    <section className="rt-card pp-panel pp-panel-wide">
+      <div className="rt-card-h">
+        <span className="rt-card-t">Definições de trading</span>
+        <span className="pp-muted">as alterações aplicam-se ao próximo ciclo do engine</span>
+      </div>
+      <div className="pp-settings-grid">
+        <label className="pp-field">
+          <span className="pp-field-label">Investimento por trade (% do equity)</span>
+          <input {...field("positionSizePct")} min={1} max={100} step={1} />
+          <span className="pp-field-hint">
+            {perTradeAmount !== null ? `≈ ${fmtMoney(perTradeAmount)} por ordem` : "—"}
+          </span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Máx. por posição (%)</span>
+          <input {...field("maxPositionPct")} min={1} max={100} step={1} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Exposição total máx. (%)</span>
+          <input {...field("maxExposurePct")} min={1} max={100} step={5} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Perda diária → kill switch (%)</span>
+          <input {...field("dailyLossPct")} min={0.5} max={100} step={0.5} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Stop-loss por defeito (%)</span>
+          <input {...field("stopLossPct")} min={0.5} max={50} step={0.5} />
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Take-profit por defeito (%)</span>
+          <input {...field("takeProfitPct")} min={0.5} max={100} step={0.5} />
+        </label>
+        <label className="pp-field pp-field-wide">
+          <span className="pp-field-label">Símbolos a seguir</span>
+          <input
+            className="pp-input"
+            type="text"
+            placeholder="AAPL, MSFT, NVDA, SPY (vazio = lista por defeito)"
+            value={form.symbols}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, symbols: event.target.value }))
+            }
+          />
+          {engineRunning && (
+            <span className="pp-field-hint">
+              alterar símbolos exige parar e voltar a iniciar o engine
+            </span>
+          )}
+        </label>
+        <label className="pp-field pp-field-check">
+          <input
+            type="checkbox"
+            checked={form.rthOnly}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, rthOnly: event.target.checked }))
+            }
+          />
+          <span>Operar apenas com o mercado aberto (RTH)</span>
+        </label>
+      </div>
+      <div className="pp-settings-actions">
+        <button type="button" className="pp-btn pp-btn-approve" disabled={busy} onClick={save}>
+          Guardar definições
+        </button>
+      </div>
+
+      <div className="pp-reset-row">
+        <span className="pp-field-label">Recomeçar do zero</span>
+        <input
+          className="pp-input pp-input-sm"
+          type="number"
+          min={1000}
+          step={1000}
+          value={resetCash}
+          onChange={(event) => setResetCash(event.target.value)}
+        />
+        {!confirmReset ? (
+          <button
+            type="button"
+            className="pp-btn"
+            disabled={busy}
+            onClick={() => setConfirmReset(true)}
+          >
+            Recomeçar portfolio…
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="pp-btn pp-btn-danger"
+              disabled={busy}
+              onClick={() => {
+                setConfirmReset(false);
+                onReset(Math.max(1000, Number(resetCash) || 100_000));
+              }}
+            >
+              Confirmar: apagar posições e ordens
+            </button>
+            <button
+              type="button"
+              className="pp-btn"
+              disabled={busy}
+              onClick={() => setConfirmReset(false)}
+            >
+              Cancelar
+            </button>
+          </>
+        )}
+        <span className="pp-field-hint">
+          apaga ordens, posições e trades; o histórico de eventos mantém-se (mín. $1.000)
+        </span>
+      </div>
+    </section>
+  );
+}
+
 // -- live PnL cell with flash on change ---------------------------------------------
 
 function PnlCell({ value }: { value: number | null }) {
@@ -274,35 +468,33 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     void loadPortfolio();
   }, [loadPortfolio]);
 
+  const seedCockpit = useCallback(async () => {
+    const [events, engineStatus, pnl, positions] = await Promise.all([
+      getPaperEvents(apiBaseUrl, authToken, 50),
+      getEngineStatus(apiBaseUrl, authToken),
+      getPaperPnl(apiBaseUrl, authToken),
+      getPaperPositions(apiBaseUrl, authToken),
+    ]);
+    dispatch({ kind: "seed_events", events });
+    setRestStatus(engineStatus);
+    dispatch({
+      kind: "seed_state",
+      pnl,
+      positions: positions.map((position) => ({
+        symbol: position.symbol,
+        quantity: position.quantity,
+        avg_entry_price: position.avg_entry_price,
+        last_price: position.last_price,
+        unrealized_pnl: position.unrealized_pnl,
+      })),
+    });
+    await refreshPending();
+  }, [apiBaseUrl, authToken, dispatch, refreshPending]);
+
   useEffect(() => {
     if (!hasPortfolio) return;
-    void (async () => {
-      try {
-        const [events, engineStatus, pnl, positions] = await Promise.all([
-          getPaperEvents(apiBaseUrl, authToken, 50),
-          getEngineStatus(apiBaseUrl, authToken),
-          getPaperPnl(apiBaseUrl, authToken),
-          getPaperPositions(apiBaseUrl, authToken),
-        ]);
-        dispatch({ kind: "seed_events", events });
-        setRestStatus(engineStatus);
-        dispatch({
-          kind: "seed_state",
-          pnl,
-          positions: positions.map((position) => ({
-            symbol: position.symbol,
-            quantity: position.quantity,
-            avg_entry_price: position.avg_entry_price,
-            last_price: position.last_price,
-            unrealized_pnl: position.unrealized_pnl,
-          })),
-        });
-        await refreshPending();
-      } catch (err) {
-        fail(err);
-      }
-    })();
-  }, [hasPortfolio, apiBaseUrl, authToken, dispatch, refreshPending, fail]);
+    seedCockpit().catch(fail);
+  }, [hasPortfolio, seedCockpit, fail]);
 
   // Refetch the pending panel when an order-lifecycle event streams in.
   const lastHandledEvent = useRef<number | null>(null);
@@ -330,6 +522,26 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
       }
     },
     [apiBaseUrl, authToken, refreshPending, fail],
+  );
+
+  const saveSettings = useCallback(
+    (settings: Record<string, unknown>) =>
+      void act(async () => {
+        const updated = await updatePaperRiskSettings(apiBaseUrl, authToken, settings);
+        setPortfolio(updated);
+      }),
+    [act, apiBaseUrl, authToken],
+  );
+
+  const resetPortfolio = useCallback(
+    (initialCash: number) =>
+      void act(async () => {
+        const fresh = await resetPaperPortfolio(apiBaseUrl, authToken, initialCash);
+        setPortfolio(fresh);
+        dispatch({ kind: "reset" });
+        await seedCockpit();
+      }),
+    [act, apiBaseUrl, authToken, dispatch, seedCockpit],
   );
 
   const totalUnrealized = useMemo(
@@ -360,8 +572,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             <span className="rt-card-t">Paper Trading</span>
           </div>
           <p>
-            Ainda não tens um portfolio virtual. Define o cash inicial e cria um —
-            nenhuma ordem real é enviada em circunstância alguma.
+            Ainda não tens um portfolio virtual. Define o cash inicial (mínimo $1.000)
+            e cria um — nenhuma ordem real é enviada em circunstância alguma.
           </p>
           <div className="pp-setup-row">
             <input
@@ -381,7 +593,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
                   const created = await createPaperPortfolio(
                     apiBaseUrl,
                     authToken,
-                    Number(initialCash) || 100_000,
+                    Math.max(1000, Number(initialCash) || 100_000),
                   );
                   setPortfolio(created);
                   setPortfolioMissing(false);
@@ -590,6 +802,18 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
           )}
         </section>
       </div>
+
+      {portfolio && (
+        <SettingsPanel
+          key={`${portfolio.id}-${portfolio.initial_cash}`}
+          portfolio={portfolio}
+          equity={state.pnl?.equity ?? portfolio.equity}
+          busy={busy}
+          engineRunning={status?.running ?? false}
+          onSave={saveSettings}
+          onReset={resetPortfolio}
+        />
+      )}
     </div>
   );
 }

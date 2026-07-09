@@ -13,7 +13,8 @@ import {
 } from "./market/windowCandle";
 
 import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
-import { resolveFormingBar } from "./market/formingBar";
+import { useFormingBar } from "./market/useFormingBar";
+import { SystemStatusPanel } from "./config/SystemStatusPanel";
 import { findSignalsAtChartTime } from "./market/signalMarkers";
 import { PaperPage } from "./paper/PaperPage";
 import { RealtimePage } from "./realtime/RealtimePage";
@@ -69,7 +70,7 @@ type ApiBar = {
 type ViewTab = "market" | "signals" | "backtests" | "paper";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type SignalsSourceMode = "historical" | "live";
-type ConfigTab = "data" | "signals" | "execution" | "alerts";
+type ConfigTab = "system" | "data" | "signals" | "execution" | "alerts";
 
 type SignalItem = {
   id: number;
@@ -598,7 +599,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<ViewTab>("market");
   const [chartMode, setChartMode] = useState<ChartMode>("historico");
   const [showConfigPanel, setShowConfigPanel] = useState(false);
-  const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("signals");
+  const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("system");
   const [startDate, setStartDate] = useState<string>(
     toInputDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)),
   );
@@ -856,16 +857,11 @@ function App() {
     return () => globalThis.clearInterval(timer);
   }, []);
 
-  const liveSignalForming = useMemo(
-    () => {
-      if (!isLiveSignals || liveSignalQuotes.length === 0) {
-        return { forming: null, isLiveForming: false };
-      }
-      const lastQuote = liveSignalQuotes[liveSignalQuotes.length - 1];
-      return resolveFormingBar(lastQuote, candle, tick, marketNowMs);
-    },
-    [isLiveSignals, liveSignalQuotes, candle, tick, marketNowMs],
-  );
+  const liveSignalLastQuote =
+    isLiveSignals && liveSignalQuotes.length > 0
+      ? liveSignalQuotes[liveSignalQuotes.length - 1]
+      : null;
+  const liveSignalForming = useFormingBar(liveSignalLastQuote, candle, tick, marketNowMs);
 
   const followedSymbols = useMemo(() => {
     const set = new Set<string>();
@@ -3115,6 +3111,13 @@ function App() {
               <div className="rt-seg">
                 <button
                   type="button"
+                  className={activeConfigTab === "system" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("system")}
+                >
+                  Sistema
+                </button>
+                <button
+                  type="button"
                   className={activeConfigTab === "data" ? "rt-seg-active" : ""}
                   onClick={() => setActiveConfigTab("data")}
                 >
@@ -3144,6 +3147,18 @@ function App() {
               </div>
             </nav>
             <div className="config-sections">
+              {activeConfigTab === "system" && (
+                <section className="config-section">
+                  <div className="config-section-header">
+                    <h4>Diagnóstico do sistema</h4>
+                    <p>
+                      Estado dos pontos fundamentais: base de dados, IB Gateway, feed de dados,
+                      frescura das barras e engine paper.
+                    </p>
+                  </div>
+                  <SystemStatusPanel apiBaseUrl={API_BASE_URL} authToken={authToken} />
+                </section>
+              )}
               {activeConfigTab === "data" && (
                 <section className="config-section">
                   <div className="config-section-header">

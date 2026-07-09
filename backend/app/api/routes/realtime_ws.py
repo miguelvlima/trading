@@ -19,7 +19,6 @@ against ``FakeStreamingProvider`` (no Gateway).
 from __future__ import annotations
 
 import asyncio
-import itertools
 from collections.abc import Callable
 from contextlib import suppress
 from decimal import Decimal
@@ -32,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.db.dependencies import get_db_session
 from app.db.models import User
+from app.services.data_feed.client_ids import next_ws_client_id
 from app.services.data_feed.indices import index_keys
 from app.services.data_feed.streaming import (
     DEFAULT_MAX_LINES,
@@ -54,13 +54,6 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 # provider cannot stream (e.g. yfinance), so the route degrades gracefully.
 StreamProviderFactory = Callable[[], StreamingProvider | None]
 
-# Rotating client-id offset per streaming session. A fixed id collides ("326
-# client id in use" -> handshake timeout) when a previous session has not fully
-# released — common with rapid reconnects or React StrictMode double-mounts — so
-# each new session takes a distinct id, well clear of the polling worker's.
-_stream_client_seq = itertools.count()
-
-
 def _build_ibkr_streaming_provider(settings: Settings) -> StreamingProvider | None:
     """Best-effort IBKR streaming provider; None if unavailable.
 
@@ -74,8 +67,9 @@ def _build_ibkr_streaming_provider(settings: Settings) -> StreamingProvider | No
     except ImportError:
         logger.error("ibkr_streaming_unavailable", hint="pip install ib_insync")
         return None
-    # base+10 .. base+209, distinct from the worker (base) and per session.
-    client_id = settings.ibkr_client_id + 10 + (next(_stream_client_seq) % 200)
+    # base+10 .. base+209, distinct from the worker (base+0..9) and per session;
+    # pid-seeded (client_ids.py) so parallel processes/reloads never collide (326).
+    client_id = next_ws_client_id(settings.ibkr_client_id)
     return IBKRStreamingProvider(
         host=settings.ibkr_gateway_host,
         port=settings.ibkr_gateway_port,

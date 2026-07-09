@@ -77,6 +77,58 @@ def test_list_instruments_and_bars(tmp_path: Path) -> None:
     assert bars_response.json()[0]["close"] == "105.00000000"
 
 
+def test_list_market_bars_keeps_most_recent_when_over_limit(tmp_path: Path) -> None:
+    """``limit`` must trim the OLDEST bars: a chart asking for the last N bars
+    would otherwise render weeks-old candles and treat the DB as stale."""
+    test_session_factory = _build_test_session_factory(tmp_path)
+
+    def override_get_db_session():
+        session = test_session_factory()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, email="user@example.com", password_hash="hash"
+    )
+
+    with test_session_factory() as session:
+        instrument = Instrument(symbol="AMD", name="AMD", exchange="NASDAQ", currency="USD")
+        session.add(instrument)
+        session.flush()
+        start = datetime(2026, 7, 1, tzinfo=UTC)
+        for day in range(5):
+            session.add(
+                MarketBar(
+                    instrument_id=instrument.id,
+                    timeframe="1d",
+                    timestamp=start + timedelta(days=day),
+                    open=Decimal("100"),
+                    high=Decimal("110"),
+                    low=Decimal("95"),
+                    close=Decimal(str(100 + day)),
+                    volume=Decimal("1000"),
+                )
+            )
+        session.commit()
+
+    client = TestClient(app)
+    response = client.get(
+        "/market-data/bars", params={"symbol": "AMD", "timeframe": "1d", "limit": 2}
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 2
+    # The two newest bars, still in ascending order.
+    assert payload[0]["timestamp"].startswith("2026-07-04")
+    assert payload[1]["timestamp"].startswith("2026-07-05")
+
+
 def test_follow_creates_instrument_then_unfollow_preserves_bars(tmp_path: Path) -> None:
     test_session_factory = _build_test_session_factory(tmp_path)
 

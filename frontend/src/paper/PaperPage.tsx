@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchInstruments } from "../realtime/api";
+import { CandleChart } from "../realtime/CandleChart";
 import { fmtPrice } from "../realtime/format";
+import { useBars } from "../realtime/useBars";
+import {
+  fetchLimitFor,
+  WINDOW_SECONDS,
+  type WindowCode,
+} from "../realtime/windowCandle";
 import {
   approvePaperOrder,
   cancelPaperOrder,
@@ -279,6 +286,139 @@ function PendingOrderCard({
         </button>
       </div>
     </div>
+  );
+}
+
+// -- market carousel -------------------------------------------------------------
+
+const CAROUSEL_WINDOWS: Array<{ code: WindowCode; label: string }> = [
+  { code: "1mo", label: "1M" },
+  { code: "1y", label: "1A" },
+  { code: "all", label: "Tudo" },
+];
+
+function MarketCarousel({
+  apiBaseUrl,
+  authToken,
+  symbols,
+  positions,
+}: {
+  apiBaseUrl: string;
+  authToken: string;
+  symbols: string[];
+  positions: LivePosition[];
+}) {
+  const [index, setIndex] = useState(0);
+  const [chartWindow, setChartWindow] = useState<WindowCode>("1mo");
+  const count = symbols.length;
+  const current = count > 0 ? symbols[((index % count) + count) % count] : null;
+  const { bars, loading, error } = useBars(
+    apiBaseUrl,
+    authToken,
+    current ?? "",
+    "1d",
+    chartWindow,
+    fetchLimitFor(chartWindow, "1d"),
+    20000,
+    current !== null,
+  );
+
+  const position = positions.find((item) => item.symbol === current) ?? null;
+  const lastClose = bars.length > 0 ? Number(bars[bars.length - 1].close) : null;
+  const prevClose = bars.length > 1 ? Number(bars[bars.length - 2].close) : null;
+  // Live position price beats the (possibly day-old) last persisted candle.
+  const price = position?.last_price ?? lastClose;
+  const changePct =
+    price !== null && prevClose !== null && prevClose > 0
+      ? ((price - prevClose) / prevClose) * 100
+      : null;
+
+  if (count === 0) return null;
+  const step = (delta: number) => setIndex((value) => (value + delta + count) % count);
+
+  return (
+    <section className="rt-card pp-panel pp-panel-wide">
+      <div className="rt-card-h pp-carousel-head">
+        <button
+          type="button"
+          className="pp-btn pp-btn-sm"
+          onClick={() => step(-1)}
+          disabled={count < 2}
+          aria-label="símbolo anterior"
+        >
+          ◀
+        </button>
+        <span className="rt-card-t pp-carousel-title">
+          {current}
+          {price !== null && <b> {fmtPrice(price)}</b>}
+          {changePct !== null && (
+            <span className={changePct >= 0 ? "rt-up" : "rt-down"}>
+              {" "}
+              {changePct >= 0 ? "+" : ""}
+              {changePct.toFixed(2)}%
+            </span>
+          )}
+          {changePct !== null && <span className="pp-muted"> vs fecho anterior</span>}
+        </span>
+        <span className="pp-carousel-windows">
+          {CAROUSEL_WINDOWS.map((option) => (
+            <button
+              key={option.code}
+              type="button"
+              className={`pp-chip ${chartWindow === option.code ? "pp-chip-on" : ""}`}
+              onClick={() => setChartWindow(option.code)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </span>
+        <span className="pp-muted">
+          {(((index % count) + count) % count) + 1} de {count}
+        </span>
+        <button
+          type="button"
+          className="pp-btn pp-btn-sm"
+          onClick={() => step(1)}
+          disabled={count < 2}
+          aria-label="próximo símbolo"
+        >
+          ▶
+        </button>
+      </div>
+      {error ? (
+        <p className="pp-error">{error}</p>
+      ) : loading && bars.length === 0 ? (
+        <p className="pp-muted">a carregar velas de {current}…</p>
+      ) : bars.length === 0 ? (
+        <p className="pp-muted">Sem barras para {current} ainda.</p>
+      ) : (
+        <CandleChart
+          bars={bars}
+          forming={null}
+          indicators={[]}
+          windowSeconds={WINDOW_SECONDS[chartWindow]}
+        />
+      )}
+      <div className="pp-carousel-foot">
+        {position ? (
+          <>
+            <span>
+              Posição: <b>{position.quantity.toLocaleString()}</b> @{" "}
+              {fmtPrice(position.avg_entry_price)}
+            </span>
+            {position.stop_price !== null && (
+              <span className="pp-muted">stop {fmtPrice(position.stop_price)}</span>
+            )}
+            {position.take_profit_price !== null && (
+              <span className="pp-muted">TP {fmtPrice(position.take_profit_price)}</span>
+            )}
+            <PnlCell value={position.unrealized_pnl} />
+          </>
+        ) : (
+          <span className="pp-muted">Sem posição aberta neste símbolo.</span>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -809,6 +949,13 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         onResetKillSwitch={() => void act(() => resetKillSwitch(apiBaseUrl, authToken))}
       />
       {(error || wsError) && <p className="pp-error">{error ?? wsError}</p>}
+
+      <MarketCarousel
+        apiBaseUrl={apiBaseUrl}
+        authToken={authToken}
+        symbols={status?.tracked_symbols ?? []}
+        positions={state.positions}
+      />
 
       <section className="rt-card pp-panel pp-panel-wide">
         <div className="rt-card-h">

@@ -526,3 +526,31 @@
 .pp-table-scroll {
   overflow-x: auto;
 }
+
+/* -- market carousel ---------------------------------------------------------- */
+
+.pp-carousel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pp-carousel-title {
+  flex: 1;
+  min-width: 200px;
+}
+
+.pp-carousel-windows {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pp-carousel-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 13px;
+}

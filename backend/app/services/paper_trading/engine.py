@@ -572,6 +572,42 @@ class PaperEngine:
         settings = settings or self.settings_for(portfolio)
         now = self._now_fn()
 
+        if order.side == "SELL":
+            # The position may have been closed between approval and fill (e.g.
+            # a protective exit raced a manual close). Re-check it here, where
+            # cancelling is still safe — _apply_fill must never touch cash for
+            # a position that no longer exists.
+            position = self._position_for(db, order.symbol)
+            available = float(position.quantity) if position is not None else 0.0
+            if position is None or available <= 0:
+                order.status = STATUS_CANCELLED
+                order.decided_at = now
+                order.reject_reason = (
+                    "Posição já não existia no momento do fill (fechada entretanto)."
+                )
+                self._emit(
+                    db,
+                    ev.EVENT_ORDER_CANCELLED,
+                    f"Ordem #{order.id} cancelada: posição em {order.symbol} "
+                    "já não existia no momento do fill.",
+                    symbol=order.symbol,
+                    severity="warn",
+                    payload={"order_id": order.id, "code": "position_gone"},
+                )
+                return None, None
+            if float(order.quantity) > available + 1e-9:
+                self._emit(
+                    db,
+                    ev.EVENT_ORDER_ADJUSTED,
+                    f"Ordem #{order.id} ajustada: quantidade {float(order.quantity):g} "
+                    f"reduzida às {available:g} ações disponíveis em {order.symbol}.",
+                    symbol=order.symbol,
+                    severity="warn",
+                    payload={"order_id": order.id, "code": "quantity_clamped"},
+                )
+                # Clamp before compute_fill so the fee is charged on the real quantity.
+                order.quantity = _DEC(available)
+
         result = compute_fill(
             side=order.side,
             quantity=float(order.quantity),
@@ -625,9 +661,16 @@ class PaperEngine:
                 )
                 position.quantity = _DEC(new_qty)
         else:
-            if position is None or float(position.quantity) < quantity - 1e-9:
-                # Defensive: risk rules prevent this; never let cash go negative silently.
-                quantity = float(position.quantity) if position else 0.0
+            if position is None:
+                # try_fill_order cancels SELLs whose position vanished; reaching
+                # this point without one is a bug — fail loudly rather than
+                # corrupt cash/PnL silently.
+                raise RuntimeError(
+                    f"SELL order #{order.id} ({order.symbol}) reached _apply_fill "
+                    "without an open position; try_fill_order should have cancelled it."
+                )
+            if float(position.quantity) < quantity - 1e-9:
+                quantity = float(position.quantity)
             realized = (fill.price - float(position.avg_entry_price)) * quantity - fill.fee
             portfolio.cash = _DEC(float(portfolio.cash) + fill.price * quantity - fill.fee)
             position.quantity = _DEC(float(position.quantity) - quantity)

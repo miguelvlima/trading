@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import structlog
 from sqlalchemy import func, select
@@ -21,6 +22,7 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.services.data_feed.client_ids import next_engine_client_id
 from app.services.data_feed.types import IndexQuote, StreamingProvider, Tick
+from app.services.paper_trading.bar_aggregator import AggregatedBar, BarAggregator
 from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import EventHub, hub as global_hub
 from app.services.paper_trading.quotes import QuoteCache
@@ -224,6 +226,14 @@ class PaperEngineRuntime:
         self._signal_results: dict[tuple[str, str], dict[str, object]] = {}
         self.last_signals: dict[str, dict[str, object]] = {}
         self._last_equity_point_at: datetime | None = None
+        # Tick -> intraday MarketBar pipeline: fed on the provider thread,
+        # drained/persisted by the poll loop. Without it, strategies on a
+        # "1m"/"5m" timeframe would never see a new closed bar.
+        self.bar_aggregator: BarAggregator | None = (
+            BarAggregator()
+            if getattr(settings, "paper_engine_intraday_enabled", True)
+            else None
+        )
 
     @property
     def has_provider(self) -> bool:
@@ -237,6 +247,8 @@ class PaperEngineRuntime:
 
     def _on_tick(self, tick: Tick) -> None:
         self.quotes.update_from_tick(tick)
+        if self.bar_aggregator is not None:
+            self.bar_aggregator.update_from_tick(tick)
 
     def _on_index(self, quote: IndexQuote) -> None:  # engine does not use indices
         return
@@ -362,6 +374,7 @@ class PaperEngineRuntime:
             self.engine.check_protective_exits(db, portfolio)
             self._retry_approved_orders(db, portfolio)
             self.engine.expire_stale_proposals(db, portfolio)
+            self._persist_intraday_bars(db)
             self._evaluate_signals(db, portfolio, risk)
             self._broadcast_state(db, portfolio, risk)
             db.commit()
@@ -370,6 +383,73 @@ class PaperEngineRuntime:
             raise
         finally:
             db.close()
+
+    def _persist_intraday_bars(self, db: Session) -> None:
+        """Upsert the closed intraday buckets into MarketBar (idempotent).
+
+        Runs before ``_evaluate_signals`` so a bar that just closed is already
+        visible to ``load_strategy_bars`` in the same poll. Uses a portable
+        select-then-write upsert keyed on (instrument_id, timeframe, timestamp)
+        — a handful of rows per poll, so no need for dialect-specific INSERTs.
+        """
+        if self.bar_aggregator is None:
+            return
+        bars = self.bar_aggregator.drain_closed_bars(datetime.now(UTC))
+        if not bars:
+            return
+        instrument_ids: dict[str, int] = {}
+        for bar in bars:
+            instrument_id = instrument_ids.get(bar.symbol)
+            if instrument_id is None:
+                instrument_id = self._instrument_id_for(db, bar.symbol)
+                instrument_ids[bar.symbol] = instrument_id
+            self._upsert_market_bar(db, instrument_id, bar)
+        logger.info(
+            "paper_engine_intraday_bars_persisted",
+            portfolio_id=self.portfolio_id,
+            bars=len(bars),
+        )
+
+    @staticmethod
+    def _instrument_id_for(db: Session, symbol: str) -> int:
+        instrument = db.execute(
+            select(Instrument).where(Instrument.symbol == symbol)
+        ).scalar_one_or_none()
+        if instrument is None:
+            instrument = Instrument(symbol=symbol, name=None, currency="USD")
+            db.add(instrument)
+            db.flush()
+        return instrument.id
+
+    @staticmethod
+    def _upsert_market_bar(db: Session, instrument_id: int, bar: AggregatedBar) -> None:
+        row = db.execute(
+            select(MarketBar).where(
+                MarketBar.instrument_id == instrument_id,
+                MarketBar.timeframe == bar.timeframe,
+                MarketBar.timestamp == bar.timestamp,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            db.add(
+                MarketBar(
+                    instrument_id=instrument_id,
+                    timeframe=bar.timeframe,
+                    timestamp=bar.timestamp,
+                    open=Decimal(str(bar.open)),
+                    high=Decimal(str(bar.high)),
+                    low=Decimal(str(bar.low)),
+                    close=Decimal(str(bar.close)),
+                    volume=Decimal(str(bar.volume)),
+                )
+            )
+        else:
+            row.open = Decimal(str(bar.open))
+            row.high = Decimal(str(bar.high))
+            row.low = Decimal(str(bar.low))
+            row.close = Decimal(str(bar.close))
+            row.volume = Decimal(str(bar.volume))
+        db.flush()
 
     def _retry_approved_orders(self, db: Session, portfolio: PaperPortfolio) -> None:
         approved = list(

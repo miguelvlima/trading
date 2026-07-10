@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # fills, and how many closed bars feed each strategy evaluation.
     paper_engine_poll_seconds: float = 15.0
     paper_engine_bars_limit: int = 300
+    # Build 1m/5m MarketBar rows from the tick stream (required for intraday
+    # timeframes — historical providers only backfill daily bars).
+    paper_engine_intraday_enabled: bool = True
 
     @property
     def cors_origins(self) -> list[str]:

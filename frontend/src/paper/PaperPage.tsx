@@ -60,6 +60,14 @@ function fmtTime(iso: string): string {
   });
 }
 
+// Local date+time with seconds, always showing the date ("08/07 16:57:03").
+function fmtDateTime(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  const day = parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+  return `${day} ${fmtTime(iso)}`;
+}
+
 // Local date+time, dropping the date when it is today ("16:57" vs "08/07 16:57").
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—";
@@ -1488,7 +1496,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             )}
             {state.events.map((event) => (
               <li key={event.id} className={`pp-event pp-event-${eventTone(event)}`}>
-                <span className="pp-event-time">{fmtTime(event.created_at)}</span>
+                <span className="pp-event-time">{fmtDateTime(event.created_at)}</span>
                 {event.symbol && <span className="pp-event-symbol">{event.symbol}</span>}
                 <span className="pp-event-msg">{event.message}</span>
               </li>

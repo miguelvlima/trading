@@ -2740,7 +2740,10 @@ function App() {
       setEntryConfirmationBars: setBacktestEntryConfirmationBars,
       setStrategyMinStrengthPct: setBacktestStrategyMinStrengthPct,
       setActiveStrategies,
-      setTimeframe: (timeframe: string) => setCandle(parseCandleCode(timeframe)),
+      setTimeframe: (timeframe: string) => {
+        setCandle(parseCandleCode(timeframe));
+        setManualCandle(true);
+      },
     }),
     [],
   );

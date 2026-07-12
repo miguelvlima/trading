@@ -495,6 +495,21 @@
   color: var(--rt-text);
 }
 
+/* Clickable variant: drives the market-carousel selection. */
+.pp-symbol-chip-btn {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.pp-symbol-chip-btn:hover {
+  border-color: var(--rt-muted, #8a8f98);
+}
+
+.pp-symbol-chip-on {
+  border-color: var(--rt-up, #22c55e);
+  color: var(--rt-up, #22c55e);
+}
+
 .pp-eval {
   color: var(--rt-muted, #8a8f98);
   font-size: 12px;

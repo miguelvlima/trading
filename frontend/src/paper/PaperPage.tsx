@@ -209,6 +209,8 @@ function StatusBar({
   onStop,
   onResetKillSwitch,
   busy,
+  selectedSymbol,
+  onSelectSymbol,
 }: {
   status: EngineStatusWire | null;
   wsStatus: "connecting" | "open" | "closed";
@@ -216,6 +218,8 @@ function StatusBar({
   onStop: () => void;
   onResetKillSwitch: () => void;
   busy: boolean;
+  selectedSymbol: string | null;
+  onSelectSymbol: (symbol: string) => void;
 }) {
   const running = status?.running ?? false;
   return (
@@ -224,11 +228,21 @@ function StatusBar({
         <i className="rt-dot" /> Engine {running ? "LIGADO" : "PARADO"}
       </span>
       {(status?.tracked_symbols?.length ?? 0) > 0 && (
-        <span className="pp-symbols" title="Símbolos seguidos pelo engine">
+        <span
+          className="pp-symbols"
+          title="Símbolos seguidos pelo engine — clica para mostrar no gráfico"
+        >
           {status!.tracked_symbols.map((symbol) => (
-            <span key={symbol} className="pp-symbol-chip">
+            <button
+              key={symbol}
+              type="button"
+              className={`pp-symbol-chip pp-symbol-chip-btn ${
+                symbol === selectedSymbol ? "pp-symbol-chip-on" : ""
+              }`}
+              onClick={() => onSelectSymbol(symbol)}
+            >
               {symbol}
-            </span>
+            </button>
           ))}
         </span>
       )}
@@ -363,6 +377,8 @@ function MarketCarousel({
   positions,
   signals,
   signalHistory,
+  selectedSymbol,
+  onSelect,
 }: {
   apiBaseUrl: string;
   authToken: string;
@@ -370,11 +386,19 @@ function MarketCarousel({
   positions: LivePosition[];
   signals: Record<string, SymbolSignals>;
   signalHistory: PaperSignalWire[];
+  // Controlled by the parent so the status-bar symbol chips and the carousel
+  // arrows drive the SAME selection.
+  selectedSymbol: string | null;
+  onSelect: (symbol: string) => void;
 }) {
-  const [index, setIndex] = useState(0);
   const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
   const count = symbols.length;
-  const current = count > 0 ? symbols[((index % count) + count) % count] : null;
+  const current =
+    count > 0
+      ? selectedSymbol && symbols.includes(selectedSymbol)
+        ? selectedSymbol
+        : symbols[0]
+      : null;
   const candle = suggestedCandle(chartWindow); // 30m/1h->1m, 4h/1d->5m, 1mo/1y->1d
   // IBKR second-based durations (30m/1h/4h) count wall-clock time, so outside
   // RTH they return ZERO bars. Fetch the whole last trading day instead and
@@ -425,7 +449,11 @@ function MarketCarousel({
     CAROUSEL_WINDOWS.find((option) => option.code === chartWindow)?.trendLabel ?? "";
 
   if (count === 0) return null;
-  const step = (delta: number) => setIndex((value) => (value + delta + count) % count);
+  const step = (delta: number) => {
+    if (count === 0 || current === null) return;
+    const currentIndex = symbols.indexOf(current);
+    onSelect(symbols[(currentIndex + delta + count) % count]);
+  };
 
   return (
     <section className="rt-card pp-panel pp-panel-wide">
@@ -455,7 +483,7 @@ function MarketCarousel({
           ))}
         </span>
         <span className="pp-muted">
-          {(((index % count) + count) % count) + 1} de {count}
+          {current !== null ? symbols.indexOf(current) + 1 : 0} de {count}
         </span>
         <button
           type="button"
@@ -1109,6 +1137,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   const [signalHistory, setSignalHistory] = useState<PaperSignalWire[]>([]);
   const [instruments, setInstruments] = useState<string[]>([]);
   const [strategies, setStrategies] = useState<string[]>([]);
+  // Carousel selection lives here so the status-bar symbol chips can drive it.
+  const [carouselSymbol, setCarouselSymbol] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restStatus, setRestStatus] = useState<EngineStatusWire | null>(null);
@@ -1317,6 +1347,14 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
     [state.positions, state.pnl, portfolio],
   );
 
+  // Effective carousel selection: the user's pick while it is still tracked,
+  // else the first tracked symbol — chips and carousel highlight the same one.
+  const trackedSymbols = status?.tracked_symbols ?? [];
+  const activeCarouselSymbol =
+    carouselSymbol && trackedSymbols.includes(carouselSymbol)
+      ? carouselSymbol
+      : trackedSymbols[0] ?? null;
+
   if (portfolioMissing) {
     return (
       <div className="rt-page pp-page">
@@ -1371,6 +1409,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         onStart={() => void act(() => startEngine(apiBaseUrl, authToken))}
         onStop={() => void act(() => stopEngine(apiBaseUrl, authToken))}
         onResetKillSwitch={() => void act(() => resetKillSwitch(apiBaseUrl, authToken))}
+        selectedSymbol={activeCarouselSymbol}
+        onSelectSymbol={setCarouselSymbol}
       />
       {(error || wsError) && <p className="pp-error">{error ?? wsError}</p>}
 
@@ -1381,6 +1421,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         positions={state.positions}
         signals={state.signals}
         signalHistory={dedupedSignals}
+        selectedSymbol={activeCarouselSymbol}
+        onSelect={setCarouselSymbol}
       />
 
       <SignalHistoryPanel signals={dedupedSignals} />

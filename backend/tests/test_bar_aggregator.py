@@ -111,33 +111,34 @@ def test_volume_is_delta_of_cumulative_session_volume() -> None:
 
 
 def test_update_from_tick_is_thread_safe() -> None:
-    """N threads a alimentar o mesmo minuto não perdem ticks (volume soma certo)."""
+    """Threads concorrentes não perdem ticks nem corrompem buckets partilhados.
+
+    Cada thread alimenta o SEU símbolo: o volume cumulativo de sessão só é
+    coerente por símbolo (leituras fora de ordem parecem resets), por isso a
+    concorrência real acontece entre símbolos no dict/lock partilhados.
+    """
     agg = BarAggregator(timeframes=("1m",))
-    agg.update_from_tick(tick("AAPL", T0, last=100.0, volume=0.0))  # baseline
-
     threads_n, ticks_per_thread = 8, 200
-    counter_lock = threading.Lock()
-    cumulative = {"value": 0.0}
 
-    def feed() -> None:
-        for _ in range(ticks_per_thread):
-            with counter_lock:
-                cumulative["value"] += 10.0
-                value = cumulative["value"]
+    def feed(symbol: str) -> None:
+        for step in range(1, ticks_per_thread + 1):
             agg.update_from_tick(
-                tick("AAPL", T0 + timedelta(seconds=30), last=100.0, volume=value)
+                tick(symbol, T0 + timedelta(seconds=30), last=100.0, volume=step * 10.0)
             )
 
-    workers = [threading.Thread(target=feed) for _ in range(threads_n)]
+    workers = [
+        threading.Thread(target=feed, args=(f"SYM{index}",)) for index in range(threads_n)
+    ]
     for worker in workers:
         worker.start()
     for worker in workers:
         worker.join()
 
     bars = agg.drain_closed_bars(T0 + timedelta(minutes=1))
-    assert len(bars) == 1
-    # Every delta must have been accumulated exactly once.
-    assert bars[0].volume == pytest.approx(threads_n * ticks_per_thread * 10.0)
+    assert len(bars) == threads_n  # one bar per symbol, none lost
+    for bar in bars:
+        # First reading is the unknown baseline (delta 0); the rest sum fully.
+        assert bar.volume == pytest.approx((ticks_per_thread - 1) * 10.0)
 
 
 # -- runtime integration -------------------------------------------------------

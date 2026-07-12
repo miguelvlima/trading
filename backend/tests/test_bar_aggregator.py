@@ -226,3 +226,61 @@ def test_runtime_persists_1m_bars_readable_by_strategies(tmp_path: Path) -> None
             )
         )
         assert count == 2
+
+
+def test_evaluate_publishes_intraday_warmup_progress(tmp_path: Path) -> None:
+    """Com menos de 30 barras fechadas, o monitor mostra o progresso do
+    warm-up (bar_count/bars_required) em vez de o símbolo parecer ignorado."""
+    from app.services.paper_trading.runtime import MIN_STRATEGY_BARS
+    from app.services.paper_trading.types import RiskSettings
+
+    factory = build_session_factory(tmp_path)
+    with factory() as session:
+        user = User(email="warmup@example.com", password_hash="hash")
+        session.add(user)
+        session.flush()
+        portfolio = PaperPortfolio(
+            owner_user_id=user.id,
+            initial_cash=Decimal("100000"),
+            cash=Decimal("100000"),
+            equity=Decimal("100000"),
+            risk_settings={"timeframe": "1m", "symbols": ["AAPL"]},
+            engine_running=True,
+        )
+        session.add(portfolio)
+        session.commit()
+        portfolio_id = portfolio.id
+
+    settings = SimpleNamespace(
+        ibkr_market_data_type=1,
+        paper_engine_poll_seconds=5.0,
+        paper_engine_bars_limit=300,
+        paper_engine_intraday_enabled=True,
+        realtime_feed_provider="none",
+        realtime_feed_symbol_list=["SPY"],
+    )
+    runtime = PaperEngineRuntime(
+        portfolio_id, settings=settings, provider=None, poll_seconds=5.0
+    )
+    runtime.tracked_symbols = ["AAPL"]
+
+    # Three 1m buckets, all in the past so the drain closes every one of them
+    # (persist drains against the real clock) — still far below the 30 needed.
+    runtime._on_tick(tick("AAPL", T0 + timedelta(seconds=5), last=100.0))
+    runtime._on_tick(tick("AAPL", T0 + timedelta(seconds=65), last=101.0))
+    runtime._on_tick(tick("AAPL", T0 + timedelta(seconds=125), last=102.0))
+
+    with factory() as session:
+        portfolio = session.get(PaperPortfolio, portfolio_id)
+        risk = RiskSettings.from_json(portfolio.risk_settings)
+        runtime._persist_intraday_bars(session)
+        runtime._evaluate_signals(session, portfolio, risk)
+        session.commit()
+
+    monitor = runtime.last_signals["AAPL"]
+    assert monitor["bar_count"] == 3
+    assert monitor["bars_required"] == MIN_STRATEGY_BARS
+    assert monitor["bar_time"] is not None
+    assert all(entry["outcome"] == "pending" for entry in monitor["signals"])
+    assert runtime.last_evaluation is not None
+    assert runtime.last_evaluation["no_bars"] == 1  # counted as warming up

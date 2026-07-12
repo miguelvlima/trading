@@ -574,7 +574,11 @@ function MarketCarousel({
                 <span className="pp-field-hint">
                   {monitor.no_quote
                     ? "à espera de cotação (mercado fechado ou feed em baixo) — retenta a cada ciclo"
-                    : `barra de ${fmtWhen(monitor.bar_time)} — novo veredicto quando fechar a próxima barra`}
+                    : monitor.bar_count !== undefined &&
+                        monitor.bars_required !== undefined &&
+                        monitor.bar_count < monitor.bars_required
+                      ? `a construir histórico: ${monitor.bar_count}/${monitor.bars_required} barras fechadas — as estratégias avaliam quando houver ${monitor.bars_required}`
+                      : `barra de ${fmtWhen(monitor.bar_time)} — novo veredicto quando fechar a próxima barra`}
                 </span>
               </div>
             );

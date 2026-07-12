@@ -38,6 +38,10 @@ logger = structlog.get_logger(__name__)
 
 _LIVENESS_BY_MD_TYPE = {1: "REAL-TIME", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED-FROZEN"}
 
+# Closed bars a strategy needs before its verdict means anything (indicator
+# warm-up). On a fresh intraday start this is the wait the cockpit shows.
+MIN_STRATEGY_BARS = 30
+
 
 def _feed_problem_message(status) -> str:
     """Ledger message that tells the user WHY the feed is not fresh."""
@@ -496,8 +500,24 @@ class PaperEngineRuntime:
             bars = load_strategy_bars(
                 db, symbol, risk.timeframe, self._settings.paper_engine_bars_limit
             )
-            if len(bars) < 30:
+            if len(bars) < MIN_STRATEGY_BARS:
                 counts["no_bars"] += 1
+                # Publish the warm-up progress so the cockpit can show
+                # "a construir histórico: N/30 barras" instead of a symbol
+                # that just looks ignored while the aggregator fills the DB.
+                self.last_signals[symbol] = {
+                    "checked_at": datetime.now(UTC).isoformat(),
+                    "bar_time": bars[-1].timestamp.isoformat() if bars else None,
+                    "bar_count": len(bars),
+                    "bars_required": MIN_STRATEGY_BARS,
+                    "signals": [
+                        self._signal_results.get(
+                            (symbol, strategy),
+                            {"strategy": strategy, "outcome": "pending"},
+                        )
+                        for strategy in strategies
+                    ],
+                }
                 continue
             counts["evaluated"] += 1
             last_ts = bars[-1].timestamp
@@ -547,6 +567,8 @@ class PaperEngineRuntime:
             self.last_signals[symbol] = {
                 "checked_at": datetime.now(UTC).isoformat(),
                 "bar_time": last_ts.isoformat(),
+                "bar_count": len(bars),
+                "bars_required": MIN_STRATEGY_BARS,
                 "signals": [
                     self._signal_results.get(
                         (symbol, strategy), {"strategy": strategy, "outcome": "pending"}

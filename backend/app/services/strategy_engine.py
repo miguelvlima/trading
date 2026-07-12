@@ -10,11 +10,16 @@ Signal contract (no lookahead across bars):
   or ``signal_close`` to enter at the close of T after the signal is known.
 """
 
+import math
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from app.services.indicator_engine import atr, bollinger_bands, ema, macd, rsi, sma
+
+_NY = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -53,6 +58,26 @@ class BaseStrategy(ABC):
 
 def _clamp_strength(raw_value: float) -> float:
     return max(0.0, min(1.0, raw_value))
+
+
+def _session_day(timestamp: datetime) -> date:
+    """Trading-session date of a bar, in exchange local time.
+
+    Naive timestamps are treated as UTC (how MarketBar rows come out of the
+    DB); the NY conversion keeps a session's bars together even though an
+    American session crosses midnight UTC in winter.
+    """
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(_NY).date()
+
+
+def _group_by_session(bars: list[BarInput]) -> dict[date, list[int]]:
+    """Bar indices per NY session day, preserving intra-session order."""
+    sessions: dict[date, list[int]] = {}
+    for index, bar in enumerate(bars):
+        sessions.setdefault(_session_day(bar.timestamp), []).append(index)
+    return sessions
 
 
 class RsiMeanReversionStrategy(BaseStrategy):
@@ -276,11 +301,177 @@ class BollingerBreakoutStrategy(BaseStrategy):
         return signals
 
 
+class OpeningRangeBreakoutStrategy(BaseStrategy):
+    """Breakout do range de abertura: high/low dos primeiros 30 min da sessão.
+
+    BUY quando um fecho posterior quebra acima do range high, SELL quando
+    quebra abaixo do range low — no máximo um sinal por direção por sessão.
+    O stop sugerido é o lado oposto do range (a invalidação natural do padrão).
+    """
+
+    name = "opening_range_breakout"
+    RANGE_MINUTES = 30
+    DEFAULT_RANGE_BARS = 6  # 30 min in 5m bars
+
+    @classmethod
+    def _range_bar_count(cls, bars: list[BarInput]) -> int:
+        """Bars that make up 30 minutes, from the modal spacing between bars.
+
+        The modal (not minimum) spacing survives session gaps and the odd
+        missing bar. Spacing above 30 min (daily bars) falls back to the 5m
+        default — the session grouping then leaves no room to signal, which
+        is the correct behaviour for a strategy that is intraday-only.
+        """
+        deltas = [
+            (bars[index].timestamp - bars[index - 1].timestamp).total_seconds()
+            for index in range(1, len(bars))
+        ]
+        deltas = [delta for delta in deltas if delta > 0]
+        if not deltas:
+            return cls.DEFAULT_RANGE_BARS
+        spacing = Counter(deltas).most_common(1)[0][0]
+        if spacing > cls.RANGE_MINUTES * 60:
+            return cls.DEFAULT_RANGE_BARS
+        return max(1, int(cls.RANGE_MINUTES * 60 // spacing))
+
+    def generate_signals(self, symbol: str, bars: list[BarInput]) -> list[StrategySignal]:
+        signals: list[StrategySignal] = []
+        if len(bars) < 2:
+            return signals
+        range_bars = self._range_bar_count(bars)
+
+        for indices in _group_by_session(bars).values():
+            if len(indices) <= range_bars:
+                continue
+            opening = [bars[i] for i in indices[:range_bars]]
+            range_high = max(bar.high for bar in opening)
+            range_low = min(bar.low for bar in opening)
+            width = range_high - range_low
+            if width <= 0:
+                continue
+
+            fired = {"BUY": False, "SELL": False}
+            for index in indices[range_bars:]:
+                bar = bars[index]
+                if not fired["BUY"] and bar.close > range_high:
+                    fired["BUY"] = True
+                    signals.append(
+                        StrategySignal(
+                            symbol=symbol,
+                            strategy=self.name,
+                            direction="BUY",
+                            strength=_clamp_strength((bar.close - range_high) / width),
+                            rationale=(
+                                f"Quebra acima do range de abertura ({bar.close:.2f} > "
+                                f"{range_high:.2f}; range {range_low:.2f}-{range_high:.2f})."
+                            ),
+                            timestamp=bar.timestamp,
+                            indicator_snapshot={
+                                "range_high": range_high,
+                                "range_low": range_low,
+                                "range_bars": float(range_bars),
+                            },
+                            # Invalidation = the far side of the opening range.
+                            suggested_stop_pct=(bar.close - range_low) / bar.close * 100.0,
+                        )
+                    )
+                elif not fired["SELL"] and bar.close < range_low:
+                    fired["SELL"] = True
+                    signals.append(
+                        StrategySignal(
+                            symbol=symbol,
+                            strategy=self.name,
+                            direction="SELL",
+                            strength=_clamp_strength((range_low - bar.close) / width),
+                            rationale=(
+                                f"Quebra abaixo do range de abertura ({bar.close:.2f} < "
+                                f"{range_low:.2f}; range {range_low:.2f}-{range_high:.2f})."
+                            ),
+                            timestamp=bar.timestamp,
+                            indicator_snapshot={
+                                "range_high": range_high,
+                                "range_low": range_low,
+                                "range_bars": float(range_bars),
+                            },
+                            suggested_stop_pct=(range_high - bar.close) / bar.close * 100.0,
+                        )
+                    )
+                if fired["BUY"] and fired["SELL"]:
+                    break
+        return signals
+
+
+class VwapReversionStrategy(BaseStrategy):
+    """Reversão à média do VWAP intradiário (reset por sessão).
+
+    BUY quando o fecho está mais de K desvios abaixo do VWAP, SELL simétrico.
+    O desvio-padrão é o dos desvios ANTERIORES da própria sessão — a barra em
+    avaliação nunca entra na régua que a mede.
+    """
+
+    name = "vwap_reversion"
+    K = 1.5
+    # Deviations needed before the session std is trustworthy; also keeps the
+    # noisy first half-hour (in 1m/5m bars) from firing on a cold start.
+    MIN_HISTORY = 10
+
+    def generate_signals(self, symbol: str, bars: list[BarInput]) -> list[StrategySignal]:
+        signals: list[StrategySignal] = []
+
+        for indices in _group_by_session(bars).values():
+            cumulative_pv = 0.0
+            cumulative_volume = 0.0
+            deviations: list[float] = []
+            for index in indices:
+                bar = bars[index]
+                typical = (bar.high + bar.low + bar.close) / 3.0
+                cumulative_pv += typical * bar.volume
+                cumulative_volume += bar.volume
+                if cumulative_volume <= 0:
+                    continue  # no volume yet: VWAP undefined, keep accumulating
+                session_vwap = cumulative_pv / cumulative_volume
+                deviation = bar.close - session_vwap
+
+                if len(deviations) >= self.MIN_HISTORY:
+                    mean = sum(deviations) / len(deviations)
+                    variance = sum((d - mean) ** 2 for d in deviations) / len(deviations)
+                    std = math.sqrt(variance)
+                    if std > 0:
+                        z_score = deviation / std
+                        if abs(z_score) >= self.K:
+                            direction = "BUY" if z_score < 0 else "SELL"
+                            side_text = "abaixo" if z_score < 0 else "acima"
+                            signals.append(
+                                StrategySignal(
+                                    symbol=symbol,
+                                    strategy=self.name,
+                                    direction=direction,
+                                    strength=_clamp_strength(
+                                        (abs(z_score) - self.K) / self.K
+                                    ),
+                                    rationale=(
+                                        f"Fecho {bar.close:.2f} está {abs(z_score):.1f} desvios "
+                                        f"{side_text} do VWAP da sessão ({session_vwap:.2f})."
+                                    ),
+                                    timestamp=bar.timestamp,
+                                    indicator_snapshot={
+                                        "vwap": session_vwap,
+                                        "deviation": deviation,
+                                        "z_score": z_score,
+                                    },
+                                )
+                            )
+                deviations.append(deviation)
+        return signals
+
+
 STRATEGY_REGISTRY: dict[str, BaseStrategy] = {
     RsiMeanReversionStrategy.name: RsiMeanReversionStrategy(),
     MacdCrossoverStrategy.name: MacdCrossoverStrategy(),
     SmaEmaCrossoverStrategy.name: SmaEmaCrossoverStrategy(),
     BollingerBreakoutStrategy.name: BollingerBreakoutStrategy(),
+    OpeningRangeBreakoutStrategy.name: OpeningRangeBreakoutStrategy(),
+    VwapReversionStrategy.name: VwapReversionStrategy(),
 }
 
 

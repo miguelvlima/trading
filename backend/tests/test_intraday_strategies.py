@@ -159,6 +159,77 @@ def test_vwap_reversion_handles_zero_volume_and_few_bars() -> None:
     assert run_strategy("vwap_reversion", "AAPL", []) == []
 
 
+# -- double top / double bottom -------------------------------------------------
+
+# Two tops at 110/110.2 (within 0.5%), neckline at the 100 low between them;
+# the close below 100 only happens at the last bar.
+DOUBLE_TOP_CLOSES = [
+    102.0, 104.0, 108.0, 110.0, 106.0, 103.0, 100.0,
+    104.0, 107.0, 110.2, 106.0, 103.0, 100.5, 99.0,
+]
+
+# Mirror image: bottoms at 110/109.9, neckline at the 120 high between them.
+DOUBLE_BOTTOM_CLOSES = [
+    118.0, 116.0, 112.0, 110.0, 114.0, 117.0, 120.0,
+    116.0, 113.0, 109.9, 114.0, 117.0, 119.5, 121.0,
+]
+
+
+def test_double_top_signals_only_on_neckline_break() -> None:
+    bars = flat_bars_5m(DOUBLE_TOP_CLOSES)
+
+    # One bar before the break: the pattern exists but MUST stay silent.
+    assert run_strategy("double_top_bottom", "AAPL", bars[:-1]) == []
+
+    signals = run_strategy("double_top_bottom", "AAPL", bars)
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.direction == "SELL"
+    assert signal.timestamp == bars[-1].timestamp  # the break bar, never earlier
+
+    height = (110.0 + 110.2) / 2.0 - 100.0
+    assert signal.indicator_snapshot["neckline"] == 100.0
+    assert signal.indicator_snapshot["pattern_height"] == pytest.approx(height)
+    assert signal.strength == pytest.approx(min(1.0, height / 99.0 * 10.0))
+    # Stop above the second top; target = measured move below the neckline.
+    assert signal.suggested_stop_pct == pytest.approx((110.2 - 99.0) / 99.0 * 100.0)
+    assert signal.suggested_take_profit_pct == pytest.approx(
+        (99.0 - (100.0 - height)) / 99.0 * 100.0
+    )
+
+
+def test_double_bottom_buy_on_neckline_break() -> None:
+    bars = flat_bars_5m(DOUBLE_BOTTOM_CLOSES)
+    assert run_strategy("double_top_bottom", "AAPL", bars[:-1]) == []
+
+    signals = run_strategy("double_top_bottom", "AAPL", bars)
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.direction == "BUY"
+    assert signal.timestamp == bars[-1].timestamp
+
+    height = 120.0 - (110.0 + 109.9) / 2.0
+    assert signal.suggested_stop_pct == pytest.approx((121.0 - 109.9) / 121.0 * 100.0)
+    assert signal.suggested_take_profit_pct == pytest.approx(
+        ((120.0 + height) - 121.0) / 121.0 * 100.0
+    )
+
+
+def test_double_top_requires_matching_tops() -> None:
+    # Second "top" 2% above the first: not a double top, breaking the low is
+    # just a pullback in an uptrend.
+    closes = [
+        102.0, 104.0, 108.0, 110.0, 106.0, 103.0, 100.0,
+        104.0, 108.0, 112.5, 106.0, 103.0, 100.5, 99.0,
+    ]
+    assert run_strategy("double_top_bottom", "AAPL", flat_bars_5m(closes)) == []
+
+
+def test_double_top_bottom_handles_few_bars() -> None:
+    assert run_strategy("double_top_bottom", "AAPL", flat_bars_5m([100.0, 110.0])) == []
+    assert run_strategy("double_top_bottom", "AAPL", []) == []
+
+
 # -- anti-lookahead on intraday bars -------------------------------------------
 
 
@@ -182,7 +253,9 @@ def _intraday_synthetic(count: int) -> list[BarInput]:
     return bars
 
 
-@pytest.mark.parametrize("strategy_name", ["opening_range_breakout", "vwap_reversion"])
+@pytest.mark.parametrize(
+    "strategy_name", ["opening_range_breakout", "vwap_reversion", "double_top_bottom"]
+)
 def test_intraday_strategies_are_prefix_invariant(strategy_name: str) -> None:
     """Same contract as test_strategy_lookahead, on genuinely intraday bars."""
     full_bars = _intraday_synthetic(60)

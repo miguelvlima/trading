@@ -17,7 +17,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from app.services.indicator_engine import atr, bollinger_bands, ema, macd, rsi, sma
+from app.services.indicator_engine import (
+    atr,
+    bollinger_bands,
+    ema,
+    macd,
+    rsi,
+    sma,
+    swing_pivots,
+)
 
 _NY = ZoneInfo("America/New_York")
 
@@ -465,6 +473,108 @@ class VwapReversionStrategy(BaseStrategy):
         return signals
 
 
+class DoubleTopBottomStrategy(BaseStrategy):
+    """Duplo topo / duplo fundo sobre pivots zigzag.
+
+    Dois pivots do mesmo lado ao mesmo nível (tolerância 0.5%) com o pivot
+    oposto entre eles como neckline; o sinal dispara APENAS na barra cujo
+    fecho quebra a neckline — nunca antes (os pivots só contam depois de
+    confirmados: ``confirmed_at_index``). Alvo = altura do padrão projetada
+    da neckline (measured move); stop = para lá do segundo topo/fundo.
+    """
+
+    name = "double_top_bottom"
+    PIVOT_THRESHOLD_PCT = 1.0
+    LEVEL_TOLERANCE = 0.005  # the two tops/bottoms must match within 0.5%
+    MIN_BARS = 10
+    # height/price is a few percent on a real pattern; x10 maps a 3% pattern
+    # to strength 0.3 (the engine's default minimum) and a 10% one to 1.0.
+    STRENGTH_SCALE = 10.0
+
+    @staticmethod
+    def _first_break_index(
+        bars: list[BarInput], *, start: int, level: float, below: bool
+    ) -> int | None:
+        for index in range(start, len(bars)):
+            close = bars[index].close
+            if below and close < level:
+                return index
+            if not below and close > level:
+                return index
+        return None
+
+    def _level_pct(self, reference: float, close: float) -> float | None:
+        pct = abs(reference - close) / close * 100.0
+        return pct if pct > 0 else None
+
+    def generate_signals(self, symbol: str, bars: list[BarInput]) -> list[StrategySignal]:
+        signals: list[StrategySignal] = []
+        if len(bars) < self.MIN_BARS:
+            return signals
+        pivots = swing_pivots(bars, self.PIVOT_THRESHOLD_PCT)
+
+        for j in range(2, len(pivots)):
+            first, middle, second = pivots[j - 2], pivots[j - 1], pivots[j]
+            if first.kind != second.kind:  # needs two same-side pivots
+                continue
+            if abs(second.price - first.price) > self.LEVEL_TOLERANCE * first.price:
+                continue
+            neckline = middle.price
+            extreme = (first.price + second.price) / 2.0
+            is_top = first.kind == "high"
+            height = extreme - neckline if is_top else neckline - extreme
+            if height <= 0 or neckline <= 0:
+                continue
+
+            # The pattern only exists once the second pivot is CONFIRMED; the
+            # break scan starts there, so the signal can never predate the
+            # information it uses.
+            break_index = self._first_break_index(
+                bars, start=second.confirmed_at_index, level=neckline, below=is_top
+            )
+            if break_index is None:
+                continue
+            bar = bars[break_index]
+
+            if is_top:
+                direction = "SELL"
+                label = "Duplo topo"
+                target = neckline - height
+                stop_pct = self._level_pct(second.price, bar.close)
+                target_pct = self._level_pct(target, bar.close) if target < bar.close else None
+            else:
+                direction = "BUY"
+                label = "Duplo fundo"
+                target = neckline + height
+                stop_pct = self._level_pct(second.price, bar.close)
+                target_pct = self._level_pct(target, bar.close) if target > bar.close else None
+
+            signals.append(
+                StrategySignal(
+                    symbol=symbol,
+                    strategy=self.name,
+                    direction=direction,
+                    strength=_clamp_strength(height / bar.close * self.STRENGTH_SCALE),
+                    rationale=(
+                        f"{label} em {first.price:.2f}/{second.price:.2f} com neckline "
+                        f"{neckline:.2f}; fecho {bar.close:.2f} quebra a neckline "
+                        f"(alvo {target:.2f})."
+                    ),
+                    timestamp=bar.timestamp,
+                    indicator_snapshot={
+                        "first_pivot": first.price,
+                        "second_pivot": second.price,
+                        "neckline": neckline,
+                        "pattern_height": height,
+                        "measured_move_target": target,
+                    },
+                    suggested_stop_pct=stop_pct,
+                    suggested_take_profit_pct=target_pct,
+                )
+            )
+        return signals
+
+
 STRATEGY_REGISTRY: dict[str, BaseStrategy] = {
     RsiMeanReversionStrategy.name: RsiMeanReversionStrategy(),
     MacdCrossoverStrategy.name: MacdCrossoverStrategy(),
@@ -472,6 +582,7 @@ STRATEGY_REGISTRY: dict[str, BaseStrategy] = {
     BollingerBreakoutStrategy.name: BollingerBreakoutStrategy(),
     OpeningRangeBreakoutStrategy.name: OpeningRangeBreakoutStrategy(),
     VwapReversionStrategy.name: VwapReversionStrategy(),
+    DoubleTopBottomStrategy.name: DoubleTopBottomStrategy(),
 }
 
 

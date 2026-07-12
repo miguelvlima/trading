@@ -699,7 +699,7 @@ type SettingsPanelProps = {
   engineRunning: boolean;
   instruments: string[];
   strategies: string[];
-  onSave: (settings: Record<string, unknown>) => void;
+  onSave: (settings: Record<string, unknown>, preset?: "day_trading") => void;
   onReset: (initialCash: number) => void;
 };
 
@@ -725,12 +725,16 @@ function SettingsPanel({
     strategies: Array.isArray(rs.strategies) ? (rs.strategies as string[]) : [],
     timeframe: typeof rs.timeframe === "string" ? rs.timeframe : "1d",
     rthOnly: rs.rth_only !== false,
+    flatEod: rs.flat_eod === true,
+    flatEodMinutes: String(num(rs.flat_eod_minutes_before_close, 10)),
+    maxStopLossPct: String(num(rs.max_stop_loss_pct, 5)),
     // Execução: quando um sinal vira ordem e como o fill simulado se comporta.
     minSignalStrength: String(num(rs.min_signal_strength, 0.3)),
     quoteMaxAgeSeconds: String(num(rs.quote_max_age_seconds, 120)),
     maxSpreadBps: String(num(rs.max_spread_bps, 50)),
     slippageBps: String(num(rs.slippage_bps, 5)),
     orderExpiryMinutes: String(num(rs.order_expiry_minutes, 30)),
+    approvedFillTimeoutMinutes: String(num(rs.approved_fill_timeout_minutes, 10)),
     cooldownMinutes: String(num(rs.cooldown_minutes, 60)),
     maxConsecutiveLosses: String(num(rs.max_consecutive_losses, 3)),
   }));
@@ -777,6 +781,13 @@ function SettingsPanel({
       strategies: form.strategies,
       timeframe: form.timeframe,
       rth_only: form.rthOnly,
+      flat_eod: form.flatEod,
+      flat_eod_minutes_before_close: num(form.flatEodMinutes, 10),
+      max_stop_loss_pct: num(form.maxStopLossPct, 5),
+      approved_fill_timeout_minutes: num(
+        form.approvedFillTimeoutMinutes,
+        num(rs.approved_fill_timeout_minutes, 10),
+      ),
       min_signal_strength: Math.max(
         0,
         Math.min(1, num(form.minSignalStrength, num(rs.min_signal_strength, 0.3))),
@@ -835,9 +846,21 @@ function SettingsPanel({
               setForm((current) => ({ ...current, timeframe: event.target.value }))
             }
           >
+            <option value="1m">Intraday (1m)</option>
+            <option value="5m">Intraday (5m)</option>
             <option value="1d">Diário (1d)</option>
             <option value="1w">Semanal (1w)</option>
           </select>
+          <span className="pp-field-hint">
+            1m/5m usam as barras construídas em direto a partir dos ticks
+          </span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Stop máx. por trade (%)</span>
+          <input {...field("maxStopLossPct")} min={0.5} max={50} step={0.5} />
+          <span className="pp-field-hint">
+            stops sugeridos pelas estratégias são limitados a este teto
+          </span>
         </label>
         <label className="pp-field pp-field-check">
           <input
@@ -849,6 +872,28 @@ function SettingsPanel({
           />
           <span>Operar apenas com o mercado aberto (RTH)</span>
         </label>
+        <label className="pp-field pp-field-check">
+          <input
+            type="checkbox"
+            checked={form.flatEod}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, flatEod: event.target.checked }))
+            }
+          />
+          <span>
+            Fechar posições no fim da sessão (flat EOD, últimos {num(form.flatEodMinutes, 10)}{" "}
+            min)
+          </span>
+        </label>
+        {form.flatEod && (
+          <label className="pp-field">
+            <span className="pp-field-label">Janela de fecho EOD (min antes das 16:00 NY)</span>
+            <input {...field("flatEodMinutes")} min={1} max={60} step={1} />
+            <span className="pp-field-hint">
+              nesta janela o engine vende todas as posições e veta entradas novas
+            </span>
+          </label>
+        )}
         <div className="pp-field pp-field-wide">
           <span className="pp-field-label">Símbolos a seguir</span>
           {instruments.length > 0 && (
@@ -943,6 +988,13 @@ function SettingsPanel({
           <input {...field("orderExpiryMinutes")} min={1} max={1440} step={5} />
         </label>
         <label className="pp-field">
+          <span className="pp-field-label">Timeout de fills aprovados (min)</span>
+          <input {...field("approvedFillTimeoutMinutes")} min={1} max={1440} step={1} />
+          <span className="pp-field-hint">
+            compras aprovadas sem fill possível expiram; vendas retentam sempre
+          </span>
+        </label>
+        <label className="pp-field">
           <span className="pp-field-label">Cooldown após perdas (min)</span>
           <input {...field("cooldownMinutes")} min={0} max={1440} step={15} />
         </label>
@@ -956,6 +1008,18 @@ function SettingsPanel({
         <button type="button" className="pp-btn pp-btn-approve" disabled={busy} onClick={save}>
           Guardar definições
         </button>
+        <button
+          type="button"
+          className="pp-btn"
+          disabled={busy}
+          onClick={() => onSave({}, "day_trading")}
+          title="Aplica: timeframe 5m, cotações ≤30s, propostas expiram em 5 min, timeout de fills 5 min, cooldown 30 min e flat EOD ligado. O resto das definições mantém-se."
+        >
+          Aplicar preset Day Trading
+        </button>
+        <span className="pp-field-hint">
+          o preset muda timeframe/frescura/expirações e liga o flat EOD; sizing e limites mantêm-se
+        </span>
       </div>
 
       <div className="pp-reset-row">
@@ -1194,9 +1258,9 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   );
 
   const saveSettings = useCallback(
-    (settings: Record<string, unknown>) =>
+    (settings: Record<string, unknown>, preset?: "day_trading") =>
       void act(async () => {
-        const updated = await updatePaperRiskSettings(apiBaseUrl, authToken, settings);
+        const updated = await updatePaperRiskSettings(apiBaseUrl, authToken, settings, preset);
         setPortfolio(updated);
       }),
     [act, apiBaseUrl, authToken],
@@ -1636,7 +1700,10 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
 
       {portfolio && (
         <SettingsPanel
-          key={`${portfolio.id}-${portfolio.initial_cash}`}
+          // updated_at in the key remounts the form whenever the server-side
+          // settings change (preset applied, save normalized values), so the
+          // inputs always show what is actually persisted.
+          key={`${portfolio.id}-${portfolio.initial_cash}-${portfolio.updated_at}`}
           portfolio={portfolio}
           equity={state.pnl?.equity ?? portfolio.equity}
           busy={busy}

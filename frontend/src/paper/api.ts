@@ -232,9 +232,11 @@ export const updatePaperRiskSettings = (
   baseUrl: string,
   token: string,
   settings: Record<string, unknown>,
+  preset?: "day_trading",
 ) =>
   request<PaperPortfolio>(baseUrl, token, "PUT", "/paper/portfolio/risk-settings", {
     risk_settings: settings,
+    ...(preset ? { preset } : {}),
   });
 
 export const getPaperOrders = (baseUrl: string, token: string, status?: string) =>

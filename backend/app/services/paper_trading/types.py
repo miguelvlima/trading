@@ -83,14 +83,23 @@ class RiskSettings:
     quote_max_age_seconds: float = 120.0
     max_spread_bps: float = 50.0
     order_expiry_minutes: int = 30
-    # Approved orders whose fill keeps deferring (dead feed) expire after this;
-    # position-closing orders (protective / flat EOD) never do.
+    # Approved BUY (entry) orders whose fill keeps deferring (dead feed) expire
+    # after this. SELLs never expire: with shorting disabled every SELL closes
+    # a position and must keep retrying until it does.
     approved_fill_timeout_minutes: int = 10
 
     # Close every position in the last N minutes of the NY session and veto new
-    # entries inside that window ("day trades don't sleep overnight").
-    flat_eod: bool = True
+    # entries inside that window ("day trades don't sleep overnight"). Off by
+    # default — from_json fills missing keys with defaults, so a True default
+    # would retroactively liquidate existing swing portfolios on upgrade; the
+    # day_trading preset turns it on explicitly.
+    flat_eod: bool = False
     flat_eod_minutes_before_close: int = 10
+
+    # Hard ceiling for stop distance on entries: signal-suggested stops are
+    # clamped here so a strategy can never widen the per-trade loss beyond the
+    # user's risk bound (e.g. an ORB stop across a very wide opening range).
+    max_stop_loss_pct: float = 5.0
 
     min_signal_strength: float = 0.3
     timeframe: str = "1d"
@@ -107,6 +116,7 @@ class RiskSettings:
             order_expiry_minutes=5,
             approved_fill_timeout_minutes=5,
             cooldown_minutes=30,
+            flat_eod=True,
         )
 
     # Fields the "day_trading" preset overrides when applied via the endpoint
@@ -117,6 +127,7 @@ class RiskSettings:
         "order_expiry_minutes",
         "approved_fill_timeout_minutes",
         "cooldown_minutes",
+        "flat_eod",
     )
 
     @classmethod

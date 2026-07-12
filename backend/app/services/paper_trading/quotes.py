@@ -88,11 +88,17 @@ def market_session(now: datetime) -> str:
 
 
 def in_eod_window(now: datetime, minutes_before_close: int) -> bool:
-    """True inside the last N minutes of the NY session (flat-EOD window)."""
+    """True inside the last N minutes of the NY session (flat-EOD window).
+
+    Shares market_session's RTH definition — and its no-calendar limitation,
+    which here bites harder: on NYSE early-close half days (13:00 — day after
+    Thanksgiving, Christmas Eve, 3 July) the window computed against 16:00
+    never happens while quotes are live, so flat EOD cannot flatten before
+    those closes and positions carry over. Acceptable while paper-only; wire
+    in an exchange calendar before trusting the flatten guarantee with money.
+    """
+    if market_session(now) != "rth":
+        return False
     local = now.astimezone(_NY)
-    if local.weekday() >= 5:
-        return False
-    if not (_RTH_OPEN <= local.time() < _RTH_CLOSE):
-        return False
     close = local.replace(hour=_RTH_CLOSE.hour, minute=_RTH_CLOSE.minute, second=0, microsecond=0)
     return close - local <= timedelta(minutes=minutes_before_close)

@@ -157,6 +157,29 @@ def test_partial_levels_mix_signal_and_defaults(tmp_path: Path) -> None:
         assert float(order.take_profit_pct) == 4.0
 
 
+def test_signal_stop_is_clamped_to_max_stop_loss_pct(tmp_path: Path) -> None:
+    factory = build_session_factory(tmp_path)
+    clock = Clock()
+    with factory() as session:
+        portfolio = seed_portfolio(session)  # max_stop_loss_pct default 5.0
+        engine, cache = build_engine(portfolio, clock)
+        feed_quote(cache, "AAPL", last=100.0, bid=99.9, ask=100.1)
+        feed_quote(cache, "MSFT", last=300.0, bid=299.9, ask=300.1)
+
+        # An ORB-style stop across a wide range (8%) exceeds the user's bound:
+        # clamp to 5%, never widen the per-trade loss silently.
+        clamped = propose_buy(engine, session, portfolio, stop_loss_pct=8.0)
+        assert float(clamped.stop_loss_pct) == 5.0
+        assert clamped.signal_snapshot["stop_loss_pct"] == 5.0
+
+        # Raising the bound lets the strategy's structural stop through.
+        portfolio.risk_settings = {"max_stop_loss_pct": 10.0}
+        session.flush()
+        wide = propose_buy(engine, session, portfolio, symbol="MSFT", stop_loss_pct=8.0)
+        session.commit()
+        assert float(wide.stop_loss_pct) == 8.0
+
+
 def test_missing_stop_still_vetoed_without_any_level(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock()

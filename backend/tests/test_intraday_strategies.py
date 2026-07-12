@@ -99,6 +99,25 @@ def test_orb_no_signal_inside_range_or_with_few_bars() -> None:
     assert run_strategy("opening_range_breakout", "AAPL", []) == []
 
 
+def test_orb_stays_silent_when_session_head_is_missing() -> None:
+    """Cold start: history begins mid-session, so the first bars present are
+    NOT the opening range — a breakout over that fake range must not signal."""
+    mid_session = SESSION_OPEN + timedelta(hours=3)  # 12:30 New York
+    bars = bars_5m(
+        [
+            (100.0, 105.0, 95.0, 100.0, 1000.0),
+            (100.0, 104.0, 96.0, 101.0, 900.0),
+            (101.0, 103.0, 97.0, 100.0, 800.0),
+            (100.0, 102.0, 98.0, 99.0, 700.0),
+            (99.0, 104.0, 96.0, 102.0, 600.0),
+            (102.0, 103.0, 97.0, 100.0, 500.0),
+            (100.0, 106.5, 99.0, 106.0, 1200.0),  # would "break" the fake range
+        ],
+        start=mid_session,
+    )
+    assert run_strategy("opening_range_breakout", "AAPL", bars) == []
+
+
 def test_orb_resets_range_each_session() -> None:
     day1 = orb_session([(100.0, 106.5, 99.0, 106.0, 1200.0)])  # BUY on day 1
     day2 = orb_session([(100.0, 106.5, 99.0, 106.0, 1200.0)])

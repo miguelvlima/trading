@@ -197,7 +197,7 @@ def test_in_eod_window_boundaries() -> None:
 # -- 2) TTL for approved orders ---------------------------------------------------
 
 
-def test_stale_approved_order_expires_but_protective_does_not(tmp_path: Path) -> None:
+def test_stale_approved_buy_expires_but_closing_sells_never_do(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock(SUMMER_RTH)
     with factory() as session:
@@ -207,24 +207,25 @@ def test_stale_approved_order_expires_but_protective_does_not(tmp_path: Path) ->
         entry = approved_order(
             session, portfolio, symbol="AAPL", side="BUY", quantity=10, decided_at=clock.now
         )
-        protective = approved_order(
-            session,
-            portfolio,
-            symbol="MSFT",
-            side="SELL",
-            quantity=5,
-            decided_at=clock.now,
-            origin="protective",
-        )
-        flat_eod_close = approved_order(
-            session,
-            portfolio,
-            symbol="NVDA",
-            side="SELL",
-            quantity=3,
-            decided_at=clock.now,
-            origin="flat_eod",
-        )
+        # Every SELL is position-closing (shorting disabled): none may expire,
+        # whatever its origin — protective, flat EOD, manual or signal close.
+        closing_sells = [
+            approved_order(
+                session,
+                portfolio,
+                symbol=symbol,
+                side="SELL",
+                quantity=5,
+                decided_at=clock.now,
+                origin=origin,
+            )
+            for symbol, origin in (
+                ("MSFT", "protective"),
+                ("NVDA", "flat_eod"),
+                ("AMD", "manual"),
+                ("TSLA", None),  # signal close: origin absent
+            )
+        ]
 
         clock.advance(minutes=11)
         expired = engine.expire_stale_orders(session, portfolio)
@@ -233,8 +234,7 @@ def test_stale_approved_order_expires_but_protective_does_not(tmp_path: Path) ->
         assert expired == 1
         assert entry.status == STATUS_EXPIRED
         assert entry.reject_reason is not None and "fill nunca foi possível" in entry.reject_reason
-        assert protective.status == STATUS_APPROVED
-        assert flat_eod_close.status == STATUS_APPROVED
+        assert all(order.status == STATUS_APPROVED for order in closing_sells)
 
         events = events_with_code(session, portfolio.id, "approved_fill_timeout")
         assert len(events) == 1
@@ -259,11 +259,27 @@ def test_recently_approved_order_survives(tmp_path: Path) -> None:
 # -- 3) flat EOD -------------------------------------------------------------------
 
 
+def test_flat_eod_is_opt_in(tmp_path: Path) -> None:
+    """Default False: upgrading must never retroactively liquidate an existing
+    swing portfolio whose persisted JSON predates the flag."""
+    assert RiskSettings().flat_eod is False
+    assert RiskSettings.from_json({"max_position_pct": 10.0}).flat_eod is False
+
+    factory = build_session_factory(tmp_path)
+    clock = Clock(SUMMER_EOD)
+    with factory() as session:
+        portfolio = seed_portfolio(session)  # risk JSON without the key
+        engine, cache = build_engine(portfolio, clock)
+        add_position(session, portfolio, "AAPL", "10", "100")
+        feed_quote(cache, "AAPL", last=110.0, bid=109.9, ask=110.1)
+        assert engine.flat_eod_sweep(session, portfolio) == []
+
+
 def test_flat_eod_closes_position_inside_window(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock(SUMMER_EOD)
     with factory() as session:
-        portfolio = seed_portfolio(session)  # flat_eod=True by default
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
         engine, cache = build_engine(portfolio, clock)
         add_position(session, portfolio, "AAPL", "10", "100")
         feed_quote(cache, "AAPL", last=110.0, bid=109.9, ask=110.1)
@@ -287,7 +303,7 @@ def test_flat_eod_closes_position_inside_window(tmp_path: Path) -> None:
 def test_flat_eod_sweep_noop_outside_window_or_disabled(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     with factory() as session:
-        portfolio = seed_portfolio(session)
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
         clock = Clock(SUMMER_RTH)  # mid-session: outside the window
         engine, cache = build_engine(portfolio, clock)
         add_position(session, portfolio, "AAPL", "10", "100")
@@ -311,7 +327,7 @@ def test_flat_eod_sweep_does_not_stack_duplicate_sells(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock(SUMMER_EOD)
     with factory() as session:
-        portfolio = seed_portfolio(session)
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
         engine, _cache = build_engine(portfolio, clock)  # no quote: fill defers
         add_position(session, portfolio, "AAPL", "10", "100")
 
@@ -330,11 +346,118 @@ def test_flat_eod_sweep_does_not_stack_duplicate_sells(tmp_path: Path) -> None:
         assert sells[0].status == STATUS_APPROVED
 
 
+def test_flat_eod_sweep_ignores_merely_proposed_sell(tmp_path: Path) -> None:
+    """A proposed SELL awaiting user decision must NOT block the flatten — it
+    can outlive the whole window unapproved and leave the position overnight."""
+    factory = build_session_factory(tmp_path)
+    clock = Clock(SUMMER_EOD)
+    with factory() as session:
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
+        engine, cache = build_engine(portfolio, clock)
+        add_position(session, portfolio, "AAPL", "10", "100")
+        feed_quote(cache, "AAPL", last=110.0, bid=109.9, ask=110.1)
+        proposed = PaperOrder(
+            portfolio_id=portfolio.id,
+            symbol="AAPL",
+            side="SELL",
+            quantity=Decimal("10"),
+            order_type="market",
+            status="proposed",
+            signal_snapshot={"strategy": "vwap_reversion"},
+            risk_snapshot={},
+            data_liveness="DELAYED",
+            proposed_at=clock.now,
+        )
+        session.add(proposed)
+        session.flush()
+
+        trades = engine.flat_eod_sweep(session, portfolio)
+        session.commit()
+
+        assert len(trades) == 1  # flattened despite the pending proposal
+        position = session.execute(
+            select(PaperPosition).where(PaperPosition.portfolio_id == portfolio.id)
+        ).scalar_one()
+        assert float(position.quantity) == 0.0
+
+
+def test_flat_eod_sweep_survives_multiple_open_sells(tmp_path: Path) -> None:
+    """Two open SELLs for one symbol (proposed signal + approved protective)
+    must not crash the sweep with MultipleResultsFound."""
+    factory = build_session_factory(tmp_path)
+    clock = Clock(SUMMER_EOD)
+    with factory() as session:
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
+        engine, _cache = build_engine(portfolio, clock)
+        add_position(session, portfolio, "AAPL", "10", "100")
+        for order_status in ("proposed", "approved"):
+            order = PaperOrder(
+                portfolio_id=portfolio.id,
+                symbol="AAPL",
+                side="SELL",
+                quantity=Decimal("10"),
+                order_type="market",
+                status=order_status,
+                signal_snapshot={},
+                risk_snapshot={},
+                data_liveness="DELAYED",
+                proposed_at=clock.now,
+                decided_at=clock.now,
+            )
+            session.add(order)
+        session.flush()
+
+        # Approved SELL already covers the position: no new order, no crash.
+        assert engine.flat_eod_sweep(session, portfolio) == []
+        sells = session.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == portfolio.id, PaperOrder.side == "SELL"
+            )
+        ).scalars().all()
+        assert len(sells) == 2
+
+
+def test_protective_exits_do_not_stack_while_fill_defers(tmp_path: Path) -> None:
+    factory = build_session_factory(tmp_path)
+    clock = Clock(SUMMER_RTH)
+    with factory() as session:
+        portfolio = seed_portfolio(session)
+        engine, cache = build_engine(portfolio, clock)
+        feed_quote(cache, "AAPL", last=100.0, bid=99.95, ask=100.05)
+        order = engine.propose_from_signal(
+            session,
+            portfolio,
+            symbol="AAPL",
+            direction="BUY",
+            strength=0.9,
+            strategy="rsi_mean_reversion",
+            rationale="teste",
+        )
+        engine.approve_order(session, portfolio, order)
+
+        # Price crosses the stop, but the quote is too old for a credible fill:
+        # the protective SELL defers and must NOT be duplicated next poll.
+        feed_quote(cache, "AAPL", last=90.0, bid=89.9, ask=90.1)
+        clock.advance(minutes=10)  # stale vs quote_max_age_seconds=120
+        assert engine.check_protective_exits(session, portfolio) == []
+        assert engine.check_protective_exits(session, portfolio) == []
+        session.commit()
+
+        protective_sells = session.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == portfolio.id,
+                PaperOrder.side == "SELL",
+                PaperOrder.status == STATUS_APPROVED,
+            )
+        ).scalars().all()
+        assert len(protective_sells) == 1
+
+
 def test_new_entries_vetoed_inside_eod_window(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock(SUMMER_EOD)
     with factory() as session:
-        portfolio = seed_portfolio(session)
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
         engine, cache = build_engine(portfolio, clock)
         feed_quote(cache, "MSFT", last=300.0, bid=299.9, ask=300.1)
 
@@ -355,11 +478,42 @@ def test_new_entries_vetoed_inside_eod_window(tmp_path: Path) -> None:
         assert len(vetoes) == 1
 
 
+def test_buy_approval_vetoed_inside_eod_window(tmp_path: Path) -> None:
+    """Proposed at 15:49, approved at 15:52: filling would be an immediate
+    roundtrip (the sweep closes it minutes later) — approval must veto."""
+    factory = build_session_factory(tmp_path)
+    clock = Clock(SUMMER_EOD - timedelta(minutes=6))  # 19:49 UTC, before window
+    with factory() as session:
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
+        engine, cache = build_engine(portfolio, clock)
+        feed_quote(cache, "MSFT", last=300.0, bid=299.9, ask=300.1)
+        order = engine.propose_from_signal(
+            session,
+            portfolio,
+            symbol="MSFT",
+            direction="BUY",
+            strength=0.9,
+            strategy="rsi_mean_reversion",
+            rationale="teste",
+        )
+        assert order is not None and order.status == STATUS_PROPOSED
+
+        clock.advance(minutes=3)  # 19:52 UTC: inside the window now
+        order, trade, deferral = engine.approve_order(session, portfolio, order)
+        session.commit()
+
+        assert (trade, deferral) == (None, None)
+        assert order.status == STATUS_REJECTED_RISK
+        assert "flat EOD" in order.reject_reason
+        vetoes = events_with_code(session, portfolio.id, "eod_window")
+        assert len(vetoes) == 1
+
+
 def test_closing_sell_signal_passes_inside_eod_window(tmp_path: Path) -> None:
     factory = build_session_factory(tmp_path)
     clock = Clock(SUMMER_EOD)
     with factory() as session:
-        portfolio = seed_portfolio(session)
+        portfolio = seed_portfolio(session, risk={"flat_eod": True})
         engine, cache = build_engine(portfolio, clock)
         add_position(session, portfolio, "AAPL", "10", "100")
         feed_quote(cache, "AAPL", last=110.0, bid=109.9, ask=110.1)
@@ -387,5 +541,6 @@ def test_day_trading_defaults_values() -> None:
     assert preset.order_expiry_minutes == 5
     assert preset.approved_fill_timeout_minutes == 5
     assert preset.cooldown_minutes == 30
+    assert preset.flat_eod is True  # opting into day trading IS the opt-in
     # Non-preset knobs keep the conservative defaults.
     assert preset.max_position_pct == RiskSettings().max_position_pct

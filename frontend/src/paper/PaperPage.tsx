@@ -175,8 +175,17 @@ function evaluationText(status: EngineStatusWire | null): string | null {
 
 // Anything short of REAL-TIME distorts intraday entries (IBKR delayed feed is
 // ~15 min behind) — the user has to SEE it, not discover it in the fills.
+// UNKNOWN means "no tick yet" (engine just started, market closed), not a
+// liveness problem: warning on it would cry wolf at every start and train the
+// user to ignore the badge. FeedDot already reports the absence of data.
 function LivenessWarning({ status }: { status: EngineStatusWire | null }) {
-  if (!status?.running || status.data_liveness === "REAL-TIME") return null;
+  if (
+    !status?.running ||
+    status.data_liveness === "REAL-TIME" ||
+    status.data_liveness === "UNKNOWN"
+  ) {
+    return null;
+  }
   const label =
     status.data_liveness === "DELAYED" || status.data_liveness === "DELAYED-FROZEN"
       ? "DADOS ATRASADOS ~15 min"

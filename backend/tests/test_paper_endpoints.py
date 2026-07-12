@@ -123,6 +123,7 @@ def test_risk_settings_day_trading_preset(tmp_path: Path) -> None:
         assert settings["order_expiry_minutes"] == 5
         assert settings["approved_fill_timeout_minutes"] == 5
         assert settings["cooldown_minutes"] == 30
+        assert settings["flat_eod"] is True  # the preset is the flat-EOD opt-in
         # Non-preset fields keep the user's values.
         assert settings["max_position_pct"] == 5.0
 

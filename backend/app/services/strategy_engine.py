@@ -12,7 +12,6 @@ Signal contract (no lookahead across bars):
 
 import math
 from abc import ABC, abstractmethod
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
@@ -68,16 +67,21 @@ def _clamp_strength(raw_value: float) -> float:
     return max(0.0, min(1.0, raw_value))
 
 
+def _ny_local(timestamp: datetime) -> datetime:
+    """Bar timestamp in exchange local time; naive timestamps are treated as
+    UTC (how MarketBar rows come out of the DB)."""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(_NY)
+
+
 def _session_day(timestamp: datetime) -> date:
     """Trading-session date of a bar, in exchange local time.
 
-    Naive timestamps are treated as UTC (how MarketBar rows come out of the
-    DB); the NY conversion keeps a session's bars together even though an
-    American session crosses midnight UTC in winter.
+    The NY conversion keeps a session's bars together even though an American
+    session crosses midnight UTC in winter.
     """
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return timestamp.astimezone(_NY).date()
+    return _ny_local(timestamp).date()
 
 
 def _group_by_session(bars: list[BarInput]) -> dict[date, list[int]]:
@@ -315,51 +319,55 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
     BUY quando um fecho posterior quebra acima do range high, SELL quando
     quebra abaixo do range low — no máximo um sinal por direção por sessão.
     O stop sugerido é o lado oposto do range (a invalidação natural do padrão).
+
+    O range é definido por JANELA HORÁRIA (09:30-10:00 NY), nunca por "as
+    primeiras N barras presentes": num arranque a frio (histórico intraday só
+    a partir do meio da sessão) as primeiras barras presentes seriam do meio
+    do dia e o "range" seria falso — nesse caso a sessão fica sem sinais. A
+    janela temporal também é estável por prefixo (sem inferência de
+    espaçamento sobre a série inteira), preservando o contrato anti-lookahead.
     """
 
     name = "opening_range_breakout"
     RANGE_MINUTES = 30
-    DEFAULT_RANGE_BARS = 6  # 30 min in 5m bars
+    _OPEN_MINUTES = 9 * 60 + 30  # 09:30 NY, minutes since local midnight
 
     @classmethod
-    def _range_bar_count(cls, bars: list[BarInput]) -> int:
-        """Bars that make up 30 minutes, from the modal spacing between bars.
-
-        The modal (not minimum) spacing survives session gaps and the odd
-        missing bar. Spacing above 30 min (daily bars) falls back to the 5m
-        default — the session grouping then leaves no room to signal, which
-        is the correct behaviour for a strategy that is intraday-only.
-        """
-        deltas = [
-            (bars[index].timestamp - bars[index - 1].timestamp).total_seconds()
-            for index in range(1, len(bars))
-        ]
-        deltas = [delta for delta in deltas if delta > 0]
-        if not deltas:
-            return cls.DEFAULT_RANGE_BARS
-        spacing = Counter(deltas).most_common(1)[0][0]
-        if spacing > cls.RANGE_MINUTES * 60:
-            return cls.DEFAULT_RANGE_BARS
-        return max(1, int(cls.RANGE_MINUTES * 60 // spacing))
+    def _minutes_into_session(cls, bar: BarInput) -> int:
+        local = _ny_local(bar.timestamp)
+        return local.hour * 60 + local.minute - cls._OPEN_MINUTES
 
     def generate_signals(self, symbol: str, bars: list[BarInput]) -> list[StrategySignal]:
         signals: list[StrategySignal] = []
-        if len(bars) < 2:
-            return signals
-        range_bars = self._range_bar_count(bars)
 
         for indices in _group_by_session(bars).values():
-            if len(indices) <= range_bars:
+            opening: list[BarInput] = []
+            after_range: list[int] = []
+            first_opening_offset: int | None = None
+            for index in indices:
+                minutes = self._minutes_into_session(bars[index])
+                if minutes < 0:
+                    continue  # premarket (or daily bars): outside the session
+                if minutes < self.RANGE_MINUTES:
+                    if first_opening_offset is None:
+                        first_opening_offset = minutes
+                    opening.append(bars[index])
+                else:
+                    after_range.append(index)
+            # The session head must actually be there: a range whose first bar
+            # is not the 09:30 bucket means the history is truncated (engine
+            # cold start) and any "range" would be fake — skip the session.
+            if not opening or first_opening_offset != 0:
                 continue
-            opening = [bars[i] for i in indices[:range_bars]]
             range_high = max(bar.high for bar in opening)
             range_low = min(bar.low for bar in opening)
             width = range_high - range_low
             if width <= 0:
                 continue
+            range_bars = len(opening)
 
             fired = {"BUY": False, "SELL": False}
-            for index in indices[range_bars:]:
+            for index in after_range:
                 bar = bars[index]
                 if not fired["BUY"] and bar.close > range_high:
                     fired["BUY"] = True
@@ -429,7 +437,11 @@ class VwapReversionStrategy(BaseStrategy):
         for indices in _group_by_session(bars).values():
             cumulative_pv = 0.0
             cumulative_volume = 0.0
-            deviations: list[float] = []
+            # Running moments of the prior deviations (count/sum/sum-of-squares)
+            # keep the sweep O(n); rescanning the list per bar would be O(n²).
+            dev_count = 0
+            dev_sum = 0.0
+            dev_sumsq = 0.0
             for index in indices:
                 bar = bars[index]
                 typical = (bar.high + bar.low + bar.close) / 3.0
@@ -440,9 +452,9 @@ class VwapReversionStrategy(BaseStrategy):
                 session_vwap = cumulative_pv / cumulative_volume
                 deviation = bar.close - session_vwap
 
-                if len(deviations) >= self.MIN_HISTORY:
-                    mean = sum(deviations) / len(deviations)
-                    variance = sum((d - mean) ** 2 for d in deviations) / len(deviations)
+                if dev_count >= self.MIN_HISTORY:
+                    mean = dev_sum / dev_count
+                    variance = max(0.0, dev_sumsq / dev_count - mean * mean)
                     std = math.sqrt(variance)
                     if std > 0:
                         z_score = deviation / std
@@ -469,7 +481,9 @@ class VwapReversionStrategy(BaseStrategy):
                                     },
                                 )
                             )
-                deviations.append(deviation)
+                dev_count += 1
+                dev_sum += deviation
+                dev_sumsq += deviation * deviation
         return signals
 
 
@@ -493,14 +507,26 @@ class DoubleTopBottomStrategy(BaseStrategy):
 
     @staticmethod
     def _first_break_index(
-        bars: list[BarInput], *, start: int, level: float, below: bool
+        bars: list[BarInput], *, start: int, level: float, below: bool, invalid_level: float
     ) -> int | None:
+        """First close beyond ``level`` — unless the pattern dies first.
+
+        A close beyond ``invalid_level`` (a new extreme past the pattern's
+        tops/bottoms) invalidates the setup: without this, a January double top
+        would stay armed for months and "signal" on an unrelated dip.
+        """
         for index in range(start, len(bars)):
             close = bars[index].close
-            if below and close < level:
-                return index
-            if not below and close > level:
-                return index
+            if below:
+                if close > invalid_level:
+                    return None
+                if close < level:
+                    return index
+            else:
+                if close < invalid_level:
+                    return None
+                if close > level:
+                    return index
         return None
 
     def _level_pct(self, reference: float, close: float) -> float | None:
@@ -529,8 +555,15 @@ class DoubleTopBottomStrategy(BaseStrategy):
             # The pattern only exists once the second pivot is CONFIRMED; the
             # break scan starts there, so the signal can never predate the
             # information it uses.
+            invalid_level = (
+                max(first.price, second.price) if is_top else min(first.price, second.price)
+            )
             break_index = self._first_break_index(
-                bars, start=second.confirmed_at_index, level=neckline, below=is_top
+                bars,
+                start=second.confirmed_at_index,
+                level=neckline,
+                below=is_top,
+                invalid_level=invalid_level,
             )
             if break_index is None:
                 continue

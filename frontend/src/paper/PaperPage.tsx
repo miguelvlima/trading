@@ -173,6 +173,26 @@ function evaluationText(status: EngineStatusWire | null): string | null {
   return `Última avaliação ${fmtTime(summary.at)} — ${parts.join("; ")}.${cadence}`;
 }
 
+// Anything short of REAL-TIME distorts intraday entries (IBKR delayed feed is
+// ~15 min behind) — the user has to SEE it, not discover it in the fills.
+function LivenessWarning({ status }: { status: EngineStatusWire | null }) {
+  if (!status?.running || status.data_liveness === "REAL-TIME") return null;
+  const label =
+    status.data_liveness === "DELAYED" || status.data_liveness === "DELAYED-FROZEN"
+      ? "DADOS ATRASADOS ~15 min"
+      : status.data_liveness === "FROZEN"
+        ? "DADOS CONGELADOS (fecho)"
+        : "DADOS NÃO REAL-TIME";
+  return (
+    <span
+      className="pp-badge pp-badge-warn"
+      title="Sem subscrição real-time no IBKR os ticks chegam atrasados — sinais intraday podem já ter expirado quando aparecem."
+    >
+      {label}
+    </span>
+  );
+}
+
 function StatusBar({
   status,
   wsStatus,
@@ -212,9 +232,12 @@ function StatusBar({
         {running ? "Parar" : "Iniciar"}
       </button>
       <FeedDot status={status} />
-      {status?.data_liveness === "DELAYED" && (
-        <span className="pp-badge pp-badge-warn">DADOS ATRASADOS ~15 min</span>
+      {status?.last_evaluation?.timeframe && (
+        <span className="pp-badge" title="Timeframe das barras que alimentam as estratégias">
+          TF {status.last_evaluation.timeframe}
+        </span>
       )}
+      <LivenessWarning status={status} />
       <span className="pp-muted">
         Sessão: {status?.market_session === "rth" ? "mercado aberto" : "fechado"}
       </span>

@@ -91,7 +91,7 @@ def _prepare_recommendations(
         if recent_symbol_pnls
         else dict_items
     )
-    bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=["1d", "1w"])
+    bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=["1d", "1w", "1m", "5m"])
     bars = load_symbol_bars(db, symbol=symbol, timeframe=timeframe)
     return materialize_recommendations(
         filtered,
@@ -268,7 +268,7 @@ def _persist_run_insight(
         symbol=run_model.symbol,
         exclude_run_id=run_model.id,
     )
-    bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=["1d", "1w"])
+    bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=["1d", "1w", "1m", "5m"])
     bars = load_symbol_bars(db, symbol=run_model.symbol, timeframe=run_model.timeframe)
     insight_payload = build_backtest_insight(
         symbol=run_model.symbol,

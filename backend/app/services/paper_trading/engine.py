@@ -158,11 +158,16 @@ class PaperEngine:
         strategy: str,
         rationale: str,
         signal_timestamp: datetime | None = None,
+        stop_loss_pct: float | None = None,
+        take_profit_pct: float | None = None,
     ) -> PaperOrder | None:
         """Turn one live signal into a ``proposed`` order (or veto/skip it).
 
         BUY opens/extends a long; SELL only closes an existing long (shorting
-        is out of scope this phase). Every outcome is written to the ledger.
+        is out of scope this phase). ``stop_loss_pct``/``take_profit_pct`` are
+        the signal's own suggested levels; when absent the portfolio defaults
+        apply (and require_stop_loss still vetoes if neither yields a stop).
+        Every outcome is written to the ledger.
         """
         settings = self.settings_for(portfolio)
         now = self._now_fn()
@@ -270,11 +275,12 @@ class PaperEngine:
         equity = self.equity_now(db, portfolio)
         if is_closing:
             quantity = float(position.quantity)  # close the whole position
-            stop_loss_pct: float | None = None
-            take_profit_pct: float | None = None
+            stop_loss_pct = None  # exit levels only make sense on entries
+            take_profit_pct = None
         else:
-            stop_loss_pct = settings.default_stop_loss_pct or None
-            take_profit_pct = settings.default_take_profit_pct or None
+            # Signal-supplied levels win over the portfolio defaults.
+            stop_loss_pct = stop_loss_pct or settings.default_stop_loss_pct or None
+            take_profit_pct = take_profit_pct or settings.default_take_profit_pct or None
             quantity = compute_position_quantity(
                 capital=equity,
                 exec_price=reference_price,
@@ -331,6 +337,9 @@ class PaperEngine:
             "strength": strength,
             "rationale": rationale,
             "signal_timestamp": signal_timestamp.isoformat() if signal_timestamp else None,
+            # Levels actually used (signal's own or portfolio defaults), for audit.
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
         }
 
         order = PaperOrder(

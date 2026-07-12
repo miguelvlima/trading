@@ -526,6 +526,8 @@ class PaperEngineRuntime:
                     strategy=best.strategy,
                     rationale=best.rationale,
                     signal_timestamp=best.timestamp,
+                    stop_loss_pct=best.suggested_stop_pct,
+                    take_profit_pct=best.suggested_take_profit_pct,
                 )
                 if order is not None and order.status == STATUS_PROPOSED:
                     counts["proposals"] += 1

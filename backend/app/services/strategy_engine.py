@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.services.indicator_engine import bollinger_bands, ema, macd, rsi, sma
+from app.services.indicator_engine import atr, bollinger_bands, ema, macd, rsi, sma
 
 
 @dataclass
@@ -26,6 +26,11 @@ class StrategySignal:
     rationale: str
     timestamp: datetime
     indicator_snapshot: dict[str, float | None]
+    # Exit levels suggested by the signal itself (percentages 0-100 relative to
+    # the entry price). None → the paper engine falls back to the portfolio
+    # defaults; the risk manager still vetoes entries that end up with no stop.
+    suggested_stop_pct: float | None = None
+    suggested_take_profit_pct: float | None = None
 
 
 @dataclass
@@ -53,14 +58,31 @@ def _clamp_strength(raw_value: float) -> float:
 class RsiMeanReversionStrategy(BaseStrategy):
     name = "rsi_mean_reversion"
 
+    # Stop at 1.5x ATR(14) from the entry: wide enough to survive normal noise
+    # on a volatile symbol, tight on a calm one. Floor of 0.5% because an ATR
+    # near zero (thin/flat session) would put the stop inside the spread.
+    ATR_STOP_MULTIPLE = 1.5
+    MIN_STOP_PCT = 0.5
+
+    @classmethod
+    def _suggested_stop_pct(cls, atr_value: float | None, close: float) -> float | None:
+        if atr_value is None or close <= 0:
+            return None
+        return max(cls.MIN_STOP_PCT, atr_value / close * 100.0 * cls.ATR_STOP_MULTIPLE)
+
     def generate_signals(self, symbol: str, bars: list[BarInput]) -> list[StrategySignal]:
         closes = [bar.close for bar in bars]
         rsi_values = rsi(closes, period=14)
+        atr_values = atr(
+            [bar.high for bar in bars], [bar.low for bar in bars], closes, period=14
+        )
         signals: list[StrategySignal] = []
 
-        for bar, rsi_value in zip(bars, rsi_values, strict=False):
+        for index, (bar, rsi_value) in enumerate(zip(bars, rsi_values, strict=False)):
             if rsi_value is None:
                 continue
+            atr_value = atr_values[index]
+            stop_pct = self._suggested_stop_pct(atr_value, bar.close)
             if rsi_value < 30:
                 strength = _clamp_strength((30 - rsi_value) / 30)
                 signals.append(
@@ -71,7 +93,8 @@ class RsiMeanReversionStrategy(BaseStrategy):
                         strength=strength,
                         rationale=f"RSI(14) em sobrevenda ({rsi_value:.2f} < 30).",
                         timestamp=bar.timestamp,
-                        indicator_snapshot={"rsi_14": rsi_value},
+                        indicator_snapshot={"rsi_14": rsi_value, "atr_14": atr_value},
+                        suggested_stop_pct=stop_pct,
                     )
                 )
             elif rsi_value > 70:
@@ -84,7 +107,8 @@ class RsiMeanReversionStrategy(BaseStrategy):
                         strength=strength,
                         rationale=f"RSI(14) em sobrecompra ({rsi_value:.2f} > 70).",
                         timestamp=bar.timestamp,
-                        indicator_snapshot={"rsi_14": rsi_value},
+                        indicator_snapshot={"rsi_14": rsi_value, "atr_14": atr_value},
+                        suggested_stop_pct=stop_pct,
                     )
                 )
         return signals

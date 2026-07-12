@@ -13,7 +13,7 @@ from app.services.execution_engine import compute_position_quantity
 from app.services.paper_trading import events as ev
 from app.services.paper_trading.events import EventHub, record_event
 from app.services.paper_trading.fills import compute_fill
-from app.services.paper_trading.quotes import QuoteCache, market_session
+from app.services.paper_trading.quotes import QuoteCache, in_eod_window, market_session
 from app.services.paper_trading.risk import (
     ProposalContext,
     RiskManager,
@@ -22,6 +22,7 @@ from app.services.paper_trading.risk import (
     daily_loss_breached,
 )
 from app.services.paper_trading.types import (
+    OPEN_STATUSES,
     STATUS_APPROVED,
     STATUS_CANCELLED,
     STATUS_EXPIRED,
@@ -309,6 +310,10 @@ class PaperEngine:
                 kill_switch_active=portfolio.kill_switch_active,
                 cooldown_until=self.cooldown_until(db, settings),
                 market_session=market_session(now),
+                in_eod_window=(
+                    settings.flat_eod
+                    and in_eod_window(now, settings.flat_eod_minutes_before_close)
+                ),
             ),
             now=now,
         )
@@ -472,6 +477,77 @@ class PaperEngine:
         trade, deferral = self.try_fill_order(db, portfolio, order, settings=settings)
         return order, trade, deferral
 
+    def flat_eod_sweep(
+        self, db: Session, portfolio: PaperPortfolio
+    ) -> list[PaperTrade]:
+        """Force-close every open position in the last minutes of the NY session.
+
+        Day-trading guardrail: inside the flat-EOD window each position gets a
+        SELL born ``approved`` (origin "flat_eod", same pattern as manual_close)
+        and an immediate fill attempt; deferred fills are retried by the runtime
+        and never expire. New entries inside the window are vetoed separately
+        (RiskManager code "eod_window"). No-op when flat_eod is off or outside
+        the window, so the runtime can call it every poll.
+        """
+        settings = self.settings_for(portfolio)
+        now = self._now_fn()
+        if not settings.flat_eod:
+            return []
+        if not in_eod_window(now, settings.flat_eod_minutes_before_close):
+            return []
+
+        trades: list[PaperTrade] = []
+        for position in self._positions(db):
+            # An open SELL (previous sweep, manual, protective) already covers
+            # this position: don't stack a duplicate every poll.
+            open_sell = db.execute(
+                select(PaperOrder).where(
+                    PaperOrder.portfolio_id == self.portfolio_id,
+                    PaperOrder.symbol == position.symbol,
+                    PaperOrder.side == "SELL",
+                    PaperOrder.status.in_(OPEN_STATUSES),
+                )
+            ).scalar_one_or_none()
+            if open_sell is not None:
+                continue
+
+            quote = self.quotes.get(position.symbol)
+            order = PaperOrder(
+                portfolio_id=self.portfolio_id,
+                symbol=position.symbol,
+                side="SELL",
+                quantity=position.quantity,
+                order_type="market",
+                status=STATUS_APPROVED,
+                signal_snapshot={
+                    "origin": "flat_eod",
+                    "strategy": "flat_eod",
+                    "rationale": (
+                        "Fecho de fim de sessão (flat EOD): faltam menos de "
+                        f"{settings.flat_eod_minutes_before_close} min para as 16:00 NY."
+                    ),
+                },
+                risk_snapshot={},
+                data_liveness=quote.data_liveness if quote else "UNKNOWN",
+                proposed_at=now,
+                decided_at=now,
+            )
+            db.add(order)
+            db.flush()
+            self._emit(
+                db,
+                ev.EVENT_ORDER_APPROVED,
+                f"Flat EOD: SELL {float(position.quantity):g} {position.symbol} "
+                f"(ordem #{order.id}) — fecho de fim de sessão.",
+                symbol=position.symbol,
+                severity="warn",
+                payload={"order_id": order.id, "origin": "flat_eod"},
+            )
+            trade, _ = self.try_fill_order(db, portfolio, order, settings=settings)
+            if trade is not None:
+                trades.append(trade)
+        return trades
+
     def entry_context(self, db: Session, symbol: str) -> PaperOrder | None:
         """The filled BUY order that opened the current position, if any.
 
@@ -530,22 +606,34 @@ class PaperEngine:
         )
         return order
 
-    def expire_stale_proposals(self, db: Session, portfolio: PaperPortfolio) -> int:
-        """Expire ``proposed`` orders older than the configured window."""
+    # Origins whose approved SELLs must keep retrying until the position is
+    # actually closed: expiring them would leave a "day trade" open overnight.
+    _NEVER_EXPIRE_ORIGINS = ("protective", "flat_eod")
+
+    def expire_stale_orders(self, db: Session, portfolio: PaperPortfolio) -> int:
+        """Expire orders that outlived their window.
+
+        ``proposed`` orders expire after ``order_expiry_minutes`` without a
+        decision. ``approved`` orders expire after
+        ``approved_fill_timeout_minutes`` without a fill — the quote never got
+        fresh enough (dead feed), so executing the signal that long after the
+        fact would be a different trade. Position-closing orders (protective,
+        flat EOD) are exempt: they retry until the position is closed.
+        """
         settings = self.settings_for(portfolio)
-        cutoff = self._now_fn() - timedelta(minutes=settings.order_expiry_minutes)
-        stale = list(
-            db.execute(
-                select(PaperOrder).where(
-                    PaperOrder.portfolio_id == self.portfolio_id,
-                    PaperOrder.status == STATUS_PROPOSED,
-                    PaperOrder.proposed_at < cutoff,
-                )
-            ).scalars()
-        )
-        for order in stale:
+        now = self._now_fn()
+        expired = 0
+
+        proposed_cutoff = now - timedelta(minutes=settings.order_expiry_minutes)
+        for order in db.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.status == STATUS_PROPOSED,
+                PaperOrder.proposed_at < proposed_cutoff,
+            )
+        ).scalars():
             order.status = STATUS_EXPIRED
-            order.decided_at = self._now_fn()
+            order.decided_at = now
             self._emit(
                 db,
                 ev.EVENT_ORDER_EXPIRED,
@@ -554,7 +642,35 @@ class PaperEngine:
                 symbol=order.symbol,
                 payload={"order_id": order.id},
             )
-        return len(stale)
+            expired += 1
+
+        approved_cutoff = now - timedelta(minutes=settings.approved_fill_timeout_minutes)
+        for order in db.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.status == STATUS_APPROVED,
+                PaperOrder.decided_at < approved_cutoff,
+            )
+        ).scalars():
+            origin = (order.signal_snapshot or {}).get("origin")
+            if origin in self._NEVER_EXPIRE_ORIGINS:
+                continue
+            order.status = STATUS_EXPIRED
+            order.reject_reason = (
+                "Aprovada mas o fill nunca foi possível dentro de "
+                f"{settings.approved_fill_timeout_minutes} min (feed sem cotações "
+                "credíveis); executar agora seria outro trade."
+            )
+            self._emit(
+                db,
+                ev.EVENT_ORDER_EXPIRED,
+                f"Ordem #{order.id} aprovada expirou: {order.reject_reason}",
+                symbol=order.symbol,
+                severity="warn",
+                payload={"order_id": order.id, "code": "approved_fill_timeout"},
+            )
+            expired += 1
+        return expired
 
     # -- fills --------------------------------------------------------------------
 

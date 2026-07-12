@@ -211,6 +211,10 @@ def update_risk_settings(
 ) -> PaperPortfolioResponse:
     portfolio = _get_portfolio(db, current_user)
     merged = dict(portfolio.risk_settings or {})
+    if payload.preset == "day_trading":
+        preset = RiskSettings.day_trading_defaults()
+        for name in RiskSettings.DAY_TRADING_PRESET_FIELDS:
+            merged[name] = getattr(preset, name)
     merged.update(payload.risk_settings)
     portfolio.risk_settings = RiskSettings.from_json(merged).to_json()
     db.commit()

@@ -273,7 +273,7 @@ def test_proposals_expire_after_window(tmp_path: Path) -> None:
         assert order.status == STATUS_PROPOSED
 
         clock.advance(minutes=31)
-        expired = engine.expire_stale_proposals(session, portfolio)
+        expired = engine.expire_stale_orders(session, portfolio)
         session.commit()
 
         assert expired == 1

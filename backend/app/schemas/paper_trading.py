@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,9 @@ class PaperPortfolioCreateRequest(BaseModel):
 
 class RiskSettingsUpdateRequest(BaseModel):
     risk_settings: dict[str, object] = Field(default_factory=dict)
+    # Applies the named preset's fields first; explicit risk_settings keys in
+    # the same request win over the preset.
+    preset: Literal["day_trading"] | None = None
 
 
 class PaperPortfolioResponse(BaseModel):

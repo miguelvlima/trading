@@ -48,7 +48,7 @@ def _feed_problem_message(status) -> str:
         )
     if status.feed_reason == "market_closed":
         return (
-            "Mercado fechado — sem cotações novas (normal fora do horário 13:30–20:00 UTC). "
+            "Mercado fechado — sem cotações novas (normal fora do horário 09:30–16:00 de Nova Iorque). "
             "O engine retoma quando o mercado abrir."
         )
     if status.feed_age_seconds is not None:
@@ -372,8 +372,9 @@ class PaperEngineRuntime:
             self._sync_tracked_symbols(db, risk)
 
             self.engine.check_protective_exits(db, portfolio)
+            self.engine.flat_eod_sweep(db, portfolio)
             self._retry_approved_orders(db, portfolio)
-            self.engine.expire_stale_proposals(db, portfolio)
+            self.engine.expire_stale_orders(db, portfolio)
             self._persist_intraday_bars(db)
             self._evaluate_signals(db, portfolio, risk)
             self._broadcast_state(db, portfolio, risk)

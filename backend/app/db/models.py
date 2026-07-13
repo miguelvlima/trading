@@ -109,6 +109,9 @@ class User(Base):
     backtest_runs: Mapped[list["BacktestRun"]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    paper_portfolios: Mapped[list["PaperPortfolio"]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class BrokerConnection(Base):
@@ -251,6 +254,187 @@ class BacktestRunInsight(Base):
     )
 
     run: Mapped["BacktestRun"] = relationship(back_populates="insight")
+
+
+class PaperPortfolio(Base):
+    """Virtual portfolio for the paper-trading engine (one per user in this phase)."""
+
+    __tablename__ = "paper_portfolios"
+    __table_args__ = (UniqueConstraint("owner_user_id", name="uq_paper_portfolios_owner"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    initial_cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    # Last computed equity snapshot (cash + market value of open positions);
+    # live unrealized PnL is derived from ticks and never persisted per tick.
+    equity: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    risk_settings: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    engine_running: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    kill_switch_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    kill_switch_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    owner: Mapped[User] = relationship(back_populates="paper_portfolios")
+    positions: Mapped[list["PaperPosition"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    orders: Mapped[list["PaperOrder"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    trades: Mapped[list["PaperTrade"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+    events: Mapped[list["PaperEngineEvent"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+
+
+class PaperOrder(Base):
+    """Simulated order. Lifecycle: proposed -> approved -> filled, or
+    rejected_risk / rejected_user / cancelled / expired."""
+
+    __tablename__ = "paper_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)  # BUY | SELL
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    stop_loss_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    take_profit_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    # Origin signal (strategy, direction, strength, rationale) shown on the order card.
+    signal_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    # Exposure/risk numbers computed at proposal time (pct of portfolio, notional...).
+    risk_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    # Market-data liveness at proposal/fill (REAL-TIME | DELAYED | ...): the feed
+    # only serves delayed data on unentitled accounts (see docs/gateway-findings.md).
+    data_liveness: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    reject_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    proposed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    portfolio: Mapped[PaperPortfolio] = relationship(back_populates="orders")
+    trades: Mapped[list["PaperTrade"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+
+
+class PaperPosition(Base):
+    __tablename__ = "paper_positions"
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", "symbol", name="uq_paper_positions_portfolio_symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    avg_entry_price: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False, default=Decimal("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    portfolio: Mapped[PaperPortfolio] = relationship(back_populates="positions")
+
+
+class PaperTrade(Base):
+    """A simulated fill, with the fee applied and the quote it was based on."""
+
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    fee_paid: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    fill_basis: Mapped[str] = mapped_column(String(16), nullable=False)  # bid_ask | last_slippage
+    quote_age_seconds: Mapped[Decimal | None] = mapped_column(Numeric(10, 3), nullable=True)
+    data_liveness: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    # Set when this fill closes/reduces a position (net of fees).
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    portfolio: Mapped[PaperPortfolio] = relationship(back_populates="trades")
+    order: Mapped[PaperOrder] = relationship(back_populates="trades")
+
+
+class PaperEngineEvent(Base):
+    """Ledger of everything the paper engine does — the source of the cockpit."""
+
+    __tablename__ = "paper_engine_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(8), nullable=False, default="info")
+    symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+
+    portfolio: Mapped[PaperPortfolio] = relationship(back_populates="events")
+
+
+class PaperEquityPoint(Base):
+    """Periodic equity snapshot so the cockpit curve survives page reloads."""
+
+    __tablename__ = "paper_equity_points"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_portfolios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    equity: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
 
 
 class BacktestTrade(Base):

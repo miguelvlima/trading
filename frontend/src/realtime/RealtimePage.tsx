@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { isoSec, quotesToIndicatorBars } from "../market/chartBars";
-import { resolveFormingBar } from "../market/formingBar";
+import { formatStaleBarMessage, isMarketDataStale } from "../market/dataFreshness";
+import { useFormingBar } from "../market/useFormingBar";
 import { type IndexSpec, type Instrument, fetchIndices, fetchInstruments } from "./api";
 import { type HoverBar, CandleChart } from "./CandleChart";
 import { ChartControls } from "./ChartControls";
@@ -191,10 +192,7 @@ function RealtimePageContent({
 
   // Live forming bar: provider non-final bar, or tick-synthesized when only DB snapshots exist.
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
-  const { forming, isLiveForming } = useMemo(
-    () => resolveFormingBar(lastBar, candle, tick, nowMs),
-    [lastBar, candle, tick, nowMs],
-  );
+  const { forming, isLiveForming } = useFormingBar(lastBar, candle, tick, nowMs);
 
   const lastSnapshot: LastBarSnapshot | null = useMemo(() => {
     if (forming && isLiveForming) {
@@ -225,6 +223,10 @@ function RealtimePageContent({
   }, [forming, isLiveForming, lastBar, candle]);
 
   const lastBarMs = lastBar ? isoSec(lastBar.timestamp) * 1000 : null;
+
+  // Última barra da BD demasiado velha para o timeframe => avisa em vez de
+  // deixar o utilizador assumir que a vela em formação continua o histórico.
+  const barsStale = isMarketDataStale(lastBarMs, candle, nowMs);
 
   // chart-head: hovered bar, else the live/last bar.
   const headBar = hoverBar ?? (forming as HoverBar | null) ??
@@ -296,6 +298,9 @@ function RealtimePageContent({
       />
 
       {streamError && <p className="hint">{streamError}</p>}
+      {barsStale && lastBarMs !== null && (
+        <p className="hint">{formatStaleBarMessage(candle, lastBarMs)}</p>
+      )}
 
       <div className="rt-main">
         <div className="rt-chart-wrap">

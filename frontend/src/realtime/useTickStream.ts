@@ -14,6 +14,12 @@ export type LiveTick = {
   bidSize: number | null;
   askSize: number | null;
   lastSize: number | null;
+  /**
+   * Volume ACUMULADO da sessão, em ações (o backend descodifica o formato
+   * micro-ações do IBKR — ver `Tick.volume` em types.py). O volume de uma vela
+   * tem de ser derivado como delta entre acumulados (ver market/formingBar.ts);
+   * nunca atribuir este valor directamente a uma barra.
+   */
   volume: number | null;
   dayHigh: number | null;
   dayLow: number | null;

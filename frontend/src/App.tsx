@@ -13,8 +13,10 @@ import {
 } from "./market/windowCandle";
 
 import { HotMoversGrid } from "./market/HotMovers/HotMoversGrid";
-import { resolveFormingBar } from "./market/formingBar";
+import { useFormingBar } from "./market/useFormingBar";
+import { SystemStatusPanel } from "./config/SystemStatusPanel";
 import { findSignalsAtChartTime } from "./market/signalMarkers";
+import { PaperPage } from "./paper/PaperPage";
 import { RealtimePage } from "./realtime/RealtimePage";
 import { INDICATORS, type IndicatorId } from "./realtime/indicators";
 import { buildLiveEvaluatePayload } from "./signals/liveEvaluatePayload";
@@ -65,10 +67,10 @@ type ApiBar = {
   volume: string;
 };
 
-type ViewTab = "market" | "signals" | "backtests";
+type ViewTab = "market" | "signals" | "backtests" | "paper";
 type SignalDirectionFilter = "BOTH" | "BUY" | "SELL";
 type SignalsSourceMode = "historical" | "live";
-type ConfigTab = "data" | "signals" | "execution" | "alerts";
+type ConfigTab = "system" | "data" | "signals" | "execution" | "alerts";
 
 type SignalItem = {
   id: number;
@@ -304,7 +306,7 @@ const toUserFetchError = (error: unknown, fallback: string): string => {
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ??
-  (import.meta.env.DEV ? "" : "http://localhost:8000");
+  (import.meta.env.DEV ? "" : "http://127.0.0.1:8100");
 const AUTH_TOKEN_STORAGE_KEY = "trading_auth_token";
 const CONSENSUS_THRESHOLD_STORAGE_KEY = "trading_consensus_threshold_pct";
 const SIGNALS_FETCH_LIMIT_STORAGE_KEY = "trading_signals_fetch_limit";
@@ -597,7 +599,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<ViewTab>("market");
   const [chartMode, setChartMode] = useState<ChartMode>("historico");
   const [showConfigPanel, setShowConfigPanel] = useState(false);
-  const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("signals");
+  const [activeConfigTab, setActiveConfigTab] = useState<ConfigTab>("system");
   const [startDate, setStartDate] = useState<string>(
     toInputDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)),
   );
@@ -855,16 +857,11 @@ function App() {
     return () => globalThis.clearInterval(timer);
   }, []);
 
-  const liveSignalForming = useMemo(
-    () => {
-      if (!isLiveSignals || liveSignalQuotes.length === 0) {
-        return { forming: null, isLiveForming: false };
-      }
-      const lastQuote = liveSignalQuotes[liveSignalQuotes.length - 1];
-      return resolveFormingBar(lastQuote, candle, tick, marketNowMs);
-    },
-    [isLiveSignals, liveSignalQuotes, candle, tick, marketNowMs],
-  );
+  const liveSignalLastQuote =
+    isLiveSignals && liveSignalQuotes.length > 0
+      ? liveSignalQuotes[liveSignalQuotes.length - 1]
+      : null;
+  const liveSignalForming = useFormingBar(liveSignalLastQuote, candle, tick, marketNowMs);
 
   const followedSymbols = useMemo(() => {
     const set = new Set<string>();
@@ -3117,6 +3114,13 @@ function App() {
               <div className="rt-seg">
                 <button
                   type="button"
+                  className={activeConfigTab === "system" ? "rt-seg-active" : ""}
+                  onClick={() => setActiveConfigTab("system")}
+                >
+                  Sistema
+                </button>
+                <button
+                  type="button"
                   className={activeConfigTab === "data" ? "rt-seg-active" : ""}
                   onClick={() => setActiveConfigTab("data")}
                 >
@@ -3146,6 +3150,18 @@ function App() {
               </div>
             </nav>
             <div className="config-sections">
+              {activeConfigTab === "system" && (
+                <section className="config-section">
+                  <div className="config-section-header">
+                    <h4>Diagnóstico do sistema</h4>
+                    <p>
+                      Estado dos pontos fundamentais: base de dados, IB Gateway, feed de dados,
+                      frescura das barras e engine paper.
+                    </p>
+                  </div>
+                  <SystemStatusPanel apiBaseUrl={API_BASE_URL} authToken={authToken} />
+                </section>
+              )}
               {activeConfigTab === "data" && (
                 <section className="config-section">
                   <div className="config-section-header">
@@ -3343,6 +3359,13 @@ function App() {
           >
             Simulação
           </button>
+          <button
+            type="button"
+            className={activeTab === "paper" ? "app-tab-btn app-tab-btn-active" : "app-tab-btn"}
+            onClick={() => setActiveTab("paper")}
+          >
+            Paper
+          </button>
         </nav>
 
       <section className="panel app-panel-card">
@@ -3356,6 +3379,7 @@ function App() {
           />
         )}
 
+        {activeTab !== "paper" && (
         <GlobalMarketFilters
           activeTab={activeTab}
           chartMode={chartMode}
@@ -3391,6 +3415,7 @@ function App() {
           activeIndicators={activeIndicators}
           onToggleIndicator={toggleActiveIndicator}
         />
+        )}
 
         {!error && isDateFilterIncomplete && <p className="hint">Defina data início e data fim.</p>}
         {!error && isDateRangeInvalid && <p className="hint">A data fim tem de ser igual ou posterior à data início.</p>}
@@ -3751,6 +3776,12 @@ function App() {
                 </>
               )}
             </div>
+          </div>
+
+          <div className={activeTab === "paper" ? "tab-pane tab-pane-active" : "tab-pane"}>
+            {activeTab === "paper" && (
+              <PaperPage apiBaseUrl={API_BASE_URL} authToken={authToken} />
+            )}
           </div>
 
           <div className={activeTab === "backtests" ? "tab-pane tab-pane-active" : "tab-pane"}>

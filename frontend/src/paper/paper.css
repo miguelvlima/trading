@@ -1,0 +1,688 @@
+/* Paper Trading cockpit — reuses the --rt-* tokens (theme/tokens.css) and the
+   .rt-card / .rt-badge shells from realtime.css; everything new is .pp-*. */
+
+.pp-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* -- status bar -- */
+.pp-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border);
+  border-radius: var(--rt-radius, 8px);
+  font-size: 12px;
+}
+
+.pp-engine,
+.pp-feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.pp-engine-on .rt-dot,
+.pp-feed-up .rt-dot {
+  background: var(--rt-up);
+}
+
+.pp-engine-off .rt-dot,
+.pp-feed-down .rt-dot {
+  background: var(--rt-down);
+}
+
+.pp-feed-warn .rt-dot {
+  background: #eab308;
+}
+
+.pp-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pp-badge-warn {
+  color: #eab308;
+  border: 1px solid #eab30855;
+  background: #eab30814;
+}
+
+.pp-killswitch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--rt-down);
+  font-weight: 700;
+}
+
+.pp-muted {
+  color: var(--rt-dim);
+}
+
+/* -- buttons -- */
+.pp-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--rt-border-bright, var(--rt-border));
+  background: var(--rt-panel-2, var(--rt-panel));
+  color: var(--rt-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pp-btn-approve {
+  border-color: var(--rt-up);
+  color: var(--rt-up);
+}
+
+.pp-btn-reject,
+.pp-btn-danger {
+  border-color: var(--rt-down);
+  color: var(--rt-down);
+}
+
+/* -- layout grid -- */
+.pp-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 5fr) minmax(320px, 7fr);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .pp-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Independent panel stacks inside .pp-grid: each column flows on its own, so
+   a tall activity feed never opens holes next to short panels. */
+.pp-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pp-panel {
+  min-height: 120px;
+}
+
+/* -- pending order cards -- */
+.pp-order-card {
+  margin-top: 8px;
+}
+
+.pp-order-rationale {
+  margin: 6px 0;
+  color: var(--rt-dim);
+  font-size: 12px;
+}
+
+.pp-order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--rt-text);
+}
+
+.pp-order-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* -- event feed -- */
+.pp-panel-feed {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.pp-feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pp-event {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 6px;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+}
+
+.pp-event-time {
+  font-family: var(--rt-mono, monospace);
+  color: var(--rt-faint, var(--rt-dim));
+  flex-shrink: 0;
+}
+
+.pp-event-symbol {
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.pp-event-up {
+  border-left-color: var(--rt-up);
+}
+
+.pp-event-down {
+  border-left-color: var(--rt-down);
+  background: var(--rt-down-bg, transparent);
+}
+
+.pp-event-warn {
+  border-left-color: #eab308;
+}
+
+/* -- positions table -- */
+.pp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pp-table th,
+.pp-table td {
+  text-align: right;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--rt-border);
+}
+
+.pp-table th:first-child,
+.pp-table td:first-child {
+  text-align: left;
+}
+
+.pp-table tfoot td {
+  font-weight: 700;
+  border-bottom: none;
+}
+
+/* -- equity panel -- */
+.pp-panel-wide {
+  width: 100%;
+}
+
+.pp-equity-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .pp-equity-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pp-equity-chart {
+  min-width: 0;
+}
+
+.pp-stats-column {
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 0;
+}
+
+/* -- risk gauges -- */
+.pp-gauges {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pp-gauge-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.pp-gauge-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+  overflow: hidden;
+}
+
+.pp-gauge-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.pp-gauge-ok {
+  background: var(--rt-up);
+}
+
+.pp-gauge-warn {
+  background: #eab308;
+}
+
+.pp-gauge-danger {
+  background: var(--rt-down);
+}
+
+/* -- per-symbol PnL bars -- */
+.pp-pnl-bars {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pp-pnl-bar-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.pp-pnl-bar-symbol {
+  font-weight: 700;
+}
+
+.pp-pnl-bar-track {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+}
+
+.pp-pnl-bar-half {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+
+.pp-pnl-bar-neg {
+  justify-content: flex-end;
+  border-right: 1px solid var(--rt-border-bright, var(--rt-border));
+}
+
+.pp-pnl-bar-half i {
+  display: block;
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.pp-pnl-bar-neg i {
+  background: var(--rt-down);
+}
+
+.pp-pnl-bar-pos i {
+  background: var(--rt-up);
+}
+
+.pp-pnl-bar-value {
+  text-align: right;
+  font-family: var(--rt-mono, monospace);
+}
+
+.pp-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 10px;
+}
+
+.pp-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pp-stat-v {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* -- setup / errors -- */
+.pp-setup-card {
+  max-width: 480px;
+}
+
+.pp-setup-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pp-input {
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+  border-radius: 6px;
+  color: var(--rt-text);
+  padding: 6px 10px;
+  width: 160px;
+}
+
+.pp-error {
+  color: var(--rt-down);
+  font-size: 12px;
+}
+
+/* -- settings panel ---------------------------------------------------------- */
+
+.pp-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.pp-settings-subhead {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+}
+
+/* Signal-history table is text-heavy: left-align everything (the generic
+   .pp-table right-aligns numeric columns, which reads badly for rationale). */
+.pp-table-signals th,
+.pp-table-signals td {
+  text-align: left;
+}
+
+/* Rationale column of the signal-history table: keep rows one line high; the
+   full text lives in the cell's title tooltip. */
+.pp-signal-rationale {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pp-field-wide {
+  grid-column: 1 / -1;
+}
+
+.pp-field-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  color: var(--rt-text);
+}
+
+.pp-field-label {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pp-field-hint {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 11px;
+}
+
+.pp-input-sm {
+  width: 120px;
+}
+
+.pp-settings-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pp-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rt-border);
+}
+
+.pp-btn-sm {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* -- tracked symbols, evaluation summary, waiting orders --------------------- */
+
+.pp-symbols {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pp-symbol-chip {
+  background: var(--rt-panel-2, var(--rt-panel));
+  border: 1px solid var(--rt-border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--rt-text);
+}
+
+.pp-eval {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 12px;
+  border-top: 1px dashed var(--rt-border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.pp-waiting {
+  border-top: 1px dashed var(--rt-border);
+  margin-top: 10px;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pp-waiting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+/* -- settings chips ----------------------------------------------------------- */
+
+.pp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pp-chip {
+  background: transparent;
+  border: 1px solid var(--rt-border);
+  border-radius: 12px;
+  color: var(--rt-muted, #8a8f98);
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pp-chip-on {
+  border-color: var(--rt-up, #22c55e);
+  color: var(--rt-text);
+}
+
+/* -- risk footer + trades table ------------------------------------------------ */
+
+.pp-losses {
+  color: var(--rt-muted, #8a8f98);
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+.pp-losses-warn {
+  color: var(--rt-warn, #f59e0b);
+}
+
+.pp-table-scroll {
+  overflow-x: auto;
+}
+
+/* -- market carousel ---------------------------------------------------------- */
+
+.pp-carousel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pp-carousel-title {
+  flex: 1;
+  min-width: 200px;
+}
+
+.pp-carousel-windows {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pp-carousel-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.pp-carousel-body {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.pp-carousel-chart {
+  flex: 1;
+  min-width: 0;
+}
+
+.pp-carousel-side {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-left: 1px solid var(--rt-border);
+  padding-left: 14px;
+  font-size: 13px;
+}
+
+.pp-side-price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pp-side-price-v {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.pp-side-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pp-side-divider {
+  border-top: 1px dashed var(--rt-border);
+}
+
+@media (max-width: 900px) {
+  .pp-carousel-body {
+    flex-direction: column;
+  }
+  .pp-carousel-side {
+    width: auto;
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid var(--rt-border);
+    padding-top: 10px;
+  }
+}
+
+/* -- live signal monitor (carousel sidebar) ----------------------------------- */
+
+.pp-signal-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pp-signal-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.pp-signal-name {
+  color: var(--rt-muted, #8a8f98);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -- vertical scroll for signal tables ----------------------------------------- */
+
+.pp-scroll-y {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pp-scroll-y thead th {
+  position: sticky;
+  top: 0;
+  background: var(--rt-panel, #0f1522);
+  z-index: 1;
+}
+
+.pp-signal-list {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 4px;
+}

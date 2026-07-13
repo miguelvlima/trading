@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.services.commission_models import compute_commission
+from app.services.execution_engine import (
+    apply_slippage,
+    commission_for_order as _shared_commission_for_order,
+    compute_position_quantity,
+    dynamic_slippage_bps,
+    resolve_long_risk_exit as _resolve_long_risk_exit,
+    resolve_short_risk_exit as _resolve_short_risk_exit,
+)
 from app.services.indicator_engine import atr, relative_volume
 from app.services.strategy_engine import BarInput
 
@@ -61,11 +68,6 @@ class BacktestConfig:
     max_bars_in_trade: int | None
     benchmark_enabled: bool
     slippage_model: str  # "fixed" | "atr_volume"
-
-
-# Typical daily ATR/close for liquid US equities; used to scale dynamic slippage around 1x.
-_DYNAMIC_SLIPPAGE_BASELINE_ATR_PCT = 0.015
-_ATR_RISK_STOP_ATR_MULTIPLIER = 2.0
 
 
 @dataclass
@@ -288,56 +290,9 @@ def _metrics_as_dict(metrics: BacktestMetrics) -> dict[str, float | int]:
     }
 
 
-def _resolve_long_risk_exit(
-    bar: BarInput,
-    entry_price: float,
-    stop_loss_rate: float | None,
-    take_profit_rate: float | None,
-) -> tuple[str, float] | None:
-    """Return (reason, raw_exit_price) when SL/TP is hit within the bar."""
-    stop_price = entry_price * (1.0 - stop_loss_rate) if stop_loss_rate is not None else None
-    tp_price = entry_price * (1.0 + take_profit_rate) if take_profit_rate is not None else None
-
-    if stop_price is not None and bar.open <= stop_price:
-        return "Stop-loss triggered (gap at open).", bar.open
-    if tp_price is not None and bar.open >= tp_price:
-        return "Take-profit triggered (gap at open).", bar.open
-
-    stop_hit = stop_price is not None and bar.low <= stop_price
-    tp_hit = tp_price is not None and bar.high >= tp_price
-    if stop_hit and tp_hit:
-        return "Stop-loss triggered (intrabar).", stop_price
-    if stop_hit:
-        return "Stop-loss triggered.", stop_price
-    if tp_hit:
-        return "Take-profit triggered.", tp_price
-    return None
-
-
-def _resolve_short_risk_exit(
-    bar: BarInput,
-    entry_price: float,
-    stop_loss_rate: float | None,
-    take_profit_rate: float | None,
-) -> tuple[str, float] | None:
-    """Return (reason, raw_exit_price) when SL/TP is hit within the bar."""
-    stop_price = entry_price * (1.0 + stop_loss_rate) if stop_loss_rate is not None else None
-    tp_price = entry_price * (1.0 - take_profit_rate) if take_profit_rate is not None else None
-
-    if stop_price is not None and bar.open >= stop_price:
-        return "Stop-loss triggered (gap at open).", bar.open
-    if tp_price is not None and bar.open <= tp_price:
-        return "Take-profit triggered (gap at open).", bar.open
-
-    stop_hit = stop_price is not None and bar.high >= stop_price
-    tp_hit = tp_price is not None and bar.low <= tp_price
-    if stop_hit and tp_hit:
-        return "Stop-loss triggered (intrabar).", stop_price
-    if stop_hit:
-        return "Stop-loss triggered.", stop_price
-    if tp_hit:
-        return "Take-profit triggered.", tp_price
-    return None
+# The fill/fee/sizing/SL-TP primitives live in ``execution_engine`` (shared with
+# paper trading). These wrappers keep the historical private signatures that the
+# simulator and the existing test suite call.
 
 
 def _dynamic_slippage_bps(
@@ -347,18 +302,12 @@ def _dynamic_slippage_bps(
     close: float,
     relative_vol: float | None,
 ) -> float:
-    if close <= 0:
-        return base_bps
-    if atr_value is None:
-        return base_bps
-
-    atr_pct = atr_value / close
-    atr_mult = max(0.5, min(4.0, atr_pct / _DYNAMIC_SLIPPAGE_BASELINE_ATR_PCT))
-    if relative_vol is None or relative_vol <= 0:
-        vol_mult = 1.0
-    else:
-        vol_mult = max(0.75, min(2.5, 1.0 / (relative_vol**0.5)))
-    return base_bps * atr_mult * vol_mult
+    return dynamic_slippage_bps(
+        base_bps=base_bps,
+        atr_value=atr_value,
+        close=close,
+        relative_vol=relative_vol,
+    )
 
 
 def _compute_position_quantity(
@@ -371,27 +320,15 @@ def _compute_position_quantity(
     stop_loss_rate: float | None,
     position_size_rate: float,
 ) -> float:
-    if exec_price <= 0 or capital <= 0:
-        return 0.0
-
-    if config.position_sizing_model == "atr_risk":
-        risk_amount = capital * max(0.0, config.risk_per_trade_pct / 100.0)
-        if stop_loss_rate:
-            stop_distance = exec_price * stop_loss_rate
-        else:
-            atr_value = atr_values[bar_idx]
-            stop_distance = (
-                _ATR_RISK_STOP_ATR_MULTIPLIER * atr_value
-                if atr_value is not None and atr_value > 0
-                else exec_price * 0.02
-            )
-        qty = risk_amount / stop_distance if stop_distance > 0 else 0.0
-        max_notional = capital * position_size_rate
-        if exec_price * qty > max_notional:
-            qty = max_notional / exec_price
-        return qty
-
-    return (capital * position_size_rate) / exec_price
+    return compute_position_quantity(
+        capital=capital,
+        exec_price=exec_price,
+        position_sizing_model=config.position_sizing_model,
+        risk_per_trade_pct=config.risk_per_trade_pct,
+        position_size_rate=position_size_rate,
+        stop_loss_rate=stop_loss_rate,
+        atr_value=atr_values[bar_idx],
+    )
 
 
 def _simulate_window(
@@ -414,7 +351,7 @@ def _simulate_window(
         return BacktestOutput(metrics=metrics, trades=[], summary={"note": "No bars available."})
 
     def commission_for_order(shares: float, notional: float) -> float:
-        return compute_commission(
+        return _shared_commission_for_order(
             fee_model=config.fee_model,
             shares=shares,
             notional=notional,
@@ -465,10 +402,7 @@ def _simulate_window(
         return dynamic_bps / 10000.0
 
     def execution_price(raw_price: float, side: str, bar_idx: int) -> float:
-        slip = slippage_rate_for_bar(bar_idx)
-        if side == "BUY":
-            return raw_price * (1.0 + slip)
-        return raw_price * (1.0 - slip)
+        return apply_slippage(raw_price, side, slippage_rate_for_bar(bar_idx))
 
     def close_position(
         current_bar: BarInput,

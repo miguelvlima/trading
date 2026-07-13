@@ -126,8 +126,14 @@ def list_market_bars(
     if end is not None:
         query = query.where(MarketBar.timestamp <= end)
 
-    bars = db.execute(query.order_by(MarketBar.timestamp.asc()).limit(limit)).scalars().all()
-    return [MarketBarResponse.model_validate(item, from_attributes=True) for item in bars]
+    # ``limit`` must keep the MOST RECENT bars: ordering ascending and limiting
+    # returned the oldest N, so a chart asking for "the last day of 5m bars" got
+    # weeks-old data whenever the DB held more than ``limit`` rows. Fetch the
+    # newest N and reverse back to ascending for consumers.
+    bars = db.execute(query.order_by(MarketBar.timestamp.desc()).limit(limit)).scalars().all()
+    return [
+        MarketBarResponse.model_validate(item, from_attributes=True) for item in reversed(bars)
+    ]
 
 
 @router.get("/bars/availability")

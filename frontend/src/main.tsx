@@ -4,6 +4,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./theme/tokens.css";
 import "./realtime/realtime.css";
+import "./paper/paper.css";
 import "./app-shell.css";
 import "./styles.css";
 

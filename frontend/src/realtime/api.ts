@@ -240,7 +240,7 @@ export function realtimeWsUrl(baseUrl: string, token: string): string {
     baseUrl ||
     (typeof globalThis !== "undefined" && "location" in globalThis
       ? globalThis.location.origin
-      : "http://localhost:8000");
+      : "http://127.0.0.1:8100");
   let origin = resolvedBase;
   if (origin.startsWith("https")) origin = "wss" + origin.slice(5);
   else if (origin.startsWith("http")) origin = "ws" + origin.slice(4);

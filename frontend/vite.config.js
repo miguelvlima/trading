@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
-var backendTarget = "http://localhost:8000";
+// 127.0.0.1 (nunca "localhost") e porta 8100: em Windows, "localhost" pode
+// resolver para ::1, onde o Docker/WSL segura a porta 8000 de outros projetos.
+var backendTarget = "http://127.0.0.1:8100";
 export default defineConfig({
     plugins: [react()],
     test: {

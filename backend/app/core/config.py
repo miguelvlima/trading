@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # 3 so reqMktData returns delayed ticks instead of nothing.
     ibkr_market_data_type: int = 3
 
+    # Paper trading engine: how often the runtime evaluates signals / retries
+    # fills, and how many closed bars feed each strategy evaluation.
+    paper_engine_poll_seconds: float = 15.0
+    paper_engine_bars_limit: int = 300
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]

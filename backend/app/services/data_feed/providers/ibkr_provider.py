@@ -88,6 +88,24 @@ def _to_decimal(value: object) -> Decimal:
 # All Gateway calls run on this single dedicated thread (see _on_ib_loop).
 _IB_WORKER_PREFIX = "ibkr-hist"
 
+# Cumulative session volume from ``reqMktData`` (tickType 8/74) arrives from
+# modern Gateways (observed: server version 176, delayed data) as a fixed-point
+# integer in MICRO-shares — e.g. ``13092042091247`` on the wire means
+# 13,092,042.091247 shares (fractional-share dust included). Plain bid/ask/last
+# sizes arrive as ordinary share counts. Values above the threshold can only be
+# micro-encoded (no US stock trades >1e9 shares in a session), so we divide
+# those by 1e6; smaller values are taken as shares verbatim.
+_VOLUME_MICRO_UNITS_THRESHOLD = Decimal("1000000000")
+_MICRO_SHARES = Decimal("0.000001")
+
+
+def _normalize_cumulative_volume(raw: Decimal | None) -> Decimal | None:
+    if raw is None:
+        return None
+    if raw > _VOLUME_MICRO_UNITS_THRESHOLD:
+        return raw * _MICRO_SHARES
+    return raw
+
 
 def _on_ib_loop(method):
     """Marshal an IBKR call onto the provider's dedicated event-loop thread.
@@ -740,6 +758,13 @@ class IBKRStreamingProvider:
     def _emit_tick(self, key: str, ticker, timestamp: datetime) -> None:
         if self._on_tick is None:
             return
+        # IBKR tickType 8/74 ("Volume") is the session's CUMULATIVE traded
+        # volume; modern Gateways encode it in micro-shares (see
+        # ``_normalize_cumulative_volume``). Normalize to shares here so every
+        # consumer sees one unit. It stays cumulative — per-bar volume must be
+        # derived as a delta between consecutive readings (the frontend
+        # forming-bar logic does).
+        volume = _normalize_cumulative_volume(_opt_decimal(getattr(ticker, "volume", None)))
         self._on_tick(
             Tick(
                 symbol=key,
@@ -750,7 +775,7 @@ class IBKRStreamingProvider:
                 bid_size=_opt_decimal(getattr(ticker, "bidSize", None)),
                 ask_size=_opt_decimal(getattr(ticker, "askSize", None)),
                 last_size=_opt_decimal(getattr(ticker, "lastSize", None)),
-                volume=_opt_decimal(getattr(ticker, "volume", None)),
+                volume=volume,
                 day_high=_opt_decimal(getattr(ticker, "high", None)),
                 day_low=_opt_decimal(getattr(ticker, "low", None)),
             )

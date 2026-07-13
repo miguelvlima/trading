@@ -49,6 +49,7 @@ type CandleChartProps = {
   /** When set, zooms the chart around this bar (overrides windowSeconds). */
   focusTimeSec?: number | null;
   focusBarsVisible?: number;
+  height?: number;
 };
 
 // Some endpoints serialize without a timezone designator; normalize the bare
@@ -84,6 +85,7 @@ export function CandleChart({
   onChartClick,
   focusTimeSec = null,
   focusBarsVisible = 50,
+  height = 440,
 }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -106,7 +108,7 @@ export function CandleChart({
 
     const chart = createChart(container, {
       width: container.clientWidth,
-      height: 440,
+      height,
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: "#8492ad",

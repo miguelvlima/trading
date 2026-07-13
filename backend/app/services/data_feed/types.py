@@ -103,7 +103,12 @@ class Tick:
     bid_size: Decimal | None = None
     ask_size: Decimal | None = None
     last_size: Decimal | None = None
-    volume: Decimal | None = None  # cumulative day volume
+    # CUMULATIVE session volume, in shares. Modern Gateways deliver tickType
+    # 8/74 volume as a fixed-point integer in micro-shares;
+    # ``IBKRStreamingProvider._emit_tick`` normalizes to shares before building
+    # the Tick. Because it is cumulative, per-bar volume must be computed as the
+    # delta between consecutive readings — never copied into a bar directly.
+    volume: Decimal | None = None
     day_high: Decimal | None = None
     day_low: Decimal | None = None
 

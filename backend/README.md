@@ -1,4 +1,4 @@
-# Trading Backend (Fase 4)
+﻿# Trading Backend (Fase 4)
 
 ## Requisitos
 
@@ -13,7 +13,7 @@ Consulte o guia completo para trabalho em paralelo (prompt-first):
 
 Spec da frente real-time (Nuno):
 - `../docs/realtime-data-feed-spec.md`
-- Plano funcional Backtesting/Simulação:
+- Plano funcional Backtesting/SimulaÃ§Ã£o:
 - `../docs/backtesting-phase-plan.md`
 
 Templates de ambiente:
@@ -21,7 +21,7 @@ Templates de ambiente:
 - staging: `backend/.env.staging.example`
 - production: `backend/.env.production.example`
 
-## Setup rápido
+## Setup rÃ¡pido
 
 ```powershell
 python -m venv .venv
@@ -34,36 +34,36 @@ No arranque local via script central (`npm run dev:all` na raiz), o backend exec
 - `alembic upgrade head`
 - `python -m app.scripts.bootstrap_dev_user`
 
-Isto cria automaticamente (se não existir) um user local:
+Isto cria automaticamente (se nÃ£o existir) um user local:
 - email: `dev@tradingapp.dev`
 - password: `DevPass123!`
 
-## Segurança mínima (recomendado para partilha)
+## SeguranÃ§a mÃ­nima (recomendado para partilha)
 
 No `backend/.env`, define:
 
 - `CORS_ALLOW_ORIGINS=http://localhost:5173,https://<teu-frontend>.vercel.app`
 - `JWT_SECRET_KEY=<chave-forte>`
 
-Nesta fase o registo público está desativado. Crie utilizadores internos via script:
+Nesta fase o registo pÃºblico estÃ¡ desativado. Crie utilizadores internos via script:
 
 ```powershell
 python -m app.scripts.create_user --email admin@empresa.com --password "StrongPass123" --display-name "Admin"
 ```
 
-Os endpoints de `market-data`, `signals` e `strategy-combinations` exigem sessão com token Bearer.
+Os endpoints de `market-data`, `signals` e `strategy-combinations` exigem sessÃ£o com token Bearer.
 
-## Operação em produção (hardening)
+## OperaÃ§Ã£o em produÃ§Ã£o (hardening)
 
-- Não use bootstrap automático de admin no startup.
-- Não mantenha variáveis `BOOTSTRAP_ADMIN_*` definidas em produção.
+- NÃ£o use bootstrap automÃ¡tico de admin no startup.
+- NÃ£o mantenha variÃ¡veis `BOOTSTRAP_ADMIN_*` definidas em produÃ§Ã£o.
 - Para criar utilizadores internos, execute apenas o script administrativo manual:
 
 ```powershell
 python -m app.scripts.create_user --email user@empresa.com --password "StrongPass123" --display-name "Nome"
 ```
 
-### Smoke test rápido pós-deploy
+### Smoke test rÃ¡pido pÃ³s-deploy
 
 ```powershell
 curl https://<backend>.up.railway.app/health
@@ -75,7 +75,7 @@ curl -X POST https://<backend>.up.railway.app/auth/login -H "Content-Type: appli
 
 ### Guardrails de migrations (trabalho paralelo)
 
-Antes de abrir PR com alterações de schema:
+Antes de abrir PR com alteraÃ§Ãµes de schema:
 
 ```powershell
 alembic heads
@@ -87,7 +87,7 @@ O resultado deve indicar apenas um head ativo.
 
 ```powershell
 alembic upgrade head
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8100
 ```
 
 ## Testes
@@ -121,7 +121,7 @@ pytest
 
 ## Importar CSV OHLCV
 
-CSV com cabeçalho obrigatório: `timestamp,open,high,low,close,volume`
+CSV com cabeÃ§alho obrigatÃ³rio: `timestamp,open,high,low,close,volume`
 
 ```powershell
 python -m app.scripts.import_ohlcv --symbol AAPL --timeframe 1d --csv-path .\data\aapl.csv
@@ -131,114 +131,114 @@ python -m app.scripts.import_ohlcv --symbol AAPL --timeframe 1d --csv-path .\dat
 
 Liga a app a dados de mercado reais via polling de um provider e persiste candles
 normalizados na tabela existente `market_bars` (reutiliza `Instrument` / `MarketBar`,
-sem alterações de schema).
+sem alteraÃ§Ãµes de schema).
 
-Providers disponíveis:
-- `ibkr` (**default**) — via IB Gateway / TWS API (paper, read-only). Requer um IB Gateway
-  a correr (ver pré-requisitos abaixo). `ib_insync` já vem nas dependências base.
-- `yfinance` (fallback) — REST/polling, sem necessidade de Gateway. Selecionar com
-  `REALTIME_FEED_PROVIDER=yfinance` (útil para dev/CI sem IBKR).
+Providers disponÃ­veis:
+- `ibkr` (**default**) â€” via IB Gateway / TWS API (paper, read-only). Requer um IB Gateway
+  a correr (ver prÃ©-requisitos abaixo). `ib_insync` jÃ¡ vem nas dependÃªncias base.
+- `yfinance` (fallback) â€” REST/polling, sem necessidade de Gateway. Selecionar com
+  `REALTIME_FEED_PROVIDER=yfinance` (Ãºtil para dev/CI sem IBKR).
 
 ### Contrato de dados (importante)
 
-- **Só barras fechadas (`is_final`)**: a barra do período ainda em formação (ex.: a barra
-  `1d` de hoje a meio do dia) **não** é persistida. Assim o backtesting nunca lê um `close`
-  que ainda vai mudar. O serviço (`data_feed/service.py`) descarta `is_final=False`.
-- **Time-source = servidor, em UTC**: os timestamps das barras vêm do provider normalizados
-  a UTC, nunca de `datetime.now()` local (o relógio da máquina não é de confiança —
-  ver nota do IB Gateway abaixo). `now()` só é usado para decidir se um período já fechou.
+- **SÃ³ barras fechadas (`is_final`)**: a barra do perÃ­odo ainda em formaÃ§Ã£o (ex.: a barra
+  `1d` de hoje a meio do dia) **nÃ£o** Ã© persistida. Assim o backtesting nunca lÃª um `close`
+  que ainda vai mudar. O serviÃ§o (`data_feed/service.py`) descarta `is_final=False`.
+- **Time-source = servidor, em UTC**: os timestamps das barras vÃªm do provider normalizados
+  a UTC, nunca de `datetime.now()` local (o relÃ³gio da mÃ¡quina nÃ£o Ã© de confianÃ§a â€”
+  ver nota do IB Gateway abaixo). `now()` sÃ³ Ã© usado para decidir se um perÃ­odo jÃ¡ fechou.
 - **Upsert idempotente**: respeita a constraint `instrument_id + timeframe + timestamp`; o
   get-or-create de `Instrument` trata `IntegrityError` (corrida com o importador de CSV).
 
-### Variáveis de ambiente
+### VariÃ¡veis de ambiente
 
 Definidas em `backend/.env` (ver `.env.example`):
 
-| Variável | Default | Descrição |
+| VariÃ¡vel | Default | DescriÃ§Ã£o |
 | --- | --- | --- |
 | `REALTIME_FEED_PROVIDER` | `ibkr` | Provider de mercado (`ibkr` default, ou `yfinance`) |
-| `REALTIME_FEED_SYMBOLS` | `AAPL,MSFT,NVDA` | Símbolos a seguir (separados por vírgula) |
+| `REALTIME_FEED_SYMBOLS` | `AAPL,MSFT,NVDA` | SÃ­mbolos a seguir (separados por vÃ­rgula) |
 | `REALTIME_FEED_TIMEFRAME` | `1d` | Timeframe dos candles |
 | `REALTIME_FEED_POLL_SECONDS` | `60` | Intervalo entre ciclos de polling |
-| `REALTIME_FEED_STALE_AFTER_SECONDS` | `180` | Lag acima do qual o feed é considerado `stale` |
-| `REALTIME_FEED_MIN_REQUEST_INTERVAL_SECONDS` | `1.0` | Pacing mínimo entre requests ao provider |
-| `IBKR_GATEWAY_HOST` | `127.0.0.1` | Host do IB Gateway (só provider `ibkr`) |
+| `REALTIME_FEED_STALE_AFTER_SECONDS` | `180` | Lag acima do qual o feed Ã© considerado `stale` |
+| `REALTIME_FEED_MIN_REQUEST_INTERVAL_SECONDS` | `1.0` | Pacing mÃ­nimo entre requests ao provider |
+| `IBKR_GATEWAY_HOST` | `127.0.0.1` | Host do IB Gateway (sÃ³ provider `ibkr`) |
 | `IBKR_GATEWAY_PORT` | `4002` | Porta do IB Gateway (paper API = `4002`) |
-| `IBKR_CLIENT_ID` | `7` | Client ID da ligação à API |
+| `IBKR_CLIENT_ID` | `7` | Client ID da ligaÃ§Ã£o Ã  API |
 
-### Pré-requisitos do IB Gateway (provider `ibkr`, default)
+### PrÃ©-requisitos do IB Gateway (provider `ibkr`, default)
 
-Como o `ibkr` é o provider default, o worker e os endpoints `/realtime/quote|history`
-precisam de um IB Gateway acessível. (`ib_insync` já está nas dependências base.)
+Como o `ibkr` Ã© o provider default, o worker e os endpoints `/realtime/quote|history`
+precisam de um IB Gateway acessÃ­vel. (`ib_insync` jÃ¡ estÃ¡ nas dependÃªncias base.)
 
 1. Arrancar o **IB Gateway** em modo **paper**.
-2. Em *API → Settings*: ativar *Enable ActiveX and Socket Clients*, manter **Read-Only API**
+2. Em *API â†’ Settings*: ativar *Enable ActiveX and Socket Clients*, manter **Read-Only API**
    ligado, e confirmar a porta **4002** (paper).
 3. Adicionar `127.0.0.1` aos **Trusted IPs**.
 
-> Sem Gateway acessível, o provider IBKR regista um erro estruturado e devolve vazio/None
-> (não rebenta o worker), e o `/realtime/health` reporta `error`/`stale`. Para dev/CI sem
+> Sem Gateway acessÃ­vel, o provider IBKR regista um erro estruturado e devolve vazio/None
+> (nÃ£o rebenta o worker), e o `/realtime/health` reporta `error`/`stale`. Para dev/CI sem
 > IBKR, define `REALTIME_FEED_PROVIDER=yfinance`.
 
 > **Nota de fiabilidade**: o IB Gateway pode cair e reconectar silenciosamente
-> (`DISCONNECT_ON_INACTIVITY`, `Connection reset`, `HOT_RESTART`), e o relógio do sistema
+> (`DISCONNECT_ON_INACTIVITY`, `Connection reset`, `HOT_RESTART`), e o relÃ³gio do sistema
 > pode ser ajustado (`SYSTEM CLOCK HAS BEEN CHANGED...`). Por isso o `/realtime/health`
-> mede **staleness** (idade da última barra persistida) e não apenas o estado do socket,
-> e os timestamps vêm sempre do servidor em UTC. O worker e o provider IBKR reconectam com
-> backoff e nunca morrem ao primeiro erro de ligação.
+> mede **staleness** (idade da Ãºltima barra persistida) e nÃ£o apenas o estado do socket,
+> e os timestamps vÃªm sempre do servidor em UTC. O worker e o provider IBKR reconectam com
+> backoff e nunca morrem ao primeiro erro de ligaÃ§Ã£o.
 
 ### Arrancar o worker localmente
 
 ```powershell
-# a partir de backend/, com o venv ativo e a DB acessível
+# a partir de backend/, com o venv ativo e a DB acessÃ­vel
 python -m app.scripts.run_realtime_feed
 ```
 
-O worker faz polling de cada símbolo, normaliza para o schema `MarketBar` e faz upsert
+O worker faz polling de cada sÃ­mbolo, normaliza para o schema `MarketBar` e faz upsert
 idempotente **apenas de barras fechadas**. Para parar, `Ctrl+C` (paragem limpa; fecha a
-ligação ao Gateway se aplicável).
+ligaÃ§Ã£o ao Gateway se aplicÃ¡vel).
 
 ### Smoke test dos endpoints
 
 Todos os endpoints exigem token Bearer (`get_current_user`):
 
 ```powershell
-$token = (curl -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" -d "{\"email\":\"dev@tradingapp.dev\",\"password\":\"DevPass123!\"}" | ConvertFrom-Json).access_token
+$token = (curl -X POST http://127.0.0.1:8100/auth/login -H "Content-Type: application/json" -d "{\"email\":\"dev@tradingapp.dev\",\"password\":\"DevPass123!\"}" | ConvertFrom-Json).access_token
 
-curl http://localhost:8000/realtime/health -H "Authorization: Bearer $token"
-curl "http://localhost:8000/realtime/quote?symbol=AAPL" -H "Authorization: Bearer $token"
-curl "http://localhost:8000/realtime/history?symbol=AAPL&timeframe=1d&limit=100" -H "Authorization: Bearer $token"
+curl http://127.0.0.1:8100/realtime/health -H "Authorization: Bearer $token"
+curl "http://127.0.0.1:8100/realtime/quote?symbol=AAPL" -H "Authorization: Bearer $token"
+curl "http://127.0.0.1:8100/realtime/history?symbol=AAPL&timeframe=1d&limit=100" -H "Authorization: Bearer $token"
 ```
 
-- `GET /realtime/health` — estado por **staleness** (`running` / `stale` / `error` / `empty`), `last_update` (UTC), `lag_seconds` (idade da última barra), `provider`, símbolos seguidos e últimos erros.
-- `GET /realtime/quote?symbol=AAPL` — última quote normalizada (read-through ao provider).
-- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100` — histórico recente via provider (útil para debug).
-- `GET /realtime/history?symbol=AAPL&timeframe=5m&window=4h` — histórico por **janela** (1H..All): usa a paginação throttled do IBKR quando disponível, com fallback para `limit`.
-- `GET /realtime/indices` — descritores da faixa de índices (valores ao vivo chegam pelo WebSocket).
+- `GET /realtime/health` â€” estado por **staleness** (`running` / `stale` / `error` / `empty`), `last_update` (UTC), `lag_seconds` (idade da Ãºltima barra), `provider`, sÃ­mbolos seguidos e Ãºltimos erros.
+- `GET /realtime/quote?symbol=AAPL` â€” Ãºltima quote normalizada (read-through ao provider).
+- `GET /realtime/history?symbol=AAPL&timeframe=1d&limit=100` â€” histÃ³rico recente via provider (Ãºtil para debug).
+- `GET /realtime/history?symbol=AAPL&timeframe=5m&window=4h` â€” histÃ³rico por **janela** (1H..All): usa a paginaÃ§Ã£o throttled do IBKR quando disponÃ­vel, com fallback para `limit`.
+- `GET /realtime/indices` â€” descritores da faixa de Ã­ndices (valores ao vivo chegam pelo WebSocket).
 
-### WebSocket de ticks (`/realtime/ws`) — v2
+### WebSocket de ticks (`/realtime/ws`) â€” v2
 
-Stream push de ticks ao vivo + valores dos índices para a aba Realtime.
+Stream push de ticks ao vivo + valores dos Ã­ndices para a aba Realtime.
 
-- **Auth no handshake**: o token JWT vai na query string (o handshake WS não leva
-  header `Authorization`): `ws://localhost:8000/realtime/ws?token=<jwt>`.
-- **Cliente → servidor**: `{"action":"subscribe","symbol":"AAPL"}` (troca de
-  símbolo), `{"action":"unsubscribe"}`, `{"action":"ping"}`.
-- **Servidor → cliente**: `tick` (last/bid/ask/sizes/volume/high/low do dia),
-  `index` (símbolo, nome, last, change_pct), `subscribed` (ack + nº de linhas
+- **Auth no handshake**: o token JWT vai na query string (o handshake WS nÃ£o leva
+  header `Authorization`): `ws://127.0.0.1:8100/realtime/ws?token=<jwt>`.
+- **Cliente â†’ servidor**: `{"action":"subscribe","symbol":"AAPL"}` (troca de
+  sÃ­mbolo), `{"action":"unsubscribe"}`, `{"action":"ping"}`.
+- **Servidor â†’ cliente**: `tick` (last/bid/ask/sizes/volume/high/low do dia),
+  `index` (sÃ­mbolo, nome, last, change_pct), `subscribed` (ack + nÂº de linhas
   ativas), `error` (ex.: `line_budget`).
-- **Teto de linhas**: cada símbolo seguido e cada índice consome uma linha
-  `reqMktData`; ao trocar de símbolo a linha anterior é cancelada
+- **Teto de linhas**: cada sÃ­mbolo seguido e cada Ã­ndice consome uma linha
+  `reqMktData`; ao trocar de sÃ­mbolo a linha anterior Ã© cancelada
   (`REALTIME_MAX_MARKET_DATA_LINES`, default 100).
 - **Paper sem dados live**: `IBKR_MARKET_DATA_TYPE=3` (delayed) faz o feed receber
   ticks atrasados em vez de nada.
-- A **barra em formação** é mostrada no chart/UI mas **nunca** é persistida em
-  `market_bars` (só barras fechadas são gravadas).
+- A **barra em formaÃ§Ã£o** Ã© mostrada no chart/UI mas **nunca** Ã© persistida em
+  `market_bars` (sÃ³ barras fechadas sÃ£o gravadas).
 
 Smoke test do WebSocket (com `websocat` ou equivalente):
 
 ```bash
-websocat "ws://localhost:8000/realtime/ws?token=$token"
+websocat "ws://127.0.0.1:8100/realtime/ws?token=$token"
 # depois de ligado, enviar:
 {"action":"subscribe","symbol":"AAPL"}
 ```

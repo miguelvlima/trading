@@ -23,12 +23,15 @@ def build_provider(name: str, settings: Settings | None = None) -> MarketDataPro
         )
 
     if key in {"ibkr", "ib"}:
+        from app.services.data_feed.client_ids import worker_client_id
         from app.services.data_feed.providers.ibkr_provider import IBKRProvider
 
         return IBKRProvider(
             host=settings.ibkr_gateway_host,
             port=settings.ibkr_gateway_port,
-            client_id=settings.ibkr_client_id,
+            # pid-spread inside base+0..9: a duplicate backend process must not
+            # steal this worker's Gateway session (error 326 -> stale bars).
+            client_id=worker_client_id(settings.ibkr_client_id),
             min_request_interval_seconds=settings.realtime_feed_min_request_interval_seconds,
         )
 

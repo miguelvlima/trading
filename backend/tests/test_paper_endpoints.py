@@ -103,6 +103,46 @@ def test_portfolio_create_get_conflict_and_settings(tmp_path: Path) -> None:
         teardown()
 
 
+def test_risk_settings_day_trading_preset(tmp_path: Path) -> None:
+    client, _factory, _user_id = setup_client(tmp_path)
+    try:
+        client.post("/paper/portfolio", json={"initial_cash": 50_000})
+        client.put(
+            "/paper/portfolio/risk-settings",
+            json={"risk_settings": {"max_position_pct": 5.0}},
+        )
+
+        updated = client.put(
+            "/paper/portfolio/risk-settings",
+            json={"risk_settings": {}, "preset": "day_trading"},
+        )
+        assert updated.status_code == 200
+        settings = updated.json()["risk_settings"]
+        assert settings["timeframe"] == "5m"
+        assert settings["quote_max_age_seconds"] == 30.0
+        assert settings["order_expiry_minutes"] == 5
+        assert settings["approved_fill_timeout_minutes"] == 5
+        assert settings["cooldown_minutes"] == 30
+        assert settings["flat_eod"] is True  # the preset is the flat-EOD opt-in
+        # Non-preset fields keep the user's values.
+        assert settings["max_position_pct"] == 5.0
+
+        # Explicit keys in the same request win over the preset.
+        overridden = client.put(
+            "/paper/portfolio/risk-settings",
+            json={"risk_settings": {"cooldown_minutes": 45}, "preset": "day_trading"},
+        )
+        assert overridden.json()["risk_settings"]["cooldown_minutes"] == 45
+
+        unknown = client.put(
+            "/paper/portfolio/risk-settings",
+            json={"risk_settings": {}, "preset": "swing"},
+        )
+        assert unknown.status_code == 422
+    finally:
+        teardown()
+
+
 def seed_proposed_order(factory: sessionmaker[Session], user_id: int) -> int:
     with factory() as session:
         portfolio = session.execute(

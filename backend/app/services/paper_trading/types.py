@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from decimal import Decimal
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -82,12 +83,52 @@ class RiskSettings:
     quote_max_age_seconds: float = 120.0
     max_spread_bps: float = 50.0
     order_expiry_minutes: int = 30
+    # Approved BUY (entry) orders whose fill keeps deferring (dead feed) expire
+    # after this. SELLs never expire: with shorting disabled every SELL closes
+    # a position and must keep retrying until it does.
+    approved_fill_timeout_minutes: int = 10
+
+    # Close every position in the last N minutes of the NY session and veto new
+    # entries inside that window ("day trades don't sleep overnight"). Off by
+    # default — from_json fills missing keys with defaults, so a True default
+    # would retroactively liquidate existing swing portfolios on upgrade; the
+    # day_trading preset turns it on explicitly.
+    flat_eod: bool = False
+    flat_eod_minutes_before_close: int = 10
+
+    # Hard ceiling for stop distance on entries: signal-suggested stops are
+    # clamped here so a strategy can never widen the per-trade loss beyond the
+    # user's risk bound (e.g. an ORB stop across a very wide opening range).
+    max_stop_loss_pct: float = 5.0
 
     min_signal_strength: float = 0.3
     timeframe: str = "1d"
     symbols: tuple[str, ...] = ()
     strategies: tuple[str, ...] = ()
     rth_only: bool = True
+
+    @classmethod
+    def day_trading_defaults(cls) -> "RiskSettings":
+        """Preset for intraday operation: short timeframes, tight staleness."""
+        return cls(
+            timeframe="5m",
+            quote_max_age_seconds=30.0,
+            order_expiry_minutes=5,
+            approved_fill_timeout_minutes=5,
+            cooldown_minutes=30,
+            flat_eod=True,
+        )
+
+    # Fields the "day_trading" preset overrides when applied via the endpoint
+    # (everything else — symbols, sizing, limits — keeps the user's values).
+    DAY_TRADING_PRESET_FIELDS: ClassVar[tuple[str, ...]] = (
+        "timeframe",
+        "quote_max_age_seconds",
+        "order_expiry_minutes",
+        "approved_fill_timeout_minutes",
+        "cooldown_minutes",
+        "flat_eod",
+    )
 
     @classmethod
     def from_json(cls, raw: dict[str, object] | None) -> "RiskSettings":

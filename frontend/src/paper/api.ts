@@ -33,6 +33,10 @@ export type SymbolSignals = {
   checked_at: string;
   bar_time: string | null;
   no_quote?: boolean;
+  // Intraday warm-up: closed bars available vs needed before strategies
+  // evaluate (absent on payloads from engines older than this field).
+  bar_count?: number;
+  bars_required?: number;
   signals: SignalMonitorEntry[];
 };
 
@@ -232,9 +236,11 @@ export const updatePaperRiskSettings = (
   baseUrl: string,
   token: string,
   settings: Record<string, unknown>,
+  preset?: "day_trading",
 ) =>
   request<PaperPortfolio>(baseUrl, token, "PUT", "/paper/portfolio/risk-settings", {
     risk_settings: settings,
+    ...(preset ? { preset } : {}),
   });
 
 export const getPaperOrders = (baseUrl: string, token: string, status?: string) =>

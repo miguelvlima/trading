@@ -1,4 +1,73 @@
 import math
+from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass(frozen=True)
+class Pivot:
+    """A confirmed swing point in a zigzag decomposition of the closes.
+
+    ``confirmed_at_index`` is the bar where the reversal threshold was met —
+    only there does the pivot become knowable. Anti-lookahead contract:
+    consumers may only act on pivots with ``confirmed_at_index <= current bar``.
+    """
+
+    index: int
+    timestamp: datetime | None
+    price: float
+    kind: str  # "high" | "low"
+    confirmed_at_index: int
+
+
+def swing_pivots(bars, threshold_pct: float) -> list[Pivot]:
+    """Zigzag pivots over ``bars`` (any objects with ``close``/``timestamp``).
+
+    A running maximum becomes a pivot high once the close retreats
+    ``threshold_pct`` percent from it; a running minimum becomes a pivot low
+    once the close rises ``threshold_pct`` from it. Pivots strictly alternate
+    high/low. Depends only on bars up to the confirmation bar, so the output
+    for a prefix of the series is always a prefix of the full output.
+    """
+    if threshold_pct <= 0:
+        raise ValueError("threshold_pct must be greater than zero")
+    if not bars:
+        return []
+
+    threshold = threshold_pct / 100.0
+    pivots: list[Pivot] = []
+    max_index, max_price = 0, bars[0].close
+    min_index, min_price = 0, bars[0].close
+    mode: str | None = None  # None until the first reversal fixes a direction
+
+    for index in range(1, len(bars)):
+        close = bars[index].close
+        if mode in (None, "up"):
+            if close > max_price:
+                max_index, max_price = index, close
+            if mode is None and close < min_price:
+                min_index, min_price = index, close
+            if max_price > 0 and close <= max_price * (1.0 - threshold):
+                pivots.append(
+                    Pivot(max_index, bars[max_index].timestamp, max_price, "high", index)
+                )
+                mode = "down"
+                min_index, min_price = index, close
+            elif mode is None and min_price > 0 and close >= min_price * (1.0 + threshold):
+                pivots.append(
+                    Pivot(min_index, bars[min_index].timestamp, min_price, "low", index)
+                )
+                mode = "up"
+                max_index, max_price = index, close
+        else:  # mode == "down"
+            if close < min_price:
+                min_index, min_price = index, close
+            if min_price > 0 and close >= min_price * (1.0 + threshold):
+                pivots.append(
+                    Pivot(min_index, bars[min_index].timestamp, min_price, "low", index)
+                )
+                mode = "up"
+                max_index, max_price = index, close
+    return pivots
 
 
 def _validate_period(period: int) -> None:

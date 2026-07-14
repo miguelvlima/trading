@@ -13,7 +13,7 @@ from app.services.execution_engine import compute_position_quantity
 from app.services.paper_trading import events as ev
 from app.services.paper_trading.events import EventHub, record_event
 from app.services.paper_trading.fills import compute_fill
-from app.services.paper_trading.quotes import QuoteCache, market_session
+from app.services.paper_trading.quotes import QuoteCache, in_eod_window, market_session
 from app.services.paper_trading.risk import (
     ProposalContext,
     RiskManager,
@@ -104,6 +104,24 @@ class PaperEngine:
             ).scalars()
         )
 
+    def _open_approved_sell(self, db: Session, symbol: str) -> PaperOrder | None:
+        """An ``approved`` SELL already working to close this symbol, if any.
+
+        ``first()`` (not ``scalar_one_or_none``): several open SELLs per symbol
+        are a reachable state (proposed signal SELL + protective, double manual
+        close), and a crash here would kill the whole poll transaction.
+        """
+        return db.execute(
+            select(PaperOrder)
+            .where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.symbol == symbol.upper(),
+                PaperOrder.side == "SELL",
+                PaperOrder.status == STATUS_APPROVED,
+            )
+            .limit(1)
+        ).scalars().first()
+
     def _position_for(self, db: Session, symbol: str) -> PaperPosition | None:
         return db.execute(
             select(PaperPosition).where(
@@ -157,11 +175,16 @@ class PaperEngine:
         strategy: str,
         rationale: str,
         signal_timestamp: datetime | None = None,
+        stop_loss_pct: float | None = None,
+        take_profit_pct: float | None = None,
     ) -> PaperOrder | None:
         """Turn one live signal into a ``proposed`` order (or veto/skip it).
 
         BUY opens/extends a long; SELL only closes an existing long (shorting
-        is out of scope this phase). Every outcome is written to the ledger.
+        is out of scope this phase). ``stop_loss_pct``/``take_profit_pct`` are
+        the signal's own suggested levels; when absent the portfolio defaults
+        apply (and require_stop_loss still vetoes if neither yields a stop).
+        Every outcome is written to the ledger.
         """
         settings = self.settings_for(portfolio)
         now = self._now_fn()
@@ -269,11 +292,17 @@ class PaperEngine:
         equity = self.equity_now(db, portfolio)
         if is_closing:
             quantity = float(position.quantity)  # close the whole position
-            stop_loss_pct: float | None = None
-            take_profit_pct: float | None = None
+            stop_loss_pct = None  # exit levels only make sense on entries
+            take_profit_pct = None
         else:
-            stop_loss_pct = settings.default_stop_loss_pct or None
-            take_profit_pct = settings.default_take_profit_pct or None
+            # Signal-supplied levels win over the portfolio defaults, but the
+            # stop is clamped to max_stop_loss_pct: a strategy may place the
+            # stop at a structural level (e.g. across a wide opening range),
+            # never beyond the user's per-trade loss bound.
+            if stop_loss_pct is not None and settings.max_stop_loss_pct > 0:
+                stop_loss_pct = min(stop_loss_pct, settings.max_stop_loss_pct)
+            stop_loss_pct = stop_loss_pct or settings.default_stop_loss_pct or None
+            take_profit_pct = take_profit_pct or settings.default_take_profit_pct or None
             quantity = compute_position_quantity(
                 capital=equity,
                 exec_price=reference_price,
@@ -309,6 +338,10 @@ class PaperEngine:
                 kill_switch_active=portfolio.kill_switch_active,
                 cooldown_until=self.cooldown_until(db, settings),
                 market_session=market_session(now),
+                in_eod_window=(
+                    settings.flat_eod
+                    and in_eod_window(now, settings.flat_eod_minutes_before_close)
+                ),
             ),
             now=now,
         )
@@ -326,6 +359,9 @@ class PaperEngine:
             "strength": strength,
             "rationale": rationale,
             "signal_timestamp": signal_timestamp.isoformat() if signal_timestamp else None,
+            # Levels actually used (signal's own or portfolio defaults), for audit.
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
         }
 
         order = PaperOrder(
@@ -402,6 +438,30 @@ class PaperEngine:
             )
             return order, None, None
 
+        # The eod_window veto gates PROPOSALS; a BUY proposed just before the
+        # window can still be approved inside it, filling into a position the
+        # sweep force-closes minutes later — a guaranteed fee-paying roundtrip.
+        if (
+            order.side == "BUY"
+            and settings.flat_eod
+            and in_eod_window(now, settings.flat_eod_minutes_before_close)
+        ):
+            order.status = STATUS_REJECTED_RISK
+            order.decided_at = now
+            order.reject_reason = (
+                "Aprovação dentro da janela de fecho de fim de sessão (flat EOD): "
+                "a posição seria fechada de imediato."
+            )
+            self._emit(
+                db,
+                ev.EVENT_RISK_VETO,
+                f"VETO {order.symbol}: aprovação bloqueada, janela de flat EOD.",
+                symbol=order.symbol,
+                severity="warn",
+                payload={"order_id": order.id, "code": "eod_window"},
+            )
+            return order, None, None
+
         order.status = STATUS_APPROVED
         order.decided_at = now
         self._emit(
@@ -472,6 +532,73 @@ class PaperEngine:
         trade, deferral = self.try_fill_order(db, portfolio, order, settings=settings)
         return order, trade, deferral
 
+    def flat_eod_sweep(
+        self, db: Session, portfolio: PaperPortfolio
+    ) -> list[PaperTrade]:
+        """Force-close every open position in the last minutes of the NY session.
+
+        Day-trading guardrail: inside the flat-EOD window each position gets a
+        SELL born ``approved`` (origin "flat_eod", same pattern as manual_close)
+        and an immediate fill attempt; deferred fills are retried by the runtime
+        and never expire. New entries inside the window are vetoed separately
+        (RiskManager code "eod_window"). No-op when flat_eod is off or outside
+        the window, so the runtime can call it every poll.
+        """
+        settings = self.settings_for(portfolio)
+        now = self._now_fn()
+        if not settings.flat_eod:
+            return []
+        if not in_eod_window(now, settings.flat_eod_minutes_before_close):
+            return []
+
+        trades: list[PaperTrade] = []
+        for position in self._positions(db):
+            # An APPROVED SELL (previous sweep, manual, protective) is already
+            # working to close this position — it retries every poll and never
+            # expires, so don't stack a duplicate. A merely PROPOSED SELL does
+            # NOT count: it may never be approved and would otherwise block the
+            # flatten for the whole window (it outlives the session; if both
+            # end up filling, the position-gone guard cancels the loser).
+            if self._open_approved_sell(db, position.symbol) is not None:
+                continue
+
+            quote = self.quotes.get(position.symbol)
+            order = PaperOrder(
+                portfolio_id=self.portfolio_id,
+                symbol=position.symbol,
+                side="SELL",
+                quantity=position.quantity,
+                order_type="market",
+                status=STATUS_APPROVED,
+                signal_snapshot={
+                    "origin": "flat_eod",
+                    "strategy": "flat_eod",
+                    "rationale": (
+                        "Fecho de fim de sessão (flat EOD): faltam menos de "
+                        f"{settings.flat_eod_minutes_before_close} min para as 16:00 NY."
+                    ),
+                },
+                risk_snapshot={},
+                data_liveness=quote.data_liveness if quote else "UNKNOWN",
+                proposed_at=now,
+                decided_at=now,
+            )
+            db.add(order)
+            db.flush()
+            self._emit(
+                db,
+                ev.EVENT_ORDER_APPROVED,
+                f"Flat EOD: SELL {float(position.quantity):g} {position.symbol} "
+                f"(ordem #{order.id}) — fecho de fim de sessão.",
+                symbol=position.symbol,
+                severity="warn",
+                payload={"order_id": order.id, "origin": "flat_eod"},
+            )
+            trade, _ = self.try_fill_order(db, portfolio, order, settings=settings)
+            if trade is not None:
+                trades.append(trade)
+        return trades
+
     def entry_context(self, db: Session, symbol: str) -> PaperOrder | None:
         """The filled BUY order that opened the current position, if any.
 
@@ -530,22 +657,32 @@ class PaperEngine:
         )
         return order
 
-    def expire_stale_proposals(self, db: Session, portfolio: PaperPortfolio) -> int:
-        """Expire ``proposed`` orders older than the configured window."""
+    def expire_stale_orders(self, db: Session, portfolio: PaperPortfolio) -> int:
+        """Expire orders that outlived their window.
+
+        ``proposed`` orders expire after ``order_expiry_minutes`` without a
+        decision. ``approved`` BUY orders expire after
+        ``approved_fill_timeout_minutes`` without a fill — the quote never got
+        fresh enough (dead feed), so entering that long after the signal would
+        be a different trade. Approved SELLs never expire: with shorting
+        disabled every SELL closes a position (manual, signal close,
+        protective, flat EOD alike) and must retry until the position is gone
+        — the position-vanished case is cancelled at fill time instead.
+        """
         settings = self.settings_for(portfolio)
-        cutoff = self._now_fn() - timedelta(minutes=settings.order_expiry_minutes)
-        stale = list(
-            db.execute(
-                select(PaperOrder).where(
-                    PaperOrder.portfolio_id == self.portfolio_id,
-                    PaperOrder.status == STATUS_PROPOSED,
-                    PaperOrder.proposed_at < cutoff,
-                )
-            ).scalars()
-        )
-        for order in stale:
+        now = self._now_fn()
+        expired = 0
+
+        proposed_cutoff = now - timedelta(minutes=settings.order_expiry_minutes)
+        for order in db.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.status == STATUS_PROPOSED,
+                PaperOrder.proposed_at < proposed_cutoff,
+            )
+        ).scalars():
             order.status = STATUS_EXPIRED
-            order.decided_at = self._now_fn()
+            order.decided_at = now
             self._emit(
                 db,
                 ev.EVENT_ORDER_EXPIRED,
@@ -554,7 +691,34 @@ class PaperEngine:
                 symbol=order.symbol,
                 payload={"order_id": order.id},
             )
-        return len(stale)
+            expired += 1
+
+        approved_cutoff = now - timedelta(minutes=settings.approved_fill_timeout_minutes)
+        for order in db.execute(
+            select(PaperOrder).where(
+                PaperOrder.portfolio_id == self.portfolio_id,
+                PaperOrder.status == STATUS_APPROVED,
+                PaperOrder.decided_at < approved_cutoff,
+            )
+        ).scalars():
+            if order.side == "SELL":
+                continue  # position-closing: keeps retrying until it closes
+            order.status = STATUS_EXPIRED
+            order.reject_reason = (
+                "Aprovada mas o fill nunca foi possível dentro de "
+                f"{settings.approved_fill_timeout_minutes} min (feed sem cotações "
+                "credíveis); executar agora seria outro trade."
+            )
+            self._emit(
+                db,
+                ev.EVENT_ORDER_EXPIRED,
+                f"Ordem #{order.id} aprovada expirou: {order.reject_reason}",
+                symbol=order.symbol,
+                severity="warn",
+                payload={"order_id": order.id, "code": "approved_fill_timeout"},
+            )
+            expired += 1
+        return expired
 
     # -- fills --------------------------------------------------------------------
 
@@ -571,6 +735,42 @@ class PaperEngine:
             return None, None
         settings = settings or self.settings_for(portfolio)
         now = self._now_fn()
+
+        if order.side == "SELL":
+            # The position may have been closed between approval and fill (e.g.
+            # a protective exit raced a manual close). Re-check it here, where
+            # cancelling is still safe — _apply_fill must never touch cash for
+            # a position that no longer exists.
+            position = self._position_for(db, order.symbol)
+            available = float(position.quantity) if position is not None else 0.0
+            if position is None or available <= 0:
+                order.status = STATUS_CANCELLED
+                order.decided_at = now
+                order.reject_reason = (
+                    "Posição já não existia no momento do fill (fechada entretanto)."
+                )
+                self._emit(
+                    db,
+                    ev.EVENT_ORDER_CANCELLED,
+                    f"Ordem #{order.id} cancelada: posição em {order.symbol} "
+                    "já não existia no momento do fill.",
+                    symbol=order.symbol,
+                    severity="warn",
+                    payload={"order_id": order.id, "code": "position_gone"},
+                )
+                return None, None
+            if float(order.quantity) > available + 1e-9:
+                self._emit(
+                    db,
+                    ev.EVENT_ORDER_ADJUSTED,
+                    f"Ordem #{order.id} ajustada: quantidade {float(order.quantity):g} "
+                    f"reduzida às {available:g} ações disponíveis em {order.symbol}.",
+                    symbol=order.symbol,
+                    severity="warn",
+                    payload={"order_id": order.id, "code": "quantity_clamped"},
+                )
+                # Clamp before compute_fill so the fee is charged on the real quantity.
+                order.quantity = _DEC(available)
 
         result = compute_fill(
             side=order.side,
@@ -625,9 +825,16 @@ class PaperEngine:
                 )
                 position.quantity = _DEC(new_qty)
         else:
-            if position is None or float(position.quantity) < quantity - 1e-9:
-                # Defensive: risk rules prevent this; never let cash go negative silently.
-                quantity = float(position.quantity) if position else 0.0
+            if position is None:
+                # try_fill_order cancels SELLs whose position vanished; reaching
+                # this point without one is a bug — fail loudly rather than
+                # corrupt cash/PnL silently.
+                raise RuntimeError(
+                    f"SELL order #{order.id} ({order.symbol}) reached _apply_fill "
+                    "without an open position; try_fill_order should have cancelled it."
+                )
+            if float(position.quantity) < quantity - 1e-9:
+                quantity = float(position.quantity)
             realized = (fill.price - float(position.avg_entry_price)) * quantity - fill.fee
             portfolio.cash = _DEC(float(portfolio.cash) + fill.price * quantity - fill.fee)
             position.quantity = _DEC(float(position.quantity) - quantity)
@@ -692,6 +899,11 @@ class PaperEngine:
         settings = self.settings_for(portfolio)
         trades: list[PaperTrade] = []
         for position in self._positions(db):
+            # One protective SELL at a time: while its fill defers (stale feed)
+            # the runtime retries it — creating another every poll would stack
+            # duplicates that never expire (SELLs are position-closing).
+            if self._open_approved_sell(db, position.symbol) is not None:
+                continue
             entry_order = db.execute(
                 select(PaperOrder)
                 .where(

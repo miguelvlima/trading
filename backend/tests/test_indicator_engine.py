@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.indicator_engine import (
@@ -8,8 +10,43 @@ from app.services.indicator_engine import (
     relative_volume,
     rsi,
     sma,
+    swing_pivots,
     vwap,
 )
+
+
+def _pivot_bars(closes: list[float]) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(close=close, timestamp=index) for index, close in enumerate(closes)
+    ]
+
+
+def test_swing_pivots_on_known_zigzag() -> None:
+    pivots = swing_pivots(_pivot_bars([100.0, 110.0, 100.0, 120.0, 100.0]), 5.0)
+    assert [
+        (p.index, p.price, p.kind, p.confirmed_at_index) for p in pivots
+    ] == [
+        (0, 100.0, "low", 1),  # the +10% move to 110 confirms the starting low
+        (1, 110.0, "high", 2),
+        (2, 100.0, "low", 3),
+        (3, 120.0, "high", 4),
+    ]
+    # Strict alternation is the zigzag invariant.
+    kinds = [p.kind for p in pivots]
+    assert all(a != b for a, b in zip(kinds, kinds[1:], strict=False))
+
+
+def test_swing_pivots_prefix_stability_and_edges() -> None:
+    closes = [100.0, 110.0, 100.0, 120.0, 100.0, 130.0]
+    full = swing_pivots(_pivot_bars(closes), 5.0)
+    prefix = swing_pivots(_pivot_bars(closes[:4]), 5.0)
+    assert full[: len(prefix)] == prefix  # adding future bars never rewrites the past
+
+    assert swing_pivots([], 5.0) == []
+    # A move below the threshold never confirms a pivot.
+    assert swing_pivots(_pivot_bars([100.0, 101.0, 100.0, 101.0]), 5.0) == []
+    with pytest.raises(ValueError):
+        swing_pivots(_pivot_bars([100.0]), 0.0)
 
 
 def test_sma_and_ema_small_series() -> None:

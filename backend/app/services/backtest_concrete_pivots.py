@@ -354,14 +354,9 @@ def materialize_recommendations(
         )
         return _filter_probe_or_keep(result, bars=bars, symbol=symbol, strategy_names=strategy_names, config=config)
 
+    # Protected winning runs already returned [] above, so no need to re-check here.
     spiral = False
-    if is_protected_winning_run(
-        trades_count=trades_count,
-        net_pnl_pct=current_pnl_pct,
-        profit_factor=profit_factor,
-    ):
-        spiral = False
-    elif prior_runs is not None and current_pnl_pct is not None:
+    if prior_runs is not None and current_pnl_pct is not None:
         from app.services.backtest_insight_guards import detect_parameter_tuning_spiral
 
         spiral = detect_parameter_tuning_spiral(prior_runs, current_pnl_pct)

@@ -320,7 +320,9 @@ def build_backtest_insight(
             if timeframe_pivot is not None:
                 recommendations.append(timeframe_pivot)
 
-    min_strength = config.get("min_consensus_strength") or config.get("min_signal_strength")
+    min_strength = config.get("min_consensus_strength")
+    if min_strength is None:
+        min_strength = config.get("min_signal_strength")
     if (
         trades_count > metrics.bars_processed * 0.15
         and isinstance(min_strength, (int, float))
@@ -355,17 +357,6 @@ def build_backtest_insight(
                 "priority": "low",
             }
         )
-
-    narrative = (
-        f"Run em {symbol} ({timeframe}) com PnL {_pct(net_pnl_pct)}, "
-        f"win rate {_pct(win_rate)}, PF {profit_factor:.2f}, DD {_pct(max_dd)}. "
-    )
-    if failure_modes:
-        narrative += f"Identificámos {len(failure_modes)} modo(s) de falha principal. "
-    if protected_win:
-        narrative += "Sem alterações sugeridas — o resultado foi positivo com esta configuração. "
-    else:
-        narrative += f"{len(lessons)} lição(ões) e {len(recommendations)} recomendação(ões) para runs futuras."
 
     if zero_trade:
         recommendations = build_zero_trade_recovery_recommendations(
@@ -421,6 +412,20 @@ def build_backtest_insight(
                 ),
                 "severity": "critical",
             }
+        )
+
+    narrative = (
+        f"Run em {symbol} ({timeframe}) com PnL {_pct(net_pnl_pct)}, "
+        f"win rate {_pct(win_rate)}, PF {profit_factor:.2f}, DD {_pct(max_dd)}. "
+    )
+    if failure_modes:
+        narrative += f"Identificámos {len(failure_modes)} modo(s) de falha principal. "
+    if protected_win:
+        narrative += "Sem alterações sugeridas: o resultado foi positivo com esta configuração. "
+    else:
+        narrative += (
+            f"{len(lessons)} lição(ões) e "
+            f"{len(guarded_recommendations)} recomendação(ões) para runs futuras."
         )
 
     return InsightPayload(

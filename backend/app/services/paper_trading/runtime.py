@@ -21,7 +21,12 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.services.data_feed.client_ids import next_engine_client_id
-from app.services.data_feed.types import IndexQuote, StreamingProvider, Tick
+from app.services.data_feed.types import (
+    IndexQuote,
+    MarketDataProvider,
+    StreamingProvider,
+    Tick,
+)
 from app.services.paper_trading.bar_aggregator import AggregatedBar, BarAggregator
 from app.services.paper_trading.engine import PaperEngine
 from app.services.paper_trading.events import EventHub, hub as global_hub
@@ -42,6 +47,12 @@ _LIVENESS_BY_MD_TYPE = {1: "REAL-TIME", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED-F
 # Closed bars a strategy needs before its verdict means anything (indicator
 # warm-up). On a fresh intraday start this is the wait the cockpit shows.
 MIN_STRATEGY_BARS = 30
+
+# History backfill: symbols fetched per poll (each fetch pays the provider's
+# pacing throttle, so a long follow list must not stall the loop) and how many
+# failed fetches before giving up on a symbol for this runtime session.
+_BACKFILL_SYMBOLS_PER_POLL = 4
+_BACKFILL_MAX_ATTEMPTS = 3
 
 
 def _feed_problem_message(status) -> str:
@@ -239,6 +250,13 @@ class PaperEngineRuntime:
             if getattr(settings, "paper_engine_intraday_enabled", True)
             else None
         )
+        # History backfill bookkeeping: (symbol, timeframe) pairs already
+        # handled this session, failed-fetch counters, and the lazily-resolved
+        # historical provider (None once resolution failed — e.g. no Gateway).
+        self._backfill_done: set[tuple[str, str]] = set()
+        self._backfill_attempts: dict[tuple[str, str], int] = {}
+        self._history_provider_resolved = False
+        self._history_provider_instance: MarketDataProvider | None = None
 
     @property
     def has_provider(self) -> bool:
@@ -342,6 +360,12 @@ class PaperEngineRuntime:
                 self._provider.unsubscribe(symbol)
         for symbol in removed:
             self.last_signals.pop(symbol, None)
+        # Removed symbols also lose their backfill state, so re-adding one
+        # re-checks (and repairs) its history instead of being skipped.
+        self._backfill_done = {k for k in self._backfill_done if k[0] not in removed}
+        self._backfill_attempts = {
+            k: v for k, v in self._backfill_attempts.items() if k[0] not in removed
+        }
         self._last_signal_bar = {
             k: v for k, v in self._last_signal_bar.items() if k[0] not in removed
         }
@@ -375,6 +399,7 @@ class PaperEngineRuntime:
                 return
             risk = RiskSettings.from_json(portfolio.risk_settings)
             self._sync_tracked_symbols(db, risk)
+            self._backfill_history(db, risk)
 
             self.engine.check_protective_exits(db, portfolio)
             self.engine.flat_eod_sweep(db, portfolio)
@@ -389,6 +414,131 @@ class PaperEngineRuntime:
             raise
         finally:
             db.close()
+
+    def _history_provider(self) -> MarketDataProvider | None:
+        """The shared historical market-data provider, resolved once.
+
+        Reuses the API routes' provider cache so the paper engine shares the
+        same Gateway session and pacing throttle as the chart/history
+        endpoints instead of opening yet another connection. Resolution
+        failures (provider "none", ib_insync missing, bad config) degrade to
+        None: bars then build up live from ticks only, today's behaviour.
+        """
+        if not self._history_provider_resolved:
+            self._history_provider_resolved = True
+            try:
+                from app.api.routes.realtime_data import get_provider
+
+                self._history_provider_instance = get_provider(self._settings)
+            except Exception as exc:  # noqa: BLE001 - backfill is best-effort
+                logger.warning(
+                    "paper_engine_backfill_no_provider",
+                    portfolio_id=self.portfolio_id,
+                    error=str(exc),
+                )
+                self._history_provider_instance = None
+        return self._history_provider_instance
+
+    def _backfill_history(self, db: Session, risk: RiskSettings) -> None:
+        """Backfill bar history for tracked symbols that lack it (no warm-up).
+
+        One shot per (symbol, timeframe) per runtime session: when a tracked
+        symbol has fewer closed bars than the strategies need, fetch up to
+        ``paper_engine_bars_limit`` bars from the historical provider and
+        persist them through the same upsert the feed worker uses
+        (``DataFeedService.ingest_bars``). The tick aggregator keeps extending
+        the series afterwards. Failed fetches retry on later polls up to
+        ``_BACKFILL_MAX_ATTEMPTS``.
+        """
+        if not getattr(self._settings, "paper_engine_backfill_enabled", True):
+            return
+        timeframe = risk.timeframe
+        pending = [
+            symbol
+            for symbol in self.tracked_symbols
+            if (symbol, timeframe) not in self._backfill_done
+        ]
+        if not pending:
+            return
+
+        from app.services.data_feed.service import DataFeedService
+        from app.services.paper_trading import events as ev
+
+        for symbol in pending[:_BACKFILL_SYMBOLS_PER_POLL]:
+            key = (symbol, timeframe)
+            existing = db.execute(
+                select(func.count(MarketBar.id))
+                .join(Instrument, MarketBar.instrument_id == Instrument.id)
+                .where(
+                    Instrument.symbol == symbol,
+                    MarketBar.timeframe == timeframe,
+                )
+            ).scalar_one()
+            if existing >= MIN_STRATEGY_BARS:
+                self._backfill_done.add(key)
+                continue
+
+            provider = self._history_provider()
+            if provider is None:
+                # No historical provider: keep today's behaviour (bars build
+                # up live from ticks) and stop asking for this follow list.
+                self._backfill_done.update((s, timeframe) for s in pending)
+                return
+
+            attempts = self._backfill_attempts.get(key, 0) + 1
+            self._backfill_attempts[key] = attempts
+            try:
+                quotes = provider.fetch_recent_bars(
+                    symbol, timeframe, self._settings.paper_engine_bars_limit
+                )
+            except Exception as exc:  # noqa: BLE001 - a provider hiccup must not kill the poll
+                logger.error(
+                    "paper_engine_backfill_fetch_failed",
+                    portfolio_id=self.portfolio_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    error=str(exc),
+                )
+                quotes = []
+            if not quotes:
+                if attempts >= _BACKFILL_MAX_ATTEMPTS:
+                    self._backfill_done.add(key)
+                    logger.warning(
+                        "paper_engine_backfill_gave_up",
+                        portfolio_id=self.portfolio_id,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        attempts=attempts,
+                    )
+                continue
+
+            # ingest_bars commits ``db``. Safe here: this runs at the top of
+            # the poll, before any engine mutation — the only thing committed
+            # early is the symbol-sync ledger entry, which the poll would
+            # commit anyway. A second session would mean two concurrent
+            # writers for no benefit.
+            result = DataFeedService(
+                db, provider_name=self._settings.realtime_feed_provider
+            ).ingest_bars(symbol, timeframe, quotes)
+
+            self._backfill_done.add(key)
+            persisted = result.inserted + result.updated
+            ev.record_event(
+                db,
+                portfolio_id=self.portfolio_id,
+                event_type=ev.EVENT_HISTORY_BACKFILLED,
+                message=(
+                    f"Histórico carregado: {persisted} velas {timeframe} para {symbol} "
+                    "— warm-up dispensado."
+                ),
+                symbol=symbol,
+                payload={
+                    "timeframe": timeframe,
+                    "inserted": result.inserted,
+                    "updated": result.updated,
+                },
+                broadcast=self._hub,
+            )
 
     def _persist_intraday_bars(self, db: Session) -> None:
         """Upsert the closed intraday buckets into MarketBar (idempotent).

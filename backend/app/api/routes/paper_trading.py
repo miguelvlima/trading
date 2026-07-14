@@ -553,11 +553,16 @@ async def start_engine(
     # Idempotent: repeated clicks must not spam the ledger with duplicates.
     if not portfolio.engine_running:
         portfolio.engine_running = True
+        mode = (
+            "automático"
+            if RiskSettings.from_json(portfolio.risk_settings).auto_approve
+            else "semi-automático"
+        )
         record_event(
             db,
             portfolio_id=portfolio.id,
             event_type=ev.EVENT_ENGINE_STARTED,
-            message="Engine de paper trading iniciado (modo semi-automático).",
+            message=f"Engine de paper trading iniciado (modo {mode}).",
             broadcast=hub,
         )
         db.commit()

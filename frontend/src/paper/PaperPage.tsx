@@ -761,6 +761,7 @@ function SettingsPanel({
     flatEodMinutes: String(num(rs.flat_eod_minutes_before_close, 10)),
     maxStopLossPct: String(num(rs.max_stop_loss_pct, 5)),
     // Execução: quando um sinal vira ordem e como o fill simulado se comporta.
+    autoApprove: rs.auto_approve === true,
     minSignalStrength: String(num(rs.min_signal_strength, 0.3)),
     quoteMaxAgeSeconds: String(num(rs.quote_max_age_seconds, 120)),
     maxSpreadBps: String(num(rs.max_spread_bps, 50)),
@@ -820,6 +821,7 @@ function SettingsPanel({
         form.approvedFillTimeoutMinutes,
         num(rs.approved_fill_timeout_minutes, 10),
       ),
+      auto_approve: form.autoApprove,
       min_signal_strength: Math.max(
         0,
         Math.min(1, num(form.minSignalStrength, num(rs.min_signal_strength, 0.3))),
@@ -994,6 +996,24 @@ function SettingsPanel({
         </span>
       </div>
       <div className="pp-settings-grid">
+        <label className="pp-field pp-field-check pp-field-wide">
+          <input
+            type="checkbox"
+            checked={form.autoApprove}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, autoApprove: event.target.checked }))
+            }
+          />
+          <span>
+            Modo automático: o engine aprova as ordens propostas sem pedir confirmação
+          </span>
+        </label>
+        {form.autoApprove && (
+          <span className="pp-field-hint pp-field-wide">
+            os limites de risco continuam todos ativos (vetos, kill switch, cooldown,
+            flat EOD); só deixa de ser preciso o clique de aprovação
+          </span>
+        )}
         <label className="pp-field">
           <span className="pp-field-label">Força mínima do sinal (0–1)</span>
           <input {...field("minSignalStrength")} min={0} max={1} step={0.05} />

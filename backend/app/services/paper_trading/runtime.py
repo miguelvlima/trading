@@ -29,6 +29,7 @@ from app.services.paper_trading.quotes import QuoteCache
 from app.services.paper_trading.types import (
     OPEN_STATUSES,
     STATUS_APPROVED,
+    STATUS_FILLED,
     STATUS_PROPOSED,
     RiskSettings,
 )
@@ -552,6 +553,17 @@ class PaperEngineRuntime:
                 if order is not None and order.status == STATUS_PROPOSED:
                     counts["proposals"] += 1
                     outcome = "proposed"
+                    if risk.auto_approve:
+                        # Fully automatic mode: the engine approves its own
+                        # proposal on the spot. approve_order re-checks the
+                        # kill switch and the flat-EOD window, so a veto here
+                        # is still possible and leaves the order rejected.
+                        self.engine.approve_order(db, portfolio, order, auto=True)
+                        outcome = (
+                            "auto_approved"
+                            if order.status in (STATUS_APPROVED, STATUS_FILLED)
+                            else "vetoed"
+                        )
                 elif order is not None:
                     outcome = "vetoed"
                 else:

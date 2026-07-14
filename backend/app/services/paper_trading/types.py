@@ -101,6 +101,11 @@ class RiskSettings:
     # user's risk bound (e.g. an ORB stop across a very wide opening range).
     max_stop_loss_pct: float = 5.0
 
+    # Fully automatic mode: proposed orders are approved by the engine itself
+    # instead of waiting for the user. Every risk check (vetoes, kill switch,
+    # cooldown, flat EOD) still applies — this only removes the manual click.
+    auto_approve: bool = False
+
     min_signal_strength: float = 0.3
     timeframe: str = "1d"
     symbols: tuple[str, ...] = ()

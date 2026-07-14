@@ -1,4 +1,6 @@
 import { LineSeries, createChart, type IChartApi, type ISeriesApi, type LineData, type UTCTimestamp } from "lightweight-charts";
+
+import { crosshairTimeFormatter, tickMarkFormatter } from "./realtime/chartTime";
 import { useEffect, useMemo, useRef } from "react";
 
 export type EquityCurvePoint = {
@@ -118,7 +120,9 @@ export function BacktestEquityChart({
       width: Math.max(container.clientWidth, 280),
       height: 220,
       rightPriceScale: { borderColor: "#334155" },
-      timeScale: { borderColor: "#334155" },
+      // Axis + crosshair in the viewer's timezone (the library defaults to UTC).
+      localization: { timeFormatter: crosshairTimeFormatter },
+      timeScale: { borderColor: "#334155", tickMarkFormatter },
     });
 
     chartRef.current = chart;

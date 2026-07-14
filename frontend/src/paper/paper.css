@@ -68,6 +68,109 @@
   color: var(--rt-dim);
 }
 
+/* -- world clocks (top bar) -- */
+.pp-clocks {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+  cursor: default;
+  outline: none;
+}
+
+.pp-clock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pp-clock-city {
+  color: var(--rt-dim);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pp-clock-time {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-clock-date {
+  color: var(--rt-dim);
+  font-size: 11px;
+}
+
+.pp-clock-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 60;
+  min-width: 520px;
+  padding: 12px 14px;
+  background: var(--rt-panel);
+  border: 1px solid var(--rt-border-bright, var(--rt-border));
+  border-radius: var(--rt-radius, 8px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.pp-clock-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pp-clock-table th {
+  text-align: left;
+  color: var(--rt-dim);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px 6px 0;
+}
+
+.pp-clock-table td {
+  padding: 4px 10px 4px 0;
+  border-top: 1px solid var(--rt-border);
+  white-space: nowrap;
+}
+
+.pp-clock-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-clock-status {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pp-clock-status-open {
+  color: #22c55e;
+  border: 1px solid #22c55e55;
+  background: #22c55e14;
+}
+
+.pp-clock-status-lunch {
+  color: #eab308;
+  border: 1px solid #eab30855;
+  background: #eab30814;
+}
+
+.pp-clock-status-closed {
+  color: var(--rt-dim);
+  border: 1px solid var(--rt-border);
+}
+
+.pp-clock-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
 /* -- buttons -- */
 .pp-btn {
   padding: 5px 14px;

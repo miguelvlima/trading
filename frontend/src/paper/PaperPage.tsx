@@ -40,6 +40,7 @@ import {
   type SymbolSignals,
 } from "./api";
 import { EquityChart } from "./EquityChart";
+import { MarketClocks } from "./MarketClocks";
 import { computeRiskGauges, pnlBars } from "./monitor";
 import { isoSec, signalMarkers } from "./signalMarkers";
 import { affectsPendingOrders, eventTone, type LivePosition } from "./streamReducer";
@@ -226,6 +227,7 @@ function StatusBar({
           </button>
         </span>
       )}
+      <MarketClocks />
     </div>
   );
 }

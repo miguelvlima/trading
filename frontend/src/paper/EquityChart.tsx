@@ -7,6 +7,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 
+import { crosshairTimeFormatter, tickMarkFormatter } from "../realtime/chartTime";
 import { toEquitySeries } from "./monitor";
 
 type EquityChartProps = {
@@ -45,7 +46,14 @@ export function EquityChart({ points, baseline, height = 220 }: EquityChartProps
         horzLines: { color: borderColor },
       },
       rightPriceScale: { borderColor },
-      timeScale: { borderColor, timeVisible: true, secondsVisible: false },
+      // Axis + crosshair in the viewer's timezone (the library defaults to UTC).
+      localization: { timeFormatter: crosshairTimeFormatter },
+      timeScale: {
+        borderColor,
+        timeVisible: true,
+        secondsVisible: false,
+        tickMarkFormatter,
+      },
       crosshair: { horzLine: { visible: true }, vertLine: { visible: true } },
       handleScroll: false,
       handleScale: false,

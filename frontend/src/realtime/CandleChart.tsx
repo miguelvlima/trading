@@ -17,6 +17,7 @@ import {
 } from "lightweight-charts";
 
 import type { Quote } from "./api";
+import { crosshairTimeFormatter, tickMarkFormatter } from "./chartTime";
 import type { IndicatorRender, LinePoint } from "./indicators";
 
 export type FormingBar = {
@@ -118,7 +119,14 @@ export function CandleChart({
         vertLines: { color: "#161d2c" },
         horzLines: { color: "#161d2c" },
       },
-      timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1e2738" },
+      // Axis + crosshair in the viewer's timezone (the library defaults to UTC).
+      localization: { timeFormatter: crosshairTimeFormatter },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: "#1e2738",
+        tickMarkFormatter,
+      },
       rightPriceScale: { borderColor: "#1e2738" },
     });
     const candle = chart.addSeries(CandlestickSeries, {

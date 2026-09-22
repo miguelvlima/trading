@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Build 1m/5m MarketBar rows from the tick stream (required for intraday
     # timeframes — historical providers only backfill daily bars).
     paper_engine_intraday_enabled: bool = True
+    # Backfill missing history from the market-data provider when a tracked
+    # symbol has fewer closed bars than the strategies need (kills the warm-up
+    # wait on new symbols). The tick aggregator keeps extending the bars after.
+    paper_engine_backfill_enabled: bool = True
 
     @property
     def cors_origins(self) -> list[str]:

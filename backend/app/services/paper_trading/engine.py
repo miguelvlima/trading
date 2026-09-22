@@ -414,12 +414,19 @@ class PaperEngine:
     # -- user decisions ----------------------------------------------------------
 
     def approve_order(
-        self, db: Session, portfolio: PaperPortfolio, order: PaperOrder
+        self,
+        db: Session,
+        portfolio: PaperPortfolio,
+        order: PaperOrder,
+        *,
+        auto: bool = False,
     ) -> tuple[PaperOrder, PaperTrade | None, FillDeferral | None]:
         """Approve a proposed order and attempt the fill immediately.
 
         If the feed cannot support a credible fill right now the order stays
         ``approved`` and the runtime retries on the next fresh quote.
+        ``auto=True`` marks approvals made by the engine itself (auto_approve
+        mode) so the ledger keeps human and automatic decisions apart.
         """
         now = self._now_fn()
         settings = self.settings_for(portfolio)
@@ -464,12 +471,14 @@ class PaperEngine:
 
         order.status = STATUS_APPROVED
         order.decided_at = now
+        approved_by = "automaticamente (modo automático)" if auto else "pelo utilizador"
         self._emit(
             db,
             ev.EVENT_ORDER_APPROVED,
-            f"Ordem #{order.id} aprovada: {order.side} {float(order.quantity):g} {order.symbol}.",
+            f"Ordem #{order.id} aprovada {approved_by}: "
+            f"{order.side} {float(order.quantity):g} {order.symbol}.",
             symbol=order.symbol,
-            payload={"order_id": order.id},
+            payload={"order_id": order.id, "origin": "auto" if auto else "user"},
         )
 
         trade, deferral = self.try_fill_order(db, portfolio, order, settings=settings)

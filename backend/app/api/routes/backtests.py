@@ -36,6 +36,10 @@ from app.services.strategy_engine import BarInput, get_available_strategies, run
 
 router = APIRouter(prefix="/backtests", tags=["backtests"])
 
+# Timeframes whose bar counts feed the pivot recommendations (must contain
+# every value suggest_alternative_timeframe can return).
+_AVAILABILITY_TIMEFRAMES = ["1d", "1w", "1m", "5m"]
+
 
 def _to_trade_response(item: BacktestTrade) -> BacktestTradeResponse:
     return BacktestTradeResponse(
@@ -103,7 +107,7 @@ def _prepare_recommendations(
         if recent_symbol_pnls
         else dict_items
     )
-    bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=["1d", "1w"])
+    bar_counts = bar_counts_for_timeframes(db, symbol=symbol, timeframes=_AVAILABILITY_TIMEFRAMES)
     # Probe against the same bar set the run used (persisted window + limit), and reuse
     # loaded bars across insights that share a (symbol, timeframe, window, limit).
     run_limit = _config_int(config, "limit", 2000)
@@ -304,7 +308,7 @@ def _persist_run_insight(
         symbol=run_model.symbol,
         exclude_run_id=run_model.id,
     )
-    bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=["1d", "1w"])
+    bar_counts = bar_counts_for_timeframes(db, symbol=run_model.symbol, timeframes=_AVAILABILITY_TIMEFRAMES)
     bars = load_symbol_bars(
         db,
         symbol=run_model.symbol,

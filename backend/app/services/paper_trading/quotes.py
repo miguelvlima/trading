@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from app.services.data_feed.types import Tick
 from app.services.paper_trading.types import QuoteSnapshot
@@ -65,16 +66,39 @@ class QuoteCache:
         return min(quote.age_seconds(now) for quote in pool)
 
 
-def market_session(now: datetime) -> str:
-    """US equities regular trading hours in UTC: 13:30-20:00 Mon-Fri (summer).
+_NY = ZoneInfo("America/New_York")
+_RTH_OPEN = time(9, 30)
+_RTH_CLOSE = time(16, 0)
 
-    Deliberately coarse (no holiday calendar, fixed DST offset): it gates paper
+
+def market_session(now: datetime) -> str:
+    """US equities regular trading hours: 09:30-16:00 America/New_York, Mon-Fri.
+
+    Evaluated in exchange local time so DST is always right (a fixed UTC window
+    is only correct half the year). Still no holiday calendar: it gates paper
     proposals/fills, where a false "open" on a holiday only means orders wait
     for fresh quotes that never come — the freshness gate still protects fills.
     """
-    if now.weekday() >= 5:
+    local = now.astimezone(_NY)
+    if local.weekday() >= 5:
         return "closed"
-    utc_time = now.astimezone(UTC).time()
-    if time(13, 30) <= utc_time < time(20, 0):
+    if _RTH_OPEN <= local.time() < _RTH_CLOSE:
         return "rth"
     return "closed"
+
+
+def in_eod_window(now: datetime, minutes_before_close: int) -> bool:
+    """True inside the last N minutes of the NY session (flat-EOD window).
+
+    Shares market_session's RTH definition — and its no-calendar limitation,
+    which here bites harder: on NYSE early-close half days (13:00 — day after
+    Thanksgiving, Christmas Eve, 3 July) the window computed against 16:00
+    never happens while quotes are live, so flat EOD cannot flatten before
+    those closes and positions carry over. Acceptable while paper-only; wire
+    in an exchange calendar before trusting the flatten guarantee with money.
+    """
+    if market_session(now) != "rth":
+        return False
+    local = now.astimezone(_NY)
+    close = local.replace(hour=_RTH_CLOSE.hour, minute=_RTH_CLOSE.minute, second=0, microsecond=0)
+    return close - local <= timedelta(minutes=minutes_before_close)

@@ -24,6 +24,9 @@ class ProposalContext:
     kill_switch_active: bool
     cooldown_until: datetime | None
     market_session: str  # rth | closed
+    # Inside the flat-EOD window (last minutes of the NY session): new entries
+    # are vetoed; closing orders pass so the sweep can flatten positions.
+    in_eod_window: bool = False
 
 
 class RiskManager:
@@ -65,6 +68,15 @@ class RiskManager:
         # rules below only apply to orders that ADD exposure.
         if ctx.is_closing:
             return None
+
+        if ctx.in_eod_window:
+            return RiskVeto(
+                code="eod_window",
+                reason=(
+                    "Janela de fecho de fim de sessão (flat EOD): novas entradas "
+                    "bloqueadas até à próxima sessão."
+                ),
+            )
 
         if s.require_stop_loss and not ctx.stop_loss_pct:
             return RiskVeto(

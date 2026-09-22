@@ -60,6 +60,14 @@ function fmtTime(iso: string): string {
   });
 }
 
+// Local date+time with seconds, always showing the date ("08/07 16:57:03").
+function fmtDateTime(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  const day = parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+  return `${day} ${fmtTime(iso)}`;
+}
+
 // Local date+time, dropping the date when it is today ("16:57" vs "08/07 16:57").
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—";
@@ -165,6 +173,35 @@ function evaluationText(status: EngineStatusWire | null): string | null {
   return `Última avaliação ${fmtTime(summary.at)} — ${parts.join("; ")}.${cadence}`;
 }
 
+// Anything short of REAL-TIME distorts intraday entries (IBKR delayed feed is
+// ~15 min behind) — the user has to SEE it, not discover it in the fills.
+// UNKNOWN means "no tick yet" (engine just started, market closed), not a
+// liveness problem: warning on it would cry wolf at every start and train the
+// user to ignore the badge. FeedDot already reports the absence of data.
+function LivenessWarning({ status }: { status: EngineStatusWire | null }) {
+  if (
+    !status?.running ||
+    status.data_liveness === "REAL-TIME" ||
+    status.data_liveness === "UNKNOWN"
+  ) {
+    return null;
+  }
+  const label =
+    status.data_liveness === "DELAYED" || status.data_liveness === "DELAYED-FROZEN"
+      ? "DADOS ATRASADOS ~15 min"
+      : status.data_liveness === "FROZEN"
+        ? "DADOS CONGELADOS (fecho)"
+        : "DADOS NÃO REAL-TIME";
+  return (
+    <span
+      className="pp-badge pp-badge-warn"
+      title="Sem subscrição real-time no IBKR os ticks chegam atrasados — sinais intraday podem já ter expirado quando aparecem."
+    >
+      {label}
+    </span>
+  );
+}
+
 function StatusBar({
   status,
   wsStatus,
@@ -172,6 +209,8 @@ function StatusBar({
   onStop,
   onResetKillSwitch,
   busy,
+  selectedSymbol,
+  onSelectSymbol,
 }: {
   status: EngineStatusWire | null;
   wsStatus: "connecting" | "open" | "closed";
@@ -179,6 +218,8 @@ function StatusBar({
   onStop: () => void;
   onResetKillSwitch: () => void;
   busy: boolean;
+  selectedSymbol: string | null;
+  onSelectSymbol: (symbol: string) => void;
 }) {
   const running = status?.running ?? false;
   return (
@@ -187,11 +228,21 @@ function StatusBar({
         <i className="rt-dot" /> Engine {running ? "LIGADO" : "PARADO"}
       </span>
       {(status?.tracked_symbols?.length ?? 0) > 0 && (
-        <span className="pp-symbols" title="Símbolos seguidos pelo engine">
+        <span
+          className="pp-symbols"
+          title="Símbolos seguidos pelo engine — clica para mostrar no gráfico"
+        >
           {status!.tracked_symbols.map((symbol) => (
-            <span key={symbol} className="pp-symbol-chip">
+            <button
+              key={symbol}
+              type="button"
+              className={`pp-symbol-chip pp-symbol-chip-btn ${
+                symbol === selectedSymbol ? "pp-symbol-chip-on" : ""
+              }`}
+              onClick={() => onSelectSymbol(symbol)}
+            >
               {symbol}
-            </span>
+            </button>
           ))}
         </span>
       )}
@@ -204,9 +255,12 @@ function StatusBar({
         {running ? "Parar" : "Iniciar"}
       </button>
       <FeedDot status={status} />
-      {status?.data_liveness === "DELAYED" && (
-        <span className="pp-badge pp-badge-warn">DADOS ATRASADOS ~15 min</span>
+      {status?.last_evaluation?.timeframe && (
+        <span className="pp-badge" title="Timeframe das barras que alimentam as estratégias">
+          TF {status.last_evaluation.timeframe}
+        </span>
       )}
+      <LivenessWarning status={status} />
       <span className="pp-muted">
         Sessão: {status?.market_session === "rth" ? "mercado aberto" : "fechado"}
       </span>
@@ -323,6 +377,8 @@ function MarketCarousel({
   positions,
   signals,
   signalHistory,
+  selectedSymbol,
+  onSelect,
 }: {
   apiBaseUrl: string;
   authToken: string;
@@ -330,11 +386,19 @@ function MarketCarousel({
   positions: LivePosition[];
   signals: Record<string, SymbolSignals>;
   signalHistory: PaperSignalWire[];
+  // Controlled by the parent so the status-bar symbol chips and the carousel
+  // arrows drive the SAME selection.
+  selectedSymbol: string | null;
+  onSelect: (symbol: string) => void;
 }) {
-  const [index, setIndex] = useState(0);
   const [chartWindow, setChartWindow] = useState<WindowCode>("4h");
   const count = symbols.length;
-  const current = count > 0 ? symbols[((index % count) + count) % count] : null;
+  const current =
+    count > 0
+      ? selectedSymbol && symbols.includes(selectedSymbol)
+        ? selectedSymbol
+        : symbols[0]
+      : null;
   const candle = suggestedCandle(chartWindow); // 30m/1h->1m, 4h/1d->5m, 1mo/1y->1d
   // IBKR second-based durations (30m/1h/4h) count wall-clock time, so outside
   // RTH they return ZERO bars. Fetch the whole last trading day instead and
@@ -385,7 +449,11 @@ function MarketCarousel({
     CAROUSEL_WINDOWS.find((option) => option.code === chartWindow)?.trendLabel ?? "";
 
   if (count === 0) return null;
-  const step = (delta: number) => setIndex((value) => (value + delta + count) % count);
+  const step = (delta: number) => {
+    if (count === 0 || current === null) return;
+    const currentIndex = symbols.indexOf(current);
+    onSelect(symbols[(currentIndex + delta + count) % count]);
+  };
 
   return (
     <section className="rt-card pp-panel pp-panel-wide">
@@ -415,7 +483,7 @@ function MarketCarousel({
           ))}
         </span>
         <span className="pp-muted">
-          {(((index % count) + count) % count) + 1} de {count}
+          {current !== null ? symbols.indexOf(current) + 1 : 0} de {count}
         </span>
         <button
           type="button"
@@ -534,7 +602,11 @@ function MarketCarousel({
                 <span className="pp-field-hint">
                   {monitor.no_quote
                     ? "à espera de cotação (mercado fechado ou feed em baixo) — retenta a cada ciclo"
-                    : `barra de ${fmtWhen(monitor.bar_time)} — novo veredicto quando fechar a próxima barra`}
+                    : monitor.bar_count !== undefined &&
+                        monitor.bars_required !== undefined &&
+                        monitor.bar_count < monitor.bars_required
+                      ? `a construir histórico: ${monitor.bar_count}/${monitor.bars_required} barras fechadas — as estratégias avaliam quando houver ${monitor.bars_required}`
+                      : `barra de ${fmtWhen(monitor.bar_time)} — novo veredicto quando fechar a próxima barra`}
                 </span>
               </div>
             );
@@ -659,7 +731,7 @@ type SettingsPanelProps = {
   engineRunning: boolean;
   instruments: string[];
   strategies: string[];
-  onSave: (settings: Record<string, unknown>) => void;
+  onSave: (settings: Record<string, unknown>, preset?: "day_trading") => void;
   onReset: (initialCash: number) => void;
 };
 
@@ -685,12 +757,16 @@ function SettingsPanel({
     strategies: Array.isArray(rs.strategies) ? (rs.strategies as string[]) : [],
     timeframe: typeof rs.timeframe === "string" ? rs.timeframe : "1d",
     rthOnly: rs.rth_only !== false,
+    flatEod: rs.flat_eod === true,
+    flatEodMinutes: String(num(rs.flat_eod_minutes_before_close, 10)),
+    maxStopLossPct: String(num(rs.max_stop_loss_pct, 5)),
     // Execução: quando um sinal vira ordem e como o fill simulado se comporta.
     minSignalStrength: String(num(rs.min_signal_strength, 0.3)),
     quoteMaxAgeSeconds: String(num(rs.quote_max_age_seconds, 120)),
     maxSpreadBps: String(num(rs.max_spread_bps, 50)),
     slippageBps: String(num(rs.slippage_bps, 5)),
     orderExpiryMinutes: String(num(rs.order_expiry_minutes, 30)),
+    approvedFillTimeoutMinutes: String(num(rs.approved_fill_timeout_minutes, 10)),
     cooldownMinutes: String(num(rs.cooldown_minutes, 60)),
     maxConsecutiveLosses: String(num(rs.max_consecutive_losses, 3)),
   }));
@@ -737,6 +813,13 @@ function SettingsPanel({
       strategies: form.strategies,
       timeframe: form.timeframe,
       rth_only: form.rthOnly,
+      flat_eod: form.flatEod,
+      flat_eod_minutes_before_close: num(form.flatEodMinutes, 10),
+      max_stop_loss_pct: num(form.maxStopLossPct, 5),
+      approved_fill_timeout_minutes: num(
+        form.approvedFillTimeoutMinutes,
+        num(rs.approved_fill_timeout_minutes, 10),
+      ),
       min_signal_strength: Math.max(
         0,
         Math.min(1, num(form.minSignalStrength, num(rs.min_signal_strength, 0.3))),
@@ -795,9 +878,21 @@ function SettingsPanel({
               setForm((current) => ({ ...current, timeframe: event.target.value }))
             }
           >
+            <option value="1m">Intraday (1m)</option>
+            <option value="5m">Intraday (5m)</option>
             <option value="1d">Diário (1d)</option>
             <option value="1w">Semanal (1w)</option>
           </select>
+          <span className="pp-field-hint">
+            1m/5m usam as barras construídas em direto a partir dos ticks
+          </span>
+        </label>
+        <label className="pp-field">
+          <span className="pp-field-label">Stop máx. por trade (%)</span>
+          <input {...field("maxStopLossPct")} min={0.5} max={50} step={0.5} />
+          <span className="pp-field-hint">
+            stops sugeridos pelas estratégias são limitados a este teto
+          </span>
         </label>
         <label className="pp-field pp-field-check">
           <input
@@ -809,6 +904,28 @@ function SettingsPanel({
           />
           <span>Operar apenas com o mercado aberto (RTH)</span>
         </label>
+        <label className="pp-field pp-field-check">
+          <input
+            type="checkbox"
+            checked={form.flatEod}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, flatEod: event.target.checked }))
+            }
+          />
+          <span>
+            Fechar posições no fim da sessão (flat EOD, últimos {num(form.flatEodMinutes, 10)}{" "}
+            min)
+          </span>
+        </label>
+        {form.flatEod && (
+          <label className="pp-field">
+            <span className="pp-field-label">Janela de fecho EOD (min antes das 16:00 NY)</span>
+            <input {...field("flatEodMinutes")} min={1} max={60} step={1} />
+            <span className="pp-field-hint">
+              nesta janela o engine vende todas as posições e veta entradas novas
+            </span>
+          </label>
+        )}
         <div className="pp-field pp-field-wide">
           <span className="pp-field-label">Símbolos a seguir</span>
           {instruments.length > 0 && (
@@ -903,6 +1020,13 @@ function SettingsPanel({
           <input {...field("orderExpiryMinutes")} min={1} max={1440} step={5} />
         </label>
         <label className="pp-field">
+          <span className="pp-field-label">Timeout de fills aprovados (min)</span>
+          <input {...field("approvedFillTimeoutMinutes")} min={1} max={1440} step={1} />
+          <span className="pp-field-hint">
+            compras aprovadas sem fill possível expiram; vendas retentam sempre
+          </span>
+        </label>
+        <label className="pp-field">
           <span className="pp-field-label">Cooldown após perdas (min)</span>
           <input {...field("cooldownMinutes")} min={0} max={1440} step={15} />
         </label>
@@ -916,6 +1040,18 @@ function SettingsPanel({
         <button type="button" className="pp-btn pp-btn-approve" disabled={busy} onClick={save}>
           Guardar definições
         </button>
+        <button
+          type="button"
+          className="pp-btn"
+          disabled={busy}
+          onClick={() => onSave({}, "day_trading")}
+          title="Aplica: timeframe 5m, cotações ≤30s, propostas expiram em 5 min, timeout de fills 5 min, cooldown 30 min e flat EOD ligado. O resto das definições mantém-se."
+        >
+          Aplicar preset Day Trading
+        </button>
+        <span className="pp-field-hint">
+          o preset muda timeframe/frescura/expirações e liga o flat EOD; sizing e limites mantêm-se
+        </span>
       </div>
 
       <div className="pp-reset-row">
@@ -1001,6 +1137,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   const [signalHistory, setSignalHistory] = useState<PaperSignalWire[]>([]);
   const [instruments, setInstruments] = useState<string[]>([]);
   const [strategies, setStrategies] = useState<string[]>([]);
+  // Carousel selection lives here so the status-bar symbol chips can drive it.
+  const [carouselSymbol, setCarouselSymbol] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restStatus, setRestStatus] = useState<EngineStatusWire | null>(null);
@@ -1154,9 +1292,9 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
   );
 
   const saveSettings = useCallback(
-    (settings: Record<string, unknown>) =>
+    (settings: Record<string, unknown>, preset?: "day_trading") =>
       void act(async () => {
-        const updated = await updatePaperRiskSettings(apiBaseUrl, authToken, settings);
+        const updated = await updatePaperRiskSettings(apiBaseUrl, authToken, settings, preset);
         setPortfolio(updated);
       }),
     [act, apiBaseUrl, authToken],
@@ -1208,6 +1346,14 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
       }),
     [state.positions, state.pnl, portfolio],
   );
+
+  // Effective carousel selection: the user's pick while it is still tracked,
+  // else the first tracked symbol — chips and carousel highlight the same one.
+  const trackedSymbols = status?.tracked_symbols ?? [];
+  const activeCarouselSymbol =
+    carouselSymbol && trackedSymbols.includes(carouselSymbol)
+      ? carouselSymbol
+      : trackedSymbols[0] ?? null;
 
   if (portfolioMissing) {
     return (
@@ -1263,6 +1409,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         onStart={() => void act(() => startEngine(apiBaseUrl, authToken))}
         onStop={() => void act(() => stopEngine(apiBaseUrl, authToken))}
         onResetKillSwitch={() => void act(() => resetKillSwitch(apiBaseUrl, authToken))}
+        selectedSymbol={activeCarouselSymbol}
+        onSelectSymbol={setCarouselSymbol}
       />
       {(error || wsError) && <p className="pp-error">{error ?? wsError}</p>}
 
@@ -1273,6 +1421,8 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
         positions={state.positions}
         signals={state.signals}
         signalHistory={dedupedSignals}
+        selectedSymbol={activeCarouselSymbol}
+        onSelect={setCarouselSymbol}
       />
 
       <SignalHistoryPanel signals={dedupedSignals} />
@@ -1488,7 +1638,7 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
             )}
             {state.events.map((event) => (
               <li key={event.id} className={`pp-event pp-event-${eventTone(event)}`}>
-                <span className="pp-event-time">{fmtTime(event.created_at)}</span>
+                <span className="pp-event-time">{fmtDateTime(event.created_at)}</span>
                 {event.symbol && <span className="pp-event-symbol">{event.symbol}</span>}
                 <span className="pp-event-msg">{event.message}</span>
               </li>
@@ -1596,7 +1746,10 @@ export function PaperPage({ apiBaseUrl, authToken }: PaperPageProps) {
 
       {portfolio && (
         <SettingsPanel
-          key={`${portfolio.id}-${portfolio.initial_cash}`}
+          // updated_at in the key remounts the form whenever the server-side
+          // settings change (preset applied, save normalized values), so the
+          // inputs always show what is actually persisted.
+          key={`${portfolio.id}-${portfolio.initial_cash}-${portfolio.updated_at}`}
           portfolio={portfolio}
           equity={state.pnl?.equity ?? portfolio.equity}
           busy={busy}

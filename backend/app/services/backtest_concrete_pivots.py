@@ -47,6 +47,12 @@ def suggest_alternative_timeframe(timeframe: str) -> str:
         return "1w"
     if timeframe == "1w":
         return "1d"
+    # Intraday pivots stay intraday: jumping from 5m to 1d changes the nature
+    # of the system, not just the noise level.
+    if timeframe == "1m":
+        return "5m"
+    if timeframe == "5m":
+        return "1m"
     return "1d"
 
 
